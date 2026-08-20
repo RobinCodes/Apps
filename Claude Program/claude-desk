@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""Launcher for Claude Desk.
+
+Lives next to the claudedesk/ package and puts its own directory on sys.path,
+so the app runs from wherever this folder happens to sit — no install step, no
+PYTHONPATH to set.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from claudedesk.app import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

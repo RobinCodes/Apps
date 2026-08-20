@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Git Manager
+GenericName=Git repository manager
+Comment=Every git repository on this machine, and your GitHub account, in one window
+Exec=/home/robin/.local/bin/git-manager %f
+Icon=applications-development
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=git;github;repository;commit;branch;diff;
+StartupNotify=true
+StartupWMClass=com.robin.GitManager

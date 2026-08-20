@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- LaRenderer. A sheet of paper with an integral on it: the two things the
+       app is about, and both still readable at 24px in a dock. Pure paths, no
+       text elements, so it does not depend on any font being installed. -->
+  <defs>
+    <linearGradient id="sheet" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e9edf5"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1c4fb8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- the sheet -->
+  <rect x="18" y="8" width="92" height="112" rx="10" fill="#0f1b33" opacity="0.18"
+        transform="translate(0,3)"/>
+  <rect x="18" y="8" width="92" height="112" rx="10" fill="url(#sheet)"/>
+
+  <!-- ruled lines, suggesting set text -->
+  <g fill="#9aa7bd" opacity="0.6">
+    <rect x="32" y="26" width="46" height="6" rx="3"/>
+    <rect x="32" y="98" width="64" height="6" rx="3"/>
+    <rect x="32" y="110" width="44" height="6" rx="3"/>
+  </g>
+
+  <!-- the integral, drawn rather than typed so no font has to exist -->
+  <path d="M 88 48
+           C 88 32, 74 26, 66 34
+           C 60 40, 59 49, 59 60
+           L 59 78
+           C 59 89, 58 97, 51 103
+           C 43 110, 30 103, 30 88"
+        fill="none" stroke="url(#ink)" stroke-width="10"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

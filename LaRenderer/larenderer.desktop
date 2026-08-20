@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=LaRenderer
+GenericName=LaTeX editor
+Comment=Write LaTeX on the left, watch the pages appear on the right
+Exec=/home/robin/.local/bin/larenderer %f
+Icon=larenderer
+Terminal=false
+Categories=Office;Publishing;WordProcessor;
+MimeType=text/x-tex;
+Keywords=latex;tex;pdf;document;maths;typeset;
+StartupNotify=true
+StartupWMClass=com.robin.LaRenderer

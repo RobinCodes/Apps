@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Desk
+GenericName=Claude Code front end
+Comment=Run several Claude Code sessions in one native window
+Exec=/home/robin/.local/bin/claude-desk %f
+Icon=claude-desk
+Terminal=false
+Categories=Development;IDE;
+Keywords=claude;ai;agent;code;assistant;
+StartupNotify=true
+StartupWMClass=com.robin.ClaudeDesk

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="#D97757"/>
+  <g fill="#FAF9F5">
+    <path id="ray" d="M64 21 C 70.5 38 73 50 64 65 C 55 50 57.5 38 64 21 Z"/>
+    <use href="#ray" transform="rotate(45 64 64)"/>
+    <use href="#ray" transform="rotate(90 64 64)"/>
+    <use href="#ray" transform="rotate(135 64 64)"/>
+    <use href="#ray" transform="rotate(180 64 64)"/>
+    <use href="#ray" transform="rotate(225 64 64)"/>
+    <use href="#ray" transform="rotate(270 64 64)"/>
+    <use href="#ray" transform="rotate(315 64 64)"/>
+  </g>
+</svg>
