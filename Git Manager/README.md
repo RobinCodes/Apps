@@ -175,9 +175,43 @@ with the credentials the later fetch and push will use, rather than `gh`'s word
 for it — so a repository that doesn't exist, can't be reached, or can't be
 written to is caught while the plan is still just text on the screen.
 
+**A folder inside another repository** can still become one in its own right —
+one project in a folder of projects, all under a single `.git`, growing up into
+a repository of its own. Git nests working trees without complaint, so this is
+allowed, and it is not blocked.
+
+What git does not do is let go. Everything the surrounding repository already
+tracks inside that folder it goes on tracking afterwards, and the same files
+then sit in two repositories, each blind to what the other commits. The plan
+counts them and says so:
+
+```
+! ~/Projects/Apps tracks 37 files inside this folder
+→ Create a repository in ~/Projects/Apps/Git Manager
+→ Add origin → https://github.com/RobinCodes/Git-Manager.git
+→ Fetch origin
+```
+
+*Take it out of Apps* — the switch under **How**, off until it is turned on —
+is the way out of that. It drops the folder from the outer repository's index
+(`git rm -r --cached`, so every file stays exactly where it is on disk) and
+adds an ignore rule for it there. Neither half is committed: the staged removal
+and the edited `.gitignore` are left in that repository's own Changes tab,
+because whether its history loses those files is a commit for its owner to
+make, not something to slip into a connect.
+
+Where the outer repository tracks nothing in the folder, the switch offers the
+ignore rule alone — still worth having, since `git add -A` there would
+otherwise record the folder as a bare pointer to a commit, a submodule with
+none of the wiring. Where it already ignores the folder there is nothing to do,
+and the plan says that instead.
+
 *Add existing folder…* pointed at a folder with no `.git` in it asks which of
 the three things was meant — connect it to GitHub, start a repository in it, or
 scan it for repositories — rather than silently turning it into a scan root.
+Pointed at a folder that is *part* of a repository, it asks the matching
+question — add the repository around it, or connect this folder to GitHub as
+one of its own — rather than adding a repository nobody picked.
 
 ## Project files
 
@@ -234,6 +268,7 @@ files — rather than asking a generic "are you sure".
 | Drop stash | Branches | Confirm |
 | Stop tracking ignored files | Gitignore helper | Confirm, lists the paths; files stay on disk, the removal is staged |
 | Repoint an existing remote | Connect to GitHub | Flagged in the plan, naming the URL it forgets; nothing on either server changes |
+| Take a folder out of the repository around it | Connect to GitHub | Off unless switched on; counted in the plan first; files stay on disk, the removal is staged there, nothing is committed |
 
 Force push is deliberately `--force-with-lease` rather than `--force`: it
 refuses if the remote moved since your last fetch, which is the difference

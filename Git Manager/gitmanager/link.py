@@ -19,6 +19,13 @@ No step in this module overwrites a file. When both sides have content, HEAD is
 moved to the remote's tip and the working tree is left exactly as it was, so
 the difference between the folder and GitHub arrives in the Changes tab, which
 is the part of this app that already knows how to show it.
+
+A folder inside another repository's working tree is allowed to become one in
+its own right: git nests them, and it is how one folder of a pile of projects
+turns into a project. What the surrounding repository tracks it goes on
+tracking, though, so the plan says that out loud and offers to drop the folder
+from its index and ignore it instead — an offer that is off unless it is
+turned on, and that stops short of committing anything there either.
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from . import github, gitcmd, jobs, widgets  # noqa: E402
+from . import github, gitcmd, ignore, jobs, widgets  # noqa: E402
 from .filesystem import tilde  # noqa: E402
 
 TTL = 120           # shares the repo list with the clone dialog
@@ -50,6 +57,7 @@ class Local:
 
     path: str = ""
     exists: bool = False
+    in_git_dir: bool = False  # inside .git itself, where nothing may be created
     is_repo: bool = False
     toplevel: str = ""        # the repo this folder sits inside, if any
     branch: str = ""
@@ -58,6 +66,16 @@ class Local:
     remotes: dict = field(default_factory=dict)
     staged: int = 0
     changes: int = 0
+    # Filled in only when the folder sits inside a working tree without being
+    # the top of it. See _survey_parent.
+    rel: str = ""             # where in that repository the folder is
+    parent_tracked: int = 0   # files of ours in its index
+    parent_ignores: bool = False
+
+    @property
+    def nested(self):
+        """Inside another working tree, and not the top of it."""
+        return bool(self.toplevel) and not self.is_repo
 
 
 def survey(path):
@@ -66,6 +84,9 @@ def survey(path):
         return local
     local.exists = True
     local.tree_empty = gitcmd.tree_is_empty(path)
+    if gitcmd.in_git_dir(path):
+        local.in_git_dir = True
+        return local
     if not gitcmd.is_repo(path):
         return local
     try:
@@ -73,10 +94,12 @@ def survey(path):
     except (gitcmd.GitError, OSError):
         return local
     local.toplevel = top
-    # A folder inside a working tree is not a repository of its own, and
-    # connecting it would silently act on its parent instead.
+    # The top of a working tree is a repository. Anything under it is a folder
+    # inside one, which can still become a repository -- but not without the
+    # one around it having something to say about the files.
     local.is_repo = os.path.realpath(top) == os.path.realpath(path)
     if not local.is_repo:
+        _survey_parent(local)
         return local
     local.branch = gitcmd.head_branch(path)
     local.has_commits = gitcmd.has_commits(path)
@@ -88,6 +111,39 @@ def survey(path):
     except (gitcmd.GitError, OSError, subprocess.TimeoutExpired):
         pass
     return local
+
+
+def _survey_parent(local):
+    """What the repository around this folder makes of it.
+
+    Not "can this be done" -- git nests working trees without complaint -- but
+    what the two would then disagree about. Everything the outer repository
+    already tracks in here it keeps tracking, and the same files committed in
+    two places that know nothing of each other is the failure mode worth
+    naming before a .git is created, not after.
+    """
+    local.rel = os.path.relpath(local.path, local.toplevel).replace(os.sep, "/")
+    try:
+        local.parent_tracked = len(gitcmd.tracked_under(local.toplevel, local.rel))
+    except (gitcmd.GitError, OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        # --no-index, because the question is whether the patterns cover this
+        # folder -- which check-ignore otherwise declines to answer about a
+        # path that is tracked, and a tracked path is exactly this case.
+        local.parent_ignores = bool(
+            gitcmd.check_ignore(local.toplevel, [local.rel + "/"], no_index=True))
+    except (gitcmd.GitError, OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _parent_name(local):
+    return os.path.basename(local.toplevel.rstrip("/")) or local.toplevel
+
+
+def _possessive(name):
+    """`Apps'` rather than `Apps's`: the name is whatever the folder is called."""
+    return name + ("'" if name.endswith("s") else "'s")
 
 
 @dataclass
@@ -154,10 +210,18 @@ class Plan:
     adopt: str = ""          # "" | "checkout" | "reset"
     push_branch: str = ""    # branch that can be pushed once connected
     push_default: bool = False
+    detach: bool = False     # also take the folder out of the repo around it
 
     @property
     def ready(self):
         return not self.blocked
+
+    @property
+    def can_detach(self):
+        """Whether there is anything to take out of the surrounding repository."""
+        local = self.local
+        return bool(local.nested and local.rel) and (
+            bool(local.parent_tracked) or not local.parent_ignores)
 
 
 def build_plan(local, remote, remote_name="origin"):
@@ -170,10 +234,10 @@ def build_plan(local, remote, remote_name="origin"):
     if not local.exists:
         plan.blocked = f"{tilde(local.path)} is not a folder."
         return plan
-    if local.toplevel and not local.is_repo:
+    if local.in_git_dir:
         plan.blocked = (
-            f"This folder is inside the repository at {tilde(local.toplevel)}, so it has "
-            "no remote of its own to set. Connect that folder instead."
+            f"{tilde(local.path)} is inside git's own storage. Pick the folder the "
+            "repository is checked out into instead."
         )
         return plan
     if not remote.nwo:
@@ -196,6 +260,9 @@ def build_plan(local, remote, remote_name="origin"):
             "Fetching and pulling will work; pushing will be rejected.",
             kind="warn",
         ))
+
+    if local.nested:
+        _plan_nested(plan)
 
     if not local.is_repo:
         start = remote.default_branch or "main"
@@ -245,6 +312,78 @@ def build_plan(local, remote, remote_name="origin"):
     else:
         _plan_two_histories(plan)
     return plan
+
+
+def _plan_nested(plan):
+    """The folder is inside another working tree. Say what that costs.
+
+    Nothing here blocks. Two repositories can hold the same files quite
+    happily as far as git is concerned; it is the person who has to keep
+    track of which one a commit went to, and that is only fair if they were
+    told.
+    """
+    local = plan.local
+    parent = tilde(local.toplevel)
+    if local.parent_tracked:
+        many = local.parent_tracked != 1
+        plan.steps.append(Step(
+            f"{parent} tracks {local.parent_tracked} file{'s' if many else ''} "
+            f"inside this folder",
+            f"It keeps tracking {'them' if many else 'it'}: the same "
+            f"file{'s' if many else ''} would then sit in two repositories, "
+            f"each blind to what the other commits. “Take it out of "
+            f"{_parent_name(local)}” above settles that.",
+            kind="warn",
+        ))
+    elif local.parent_ignores:
+        plan.steps.append(Step(
+            f"This folder is inside {parent}, which already ignores it",
+            "So the two repositories will not be holding the same files.",
+            kind="note",
+        ))
+    else:
+        plan.steps.append(Step(
+            f"This folder is inside {parent}, which tracks nothing in it",
+            "Committing everything there would record this folder as a bare "
+            "pointer to a commit — a submodule without any of the wiring. An "
+            "ignore rule there is what stops that happening by accident.",
+            kind="note",
+        ))
+
+
+def _detach_steps(plan):
+    """What taking the folder out of the surrounding repository adds to the plan."""
+    local = plan.local
+    name = _parent_name(local)
+    steps = []
+    if local.parent_tracked:
+        many = local.parent_tracked != 1
+        steps.append(Step(
+            f"Stop {name} tracking {local.rel}",
+            f"git rm -r --cached there: {local.parent_tracked} "
+            f"path{'s' if many else ''} leave{'' if many else 's'} its index and "
+            f"stay exactly where {'they are' if many else 'it is'} on disk. The "
+            f"removal is staged in {name} and committed by you, there, when you "
+            f"want its copy on GitHub to lose them too.",
+            kind="warn",
+        ))
+    if not local.parent_ignores:
+        steps.append(Step(
+            f"Add {ignore.pattern_for(local.rel, True)} to {_possessive(name)} .gitignore",
+            f"So committing everything in {name} doesn't pick this folder up again.",
+        ))
+    return steps
+
+
+def _detach_summary(local):
+    """The switch's subtitle: what it does, in the two shapes it comes in."""
+    name = _parent_name(local)
+    if local.parent_tracked:
+        return (f"Drop this folder from {_possessive(name)} index and ignore it there instead. "
+                f"Every file stays on disk, and nothing in {name} is committed — "
+                f"the removal waits in its Changes tab.")
+    return (f"Add an ignore rule for this folder to {name}, so committing "
+            f"everything there doesn't swallow it.")
 
 
 def _plan_empty_remote(plan):
@@ -361,6 +500,20 @@ class Result:
 def execute(plan, push=False):
     """Run the plan. Called on a worker thread; every step is a git command.
 
+    The connecting comes first and the surrounding repository, if there is one
+    and it was asked about, is dealt with after: a fetch that fails leaves
+    nothing done to a repository the user did not pick.
+    """
+    res = Result(path=plan.local.path, nwo=plan.remote.nwo, remote_name=plan.remote_name)
+    _link(plan, res, push)
+    if plan.detach:
+        _detach_from_parent(plan, res)
+    return res
+
+
+def _link(plan, res, push):
+    """Point the folder at the repository.
+
     The folder is surveyed again rather than taken from the plan: an attempt
     that failed part way through — a fetch that timed out after the remote was
     added — leaves a folder the plan no longer describes, and pressing Connect
@@ -370,7 +523,6 @@ def execute(plan, push=False):
     remote = plan.remote
     path = plan.local.path
     local = survey(path)
-    res = Result(path=path, nwo=remote.nwo, remote_name=plan.remote_name)
 
     if not local.is_repo:
         gitcmd.init(path, initial_branch=remote.default_branch or None)
@@ -390,7 +542,7 @@ def execute(plan, push=False):
             "set up, so Fetch will work once it can be reached."
         )
         res.branch = gitcmd.head_branch(path)
-        return res
+        return
 
     gitcmd.fetch_remote(path, plan.remote_name)
     res.done.append(f"Fetched {plan.remote_name}")
@@ -409,7 +561,7 @@ def execute(plan, push=False):
             res.done.append(f"Pushed {branch} and set it to track {res.upstream}")
         elif has_commits:
             res.done.append(f"{remote.nwo} is still empty — push {branch} when you're ready")
-        return res
+        return
 
     if not has_commits:
         branch = _adopt(plan, res, branch)
@@ -439,7 +591,66 @@ def execute(plan, push=False):
                 "started separately. Until they are joined, pulling refuses and "
                 "pushing is rejected."
             )
-    return res
+
+
+def _detach_from_parent(plan, res):
+    """Take the folder out of the repository it sits inside.
+
+    Neither half of this is committed there. The removal is staged and the
+    ignore rule is an edited file, both left in that repository's own Changes
+    tab, because what it records about this folder is a commit its owner
+    makes — not something a connect slips in on the way past.
+    """
+    local = plan.local
+    parent, rel = local.toplevel, local.rel
+    if not parent or not rel or not os.path.isdir(parent):
+        return
+    name = _parent_name(local)
+    notes = []
+
+    try:
+        tracked = gitcmd.tracked_under(parent, rel)
+        if tracked:
+            gitcmd.untrack(parent, [gitcmd.literal(rel)])
+            many = len(tracked) != 1
+            res.done.append(
+                f"Removed {len(tracked)} path{'s' if many else ''} under {rel} "
+                f"from {_possessive(name)} index")
+            notes.append(
+                f"It shows {len(tracked)} staged deletion{'s' if many else ''}, "
+                f"and every one of those files is still on disk — committing that "
+                f"there is what takes {'them' if many else 'it'} off GitHub's copy "
+                f"of {name}.")
+    except (gitcmd.GitError, OSError, subprocess.TimeoutExpired) as exc:
+        res.warnings.append(
+            f"{name} could not be made to let go of this folder: {exc}. It tracks "
+            f"what it tracked before, and this folder is connected all the same.")
+        return
+
+    pattern = _ignore_in_parent(plan, res, name)
+    if pattern:
+        notes.append(f"Its .gitignore has gained {pattern}.")
+    if notes:
+        res.warnings.append(f"Nothing in {name} is committed by this. " + " ".join(notes))
+
+
+def _ignore_in_parent(plan, res, name):
+    """Add the folder to the surrounding repository's .gitignore, if it isn't."""
+    local = plan.local
+    if local.parent_ignores:
+        return ""
+    pattern = ignore.pattern_for(local.rel, True)
+    try:
+        lines = ignore.read_gitignore(local.toplevel).splitlines()
+        if pattern in (line.strip() for line in lines):
+            return ""
+        lines.append(pattern)
+        ignore.write_gitignore(local.toplevel, "\n".join(lines))
+    except OSError as exc:
+        res.warnings.append(f"Couldn't add {pattern} to {_possessive(name)} .gitignore: {exc}")
+        return ""
+    res.done.append(f"Added {pattern} to {_possessive(name)} .gitignore")
+    return pattern
 
 
 def _adopt(plan, res, branch):
@@ -586,6 +797,14 @@ class ConnectDialog(Adw.Dialog):
         )
         self.push_row.connect("notify::active", lambda *_: self._render_steps())
         group.add(self.push_row)
+
+        # Off unless it is asked for: it stages a removal in a repository the
+        # user picked nothing about, which is not a thing to default to.
+        self.detach_row = Adw.SwitchRow(
+            title="Take it out of the repository around it", subtitle="", visible=False,
+        )
+        self.detach_row.connect("notify::active", lambda *_: self._render_steps())
+        group.add(self.detach_row)
         return group
 
     def _plan_group(self):
@@ -607,6 +826,9 @@ class ConnectDialog(Adw.Dialog):
                 return
             if folder and folder.get_path():
                 self.path = folder.get_path()
+                self._syncing = True
+                self.detach_row.set_active(False)   # a different folder, a different question
+                self._syncing = False
                 self._sync_folder_row()
                 self._schedule()
 
@@ -775,6 +997,13 @@ class ConnectDialog(Adw.Dialog):
             )
             self.push_row.set_title(f"Push {plan.push_branch} afterwards")
             self.push_row.set_active(plan.push_default)
+        self.detach_row.set_visible(plan.can_detach)
+        if plan.can_detach:
+            # Whatever the switch is already set to is left alone: the plan is
+            # rebuilt on every keystroke in the remote name, and an answer the
+            # user gave should not be taken back by one of those.
+            self.detach_row.set_title(f"Take it out of {_parent_name(plan.local)}")
+            self.detach_row.set_subtitle(_detach_summary(plan.local))
         self._syncing = False
         self._render_steps()
 
@@ -799,6 +1028,8 @@ class ConnectDialog(Adw.Dialog):
                 f"Push {plan.push_branch} to {plan.remote_name}",
                 "Your commits go to GitHub, and the branch starts tracking.",
             ))
+        if plan.can_detach and self.detach_row.get_active():
+            steps.extend(_detach_steps(plan))
         self.plan_group.set_description(
             f"{tilde(plan.local.path)}  ↔  {plan.remote.nwo}"
         )
@@ -818,6 +1049,7 @@ class ConnectDialog(Adw.Dialog):
         if not plan or not plan.ready:
             return
         push = bool(plan.push_branch) and self.push_row.get_active()
+        plan.detach = plan.can_detach and self.detach_row.get_active()
         self.connect_btn.set_sensitive(False)
         self.connect_btn.set_label("Connecting…")
         self.set_can_close(False)

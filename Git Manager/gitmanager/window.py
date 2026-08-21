@@ -746,6 +746,9 @@ class MainWindow(Adw.ApplicationWindow):
                 return
             if gitcmd.is_repo(path):
                 top = gitcmd.toplevel(path)
+                if os.path.realpath(top) != os.path.realpath(path):
+                    self._folder_inside_repo(path, top)
+                    return
                 if any(s.path == top for s in self.states):
                     widgets.toast(self, "Already in the list")
                     self.adopt_path(top)
@@ -757,6 +760,45 @@ class MainWindow(Adw.ApplicationWindow):
                 self._not_a_repo(path)
 
         chooser.select_folder(self, None, picked)
+
+    def _folder_inside_repo(self, path, top):
+        """A folder that is part of a repository, rather than being one.
+
+        Adding it adds the repository around it, under a name the user did
+        not pick — which looks like the app ignoring the folder they chose.
+        The other reading, that this folder is about to become a project of
+        its own, is just as ordinary, so it is a question rather than a guess.
+        """
+        name = os.path.basename(top.rstrip("/")) or top
+        dialog = Adw.AlertDialog(
+            heading="Inside another repository",
+            body=f"{filesystem.tilde(path)} is part of the repository at "
+                 f"{filesystem.tilde(top)}, so that is what adding it would add.\n\n"
+                 "It can become a repository in its own right instead — git allows "
+                 "one inside another — and Connect to GitHub… writes out what that "
+                 f"leaves {name} tracking before anything is created.",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("parent", f"Add {name}")
+        dialog.add_response("connect", "Connect it to GitHub…")
+        dialog.set_response_appearance("connect", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("connect")
+        dialog.set_close_response("cancel")
+
+        def answered(dlg, result):
+            answer = dlg.choose_finish(result)
+            if answer == "connect":
+                self.connect_github(path)
+            elif answer == "parent":
+                if any(s.path == top for s in self.states):
+                    widgets.toast(self, "Already in the list")
+                    self.adopt_path(top)
+                    return
+                state = self.adopt_path(top)
+                if state:
+                    widgets.toast(self, f"Added {state.name}")
+
+        dialog.choose(self, None, answered)
 
     def _not_a_repo(self, path):
         """A folder with no .git in it. Ask which of the three things was meant.

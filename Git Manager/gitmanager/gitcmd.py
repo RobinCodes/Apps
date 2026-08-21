@@ -211,6 +211,14 @@ def is_repo(path):
         return False
 
 
+def in_git_dir(path):
+    """True inside .git itself, the one place a repository must never be made."""
+    try:
+        return git(path, "rev-parse", "--is-inside-git-dir").strip() == "true"
+    except (GitError, OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def toplevel(path):
     return git(path, "rev-parse", "--show-toplevel").strip()
 
@@ -752,6 +760,22 @@ def _batched(paths, size=_ARG_BATCH):
 def tracked_files(repo):
     """Every path in the index. These are the ones .gitignore cannot touch."""
     out = git(repo, "ls-files", "-z")
+    return [p for p in out.split("\0") if p]
+
+
+def literal(path):
+    """A pathspec matching this exact path, `*`, `?` and `[` included.
+
+    git reads a bare path as a glob, so a folder called `notes[1]` matches
+    `notes1` and not itself. Any path taken from disk goes through here before
+    it is handed to a command that would act on what it matched.
+    """
+    return f":(literal){path}"
+
+
+def tracked_under(repo, rel):
+    """Index entries under one directory. Empty when nothing there is tracked."""
+    out = git(repo, "ls-files", "-z", "--", literal(rel))
     return [p for p in out.split("\0") if p]
 
 
