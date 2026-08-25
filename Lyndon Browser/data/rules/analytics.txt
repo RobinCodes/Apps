@@ -1,0 +1,79 @@
+! Lyndon — built-in analytics rules
+! Page-view and product-analytics collectors. Blocking these is what removes
+! most of the "why is this page still loading" tail on news sites.
+
+! -- Google ----------------------------------------------------------------
+||google-analytics.com^
+||googletagmanager.com^
+||analytics.google.com^
+||stats.g.doubleclick.net^
+||ssl.google-analytics.com^
+||region1.google-analytics.com^
+||region1.analytics.google.com^
+
+! -- Adobe -----------------------------------------------------------------
+||adobedtm.com^
+||2o7.net^
+||sc.omtrdc.net^
+||assets.adobedtm.com^
+||demdex.net/dest^
+
+! -- Product analytics -----------------------------------------------------
+||mixpanel.com^
+||cdn.mxpnl.com^
+||amplitude.com^
+||api.amplitude.com^
+||cdn.amplitude.com^
+||heapanalytics.com^
+||heap.io^
+||pendo.io^
+||fullstory.com/s^
+||posthog.com^
+||i.posthog.com^
+||statsigapi.net^
+||split.io^
+||optimizely.com^
+||optimizelyapis.com^
+||visualwebsiteoptimizer.com^
+||dev.visualwebsiteoptimizer.com^
+||abtasty.com^
+||dynamicyield.com^
+||monetate.net^
+||maxymiser.net^
+
+! -- Web analytics vendors -------------------------------------------------
+||chartbeat.com^
+||chartbeat.net^
+||parsely.com^
+||parse.ly^
+||statcounter.com^
+||getclicky.com^
+||clicky.com^
+||histats.com^
+||hitslink.com^
+||webtrends.com^
+||wt-safetag.com^
+||comscore.com^
+||effectivemeasure.net^
+||alexametrics.com^
+||similarweb.com/collect^
+||cxense.com^
+||gemius.pl^
+||hit.gemius.pl^
+||top-fwz1.mail.ru^
+||tns-counter.ru^
+||liveinternet.ru^
+||openstat.net^
+||piwik.pro^
+||matomo.cloud^
+||plausible.io/api/event^
+||cdn.usefathom.com^
+||sc-static.net/scevent^
+
+! -- Performance monitoring that doubles as user tracking -------------------
+||nr-data.net^
+||bam.nr-data.net^
+||js-agent.newrelic.com^
+||browser-intake-datadoghq.com^
+||rum.datadoghq.com^
+||cdn.speedcurve.com^

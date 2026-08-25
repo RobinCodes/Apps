@@ -1,0 +1,58 @@
+! Lyndon — built-in social widget rules
+! Like buttons, share bars and embed SDKs that report a visit even when nobody
+! clicks them. Note this does not block the social networks themselves — only
+! their off-site beacons.
+
+! -- Meta ------------------------------------------------------------------
+||connect.facebook.net^
+||facebook.com/tr^
+||facebook.com/plugins^$third-party
+||facebook.net/signals^
+||fbcdn.net/signals^
+||instagram.com/embed.js^$third-party
+
+! -- X / Twitter -----------------------------------------------------------
+||platform.twitter.com^
+||syndication.twitter.com^
+||analytics.twitter.com^
+||ads-twitter.com^
+||static.ads-twitter.com^
+||t.co/i/adsct^
+
+! -- LinkedIn --------------------------------------------------------------
+||platform.linkedin.com^
+||snap.licdn.com^
+||px.ads.linkedin.com^
+
+! -- TikTok, Snap, Pinterest, Reddit ---------------------------------------
+||analytics.tiktok.com^
+||business-api.tiktok.com^
+||tr.snapchat.com^
+||sc-static.net^
+||ct.pinterest.com^
+||log.pinterest.com^
+||events.reddit.com^
+||alb.reddit.com^
+||redditstatic.com/ads^
+
+! -- Share bars ------------------------------------------------------------
+||addthis.com^
+||addthisedge.com^
+||sharethis.com^
+||addtoany.com^
+||po.st^
+||sharethrough.com^
+||shareaholic.com^
+||gigya.com^
+
+! -- VK, Yandex, Weibo -----------------------------------------------------
+||vk.com/rtrg^
+||top100.rambler.ru^
+||tags.tiqcdn.com/utag/*/utag.sync.js
+
+! -- Widget shells left behind after blocking ------------------------------
+##.fb-like
+##.twitter-share-button
+##.addthis_toolbox
+##.sharethis-inline-share-buttons
+##div[class^="social-share"]

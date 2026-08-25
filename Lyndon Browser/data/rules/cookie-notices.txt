@@ -1,0 +1,63 @@
+! Lyndon — consent banners and the CMPs behind them
+! Blocking the CMP script usually removes the banner outright. Because no
+! consent dialog ever appears, nothing is consented to — which is the point.
+
+! -- Consent management platforms ------------------------------------------
+||cookielaw.org^
+||onetrust.com^
+||cdn.cookielaw.org^
+||geolocation.onetrust.com^
+||cookiebot.com^
+||consent.cookiebot.com^
+||consentcdn.cookiebot.com^
+||cookie-script.com^
+||cookieyes.com^
+||cdn-cookieyes.com^
+||termly.io^
+||iubenda.com^
+||cdn.iubenda.com^
+||usercentrics.eu^
+||app.usercentrics.eu^
+||privacy-mgmt.com^
+||sp-prod.net^
+||summerhamster.com^
+||trustarc.com^
+||consent.trustarc.com^
+||truste.com^
+||didomi.io^
+||sdk.privacy-center.org^
+||osano.com^
+||cmp.osano.com^
+||consensu.org^
+||quantcast.mgr.consensu.org^
+||cdn.civiccomputing.com^
+||cookiefirst.com^
+||cookiehub.net^
+||cookiepro.com^
+||consentmanager.net^
+||delivery.consentmanager.net^
+||klaro.org^
+||secureprivacy.ai^
+||enzuzo.com^
+
+! -- The banners themselves, for sites that inline their own -----------------
+##div[id^="onetrust-"]
+###onetrust-consent-sdk
+##.onetrust-pc-dark-filter
+###CybotCookiebotDialog
+###CybotCookiebotDialogBodyUnderlay
+##.cc-window
+##.cc-banner
+##.cookie-consent-banner
+##.cookie-notice-container
+###cookie-law-info-bar
+##.gdpr-banner
+##.gdpr-cookie-notice
+##div[class*="CookieConsent"]
+##div[aria-label="Cookie banner"]
+##div[aria-label="cookieconsent"]
+##.qc-cmp2-container
+##.qc-cmp-cleanslate
+##.didomi-popup-container
+###didomi-host
+##.termly-styles-root

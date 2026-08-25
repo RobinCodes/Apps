@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Lyndon
+GenericName=Web Browser
+Comment=A small, fast, private native browser
+Exec=lyndon %U
+Icon=org.lyndon.Browser
+Terminal=false
+Categories=Network;WebBrowser;GTK;
+Keywords=web;browser;internet;www;privacy;adblock;
+StartupNotify=true
+StartupWMClass=lyndon
+Actions=new-window;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/about;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=lyndon

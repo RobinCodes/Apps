@@ -1,0 +1,70 @@
+! Lyndon — annoyances (off by default)
+! Newsletter interstitials, push-notification nags, app-install interruptions
+! and paywall overlays. This is the list most likely to take a working page
+! down with it, which is why it ships disabled.
+
+! -- Newsletter and popup vendors ------------------------------------------
+||optinmonster.com^
+||opmnstr.com^
+||sumo.com^
+||sumome.com^
+||privy.com^
+||wisepops.com^
+||mailmunch.co^
+||getsitecontrol.com^
+||popupsmart.com^
+||justuno.com^
+||sleeknote.com^
+||wheelio-app.com^
+||exitintel.com^
+||picreel.com^
+||bounceexchange.com^
+
+! -- Push-notification nags ------------------------------------------------
+||onesignal.com^
+||cdn.onesignal.com^
+||pushcrew.com^
+||pushengage.com^
+||izooto.com^
+||webpushr.com^
+||cleverpush.com^
+||subscribers.com^
+||truepush.com^
+||pushnami.com^
+||sendpulse.com^
+||gravitec.net^
+||pushowl.com^
+
+! -- Chat widgets that load half a megabyte before you ask ------------------
+||intercom.io^$third-party
+||widget.intercom.io^
+||drift.com^$third-party
+||driftt.com^
+||tawk.to^
+||zopim.com^
+||livechatinc.com^$third-party
+||olark.com^
+||purechat.com^
+||crisp.chat^$third-party
+
+! -- App-install interstitials ---------------------------------------------
+||branch.io/journeys^
+||smartbanner.js
+||app.adjust.com/banner^
+
+! -- Overlay and paywall markup --------------------------------------------
+##.newsletter-modal
+##.newsletter-signup-overlay
+##div[class*="paywall-overlay"]
+##.subscribe-interrupt
+##.piano-modal
+##.tp-modal
+##.tp-backdrop
+##.optinmonster-overlay
+##.om-holder
+##div[id^="sumome-"]
+##.modal-backdrop.newsletter
+##.push-notification-prompt
+##.app-install-banner
+##.smartbanner
+##.exit-intent-overlay

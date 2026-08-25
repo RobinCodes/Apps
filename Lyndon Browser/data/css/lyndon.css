@@ -1,0 +1,331 @@
+/* lyndon.css — chrome styling.
+ *
+ * Three effect levels, switched by a class on the window:
+ *   .fx-full     translucent chrome, soft shadows, transitions
+ *   .fx-reduced  opaque chrome, shadows, transitions
+ *   .fx-off      opaque, flat, no transitions at all
+ *
+ * Translucency here means the toolbars are painted with alpha and the window
+ * surface is left clear behind them. If the compositor blurs what is behind a
+ * window (picom, KWin, Hyprland, mutter with an extension) that blur shows
+ * through for free; if it does not, the result degrades to a clean tint rather
+ * than to something broken. Web content is never translucent.
+ */
+
+/* ------------------------------------------------------------- surfaces */
+
+window.lyndon {
+  background-color: @window_bg_color;
+}
+
+window.lyndon.fx-full {
+  background-color: transparent;
+}
+
+.lyndon-chrome {
+  background-color: @headerbar_bg_color;
+  border-bottom: 1px solid color-mix(in srgb, @borders 70%, transparent);
+}
+
+.fx-full .lyndon-chrome {
+  background-color: alpha(@headerbar_bg_color, 0.78);
+}
+
+/* The web view sits on a solid backdrop so pages never show the desktop. */
+.lyndon-content {
+  background-color: @view_bg_color;
+}
+
+/* ------------------------------------------------------------ header bar */
+
+.lyndon-chrome headerbar {
+  background: none;
+  border: none;
+  box-shadow: none;
+  min-height: 42px;
+  padding: 0 6px;
+}
+
+.lyndon-compact .lyndon-chrome headerbar {
+  min-height: 36px;
+}
+
+.lyndon-chrome headerbar button.image-button,
+.lyndon-chrome headerbar button.toggle {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  margin: 0 1px;
+  border-radius: 9px;
+  background: none;
+  box-shadow: none;
+  border: none;
+  color: alpha(currentColor, 0.78);
+}
+
+.lyndon-chrome headerbar button.image-button:hover,
+.lyndon-chrome headerbar button.toggle:hover {
+  background-color: alpha(currentColor, 0.09);
+  color: currentColor;
+}
+
+.lyndon-chrome headerbar button.image-button:active {
+  background-color: alpha(currentColor, 0.16);
+}
+
+.lyndon-chrome headerbar button.image-button:disabled {
+  color: alpha(currentColor, 0.28);
+  background: none;
+}
+
+/* --------------------------------------------------------- address bar */
+
+.lyndon-url {
+  min-height: 32px;
+  border-radius: 16px;
+  padding: 0 4px 0 10px;
+  margin: 0 4px;
+  background-color: alpha(@view_bg_color, 0.6);
+  border: 1px solid transparent;
+  box-shadow: none;
+  outline: none;
+  caret-color: @accent_color;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.fx-off .lyndon-url { transition: none; }
+
+.lyndon-url:hover {
+  background-color: alpha(@view_bg_color, 0.85);
+}
+
+.lyndon-url:focus-within {
+  background-color: @view_bg_color;
+  border-color: alpha(@accent_bg_color, 0.55);
+  box-shadow: 0 0 0 2px alpha(@accent_bg_color, 0.18);
+}
+
+.fx-off .lyndon-url:focus-within { box-shadow: none; }
+
+.lyndon-url text {
+  color: @view_fg_color;
+}
+
+/* The scheme and path are dimmed so the registrable domain is what the eye
+ * lands on — the only part of a URL that tells you where you actually are. */
+.lyndon-url text selection {
+  background-color: alpha(@accent_bg_color, 0.35);
+}
+
+.lyndon-url image.security-secure   { color: @success_color; }
+.lyndon-url image.security-insecure { color: @warning_color; }
+.lyndon-url image.security-internal { color: alpha(currentColor, 0.5); }
+
+.lyndon-progress {
+  min-height: 2px;
+  background: none;
+  border: none;
+}
+
+.lyndon-progress trough {
+  min-height: 2px;
+  background: none;
+  border: none;
+}
+
+.lyndon-progress progress {
+  min-height: 2px;
+  border-radius: 1px;
+  background-image: linear-gradient(to right,
+                    alpha(@accent_bg_color, 0.65), @accent_bg_color);
+}
+
+/* -------------------------------------------------------------- shield */
+
+.lyndon-shield {
+  min-width: 30px;
+  min-height: 30px;
+  border-radius: 9px;
+  padding: 0;
+}
+
+.lyndon-shield.active   { color: @accent_color; }
+.lyndon-shield.paused   { color: @warning_color; }
+.lyndon-shield.inactive { color: alpha(currentColor, 0.4); }
+
+.lyndon-shield-count {
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-feature-settings: "tnum" 1;
+  padding: 1px 5px;
+  border-radius: 7px;
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+}
+
+/* ------------------------------------------------------------- tab bar */
+
+.lyndon-chrome tabbar {
+  background: none;
+}
+
+.lyndon-chrome tabbar .box {
+  padding: 0 4px 3px;
+}
+
+.lyndon-chrome tabbar tabbox > tab {
+  min-height: 30px;
+  border-radius: 9px;
+  margin: 0 1px;
+  padding: 0 6px;
+  font-size: 0.92rem;
+  border: none;
+  box-shadow: none;
+  background: none;
+  color: alpha(currentColor, 0.7);
+  transition: background-color 130ms ease;
+}
+
+.fx-off .lyndon-chrome tabbar tabbox > tab { transition: none; }
+
+.lyndon-chrome tabbar tabbox > tab:hover {
+  background-color: alpha(currentColor, 0.07);
+  color: currentColor;
+}
+
+.lyndon-chrome tabbar tabbox > tab:checked {
+  background-color: alpha(@view_bg_color, 0.9);
+  color: currentColor;
+  box-shadow: 0 1px 2px alpha(@shade_color, 0.5);
+}
+
+.fx-off .lyndon-chrome tabbar tabbox > tab:checked { box-shadow: none; }
+
+/* ------------------------------------------------------------- popovers */
+
+popover.lyndon-panel > contents {
+  border-radius: 14px;
+  padding: 6px;
+  min-width: 300px;
+}
+
+.fx-full popover.lyndon-panel > contents {
+  background-color: alpha(@popover_bg_color, 0.94);
+}
+
+.lyndon-panel-title {
+  font-weight: 700;
+  font-size: 0.82rem;
+  opacity: 0.55;
+  padding: 6px 8px 2px;
+}
+
+.lyndon-panel row {
+  border-radius: 9px;
+  min-height: 34px;
+}
+
+.lyndon-stat-value {
+  font-feature-settings: "tnum" 1;
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------- find bar */
+
+.lyndon-findbar {
+  padding: 5px 8px;
+  border-top: 1px solid color-mix(in srgb, @borders 70%, transparent);
+  background-color: @headerbar_bg_color;
+}
+
+.fx-full .lyndon-findbar {
+  background-color: alpha(@headerbar_bg_color, 0.9);
+}
+
+.lyndon-find-count {
+  font-size: 0.85rem;
+  opacity: 0.6;
+  font-feature-settings: "tnum" 1;
+  padding: 0 6px;
+}
+
+/* ------------------------------------------------------------ overlays */
+
+.lyndon-permission {
+  margin: 8px;
+  border-radius: 14px;
+}
+
+.lyndon-download-row {
+  padding: 4px 2px;
+}
+
+.lyndon-dim { opacity: 0.55; }
+
+.lyndon-monospace {
+  font-family: monospace;
+  font-size: 0.86rem;
+}
+
+/* Stop every animation when the user has asked for the cheapest rendering. */
+.fx-off * {
+  transition: none;
+  animation: none;
+}
+
+/* ------------------------------------------------------- bookmarks bar */
+
+.lyndon-bookmarks-bar {
+  padding: 1px 6px 4px;
+}
+
+.lyndon-bookmarks-bar button.lyndon-bookmark {
+  min-height: 24px;
+  padding: 1px 8px;
+  border-radius: 7px;
+  font-size: 0.88rem;
+  background: none;
+  box-shadow: none;
+  border: none;
+  color: alpha(currentColor, 0.82);
+}
+
+.lyndon-bookmarks-bar button.lyndon-bookmark:hover {
+  background-color: alpha(currentColor, 0.09);
+  color: currentColor;
+}
+
+.lyndon-bookmarks-bar > label {
+  padding: 2px 8px;
+}
+
+/* ---------------------------------------------------------- zoom chip */
+
+.lyndon-zoom-chip {
+  min-height: 22px;
+  min-width: 0;
+  padding: 0 7px;
+  margin: 0 1px;
+  border-radius: 11px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-feature-settings: "tnum" 1;
+  background-color: alpha(@accent_bg_color, 0.16);
+  color: @accent_color;
+  box-shadow: none;
+  border: none;
+}
+
+.lyndon-zoom-chip:hover {
+  background-color: alpha(@accent_bg_color, 0.28);
+}
+
+/* A private window says so without a banner taking a row of its own. */
+.lyndon-private .lyndon-chrome {
+  background-image: linear-gradient(to bottom,
+                    alpha(@purple_3, 0.20), alpha(@purple_3, 0.06));
+}
+
+.lyndon-private .lyndon-url {
+  border-color: alpha(@purple_2, 0.45);
+}

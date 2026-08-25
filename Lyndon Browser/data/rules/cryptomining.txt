@@ -1,0 +1,27 @@
+! Lyndon — in-browser cryptominers
+||coinhive.com^
+||coin-hive.com^
+||authedmine.com^
+||cnhv.co^
+||jsecoin.com^
+||load.jsecoin.com^
+||crypto-loot.com^
+||cryptoloot.pro^
+||coinimp.com^
+||www.coinimp.com^
+||webminepool.com^
+||minero.cc^
+||minero-proxy*.sh^
+||webmine.cz^
+||webmine.pro^
+||monerise.com^
+||coinpot.co^
+||minemytraffic.com^
+||ppoi.org^
+||cryptobara.com^
+||nfwebminer.com^
+||miner.pr0gramm.com^
+||projectpoi.com^
+/coinhive.min.js
+/deepminer.js
+/cryptonight.wasm

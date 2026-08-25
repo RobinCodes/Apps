@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lyndon</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg:      #fbfbfd;
+    --fg:      #16161a;
+    --muted:   #6b6b78;
+    --line:    rgba(0,0,0,.08);
+    --card:    rgba(255,255,255,.72);
+    --accent:  #4d6bfe;
+    --shadow:  0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:     #111114;
+      --fg:     #eceef4;
+      --muted:  #9a9aa8;
+      --line:   rgba(255,255,255,.09);
+      --card:   rgba(255,255,255,.045);
+      --accent: #8ea2ff;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.5 system-ui, "Cantarell", "Inter", -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* A single very soft light source, positioned off-centre. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: -30%;
+    background: radial-gradient(50% 45% at 50% 12%,
+                color-mix(in oklab, var(--accent) 16%, transparent), transparent 70%);
+    pointer-events: none;
+  }
+
+  main { position: relative; width: min(640px, 88vw); text-align: center; }
+
+  .mark {
+    display: inline-flex; align-items: center; gap: .6rem;
+    font-size: 2rem; font-weight: 600; letter-spacing: -.03em;
+    margin-bottom: .35rem;
+  }
+  .mark svg { width: 30px; height: 30px; }
+
+  .tagline { color: var(--muted); font-size: .92rem; margin: 0 0 2.4rem; }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: .75rem;
+    margin-bottom: 2.2rem;
+  }
+  .stat {
+    padding: 1rem .75rem;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--card);
+    backdrop-filter: blur(12px);
+    box-shadow: var(--shadow);
+  }
+  .stat b {
+    display: block;
+    font-size: 1.45rem;
+    font-weight: 600;
+    letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat span { font-size: .74rem; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+
+  .hint {
+    display: inline-flex; align-items: center; gap: .5rem;
+    color: var(--muted); font-size: .85rem;
+  }
+  kbd {
+    font: inherit; font-size: .78rem;
+    padding: .15rem .45rem;
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 6px;
+    background: var(--card);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    main { animation: rise .45s cubic-bezier(.2,.7,.3,1) both; }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark">
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M12 2.75c-3 3.4-3 15.1 0 18.5M12 2.75c3 3.4 3 15.1 0 18.5"
+            stroke="currentColor" stroke-width="1.3" opacity=".55"/>
+      <path d="M3.2 9h17.6M3.2 15h17.6" stroke="currentColor" stroke-width="1.3" opacity=".55"/>
+    </svg>
+    Lyndon
+  </div>
+  <p class="tagline" id="tagline">Quiet by default.</p>
+
+  <div class="stats">
+    <div class="stat"><b id="s-rules">—</b><span>Rules active</span></div>
+    <div class="stat"><b id="s-cookies">—</b><span>Cookies</span></div>
+    <div class="stat"><b id="s-dark">—</b><span>Appearance</span></div>
+  </div>
+
+  <p class="hint">Start typing in the address bar &nbsp;<kbd>Ctrl</kbd>&nbsp;<kbd>L</kbd></p>
+</main>
+
+<script>
+  /* Filled in by the browser right after load; see tab.c. */
+  window.lyndonStats = function (s) {
+    var set = function (id, v) {
+      var el = document.getElementById(id);
+      if (el && v != null) el.textContent = v;
+    };
+    set('s-rules',   s.rules);
+    set('s-cookies', s.cookies);
+    set('s-dark',    s.appearance);
+    if (s.tagline) set('tagline', s.tagline);
+  };
+</script>
+</body>
+</html>

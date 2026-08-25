@@ -1,0 +1,5 @@
+build/
+lyndon
+tests/test-abp
+*.o
+*.d

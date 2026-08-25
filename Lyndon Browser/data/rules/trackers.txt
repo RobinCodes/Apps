@@ -1,0 +1,111 @@
+! Lyndon — built-in tracker rules
+! Cross-site identity graphs, data brokers, cookie-sync endpoints and session
+! recorders. These domains exist only to follow people between sites.
+
+! -- Identity resolution and cookie syncing --------------------------------
+||liadm.com^
+||liveramp.com^
+||rlcdn.com^
+||id5-sync.com^
+||crwdcntrl.net^
+||tapad.com^
+||exelator.com^
+||eyeota.net^
+||semasio.net^
+||adsymptotic.com^
+||rfihub.com^
+||sitescout.com^
+||simpli.fi^
+||intentiq.com^
+||permutive.com^
+||blueconic.net^
+||demdex.net^
+||omtrdc.net^
+||krxd.net^
+||nexac.com^
+||tremorhub.com^
+||thebrighttag.com^
+||btstatic.com^
+||bttrack.com^
+||adhigh.net^
+||adingo.jp^
+||zqtk.net^
+||dpm.demdex.net^
+
+! -- Beacons and pixels ----------------------------------------------------
+||scorecardresearch.com^
+||quantserve.com^
+||quantcast.com^
+||bounceexchange.com^
+||bounceexchange.net^
+||branch.io^
+||app.link^
+||appsflyer.com^
+||adjust.com^
+||adjust.io^
+||kochava.com^
+||singular.net^
+||attribution.io^
+||tealiumiq.com^
+||mparticle.com^
+||segment.com^
+||segment.io^
+||cdn.segment.com^
+||api.segment.io^
+||rudderstack.com^
+||snowplowanalytics.com^
+
+! -- Session replay and behavioural recording ------------------------------
+||hotjar.com^
+||hotjar.io^
+||mouseflow.com^
+||luckyorange.com^
+||luckyorange.net^
+||inspectlet.com^
+||crazyegg.com^
+||clicktale.net^
+||sessioncam.com^
+||smartlook.com^
+||fullstory.com^
+||fs.quantummetric.com^
+||quantummetric.com^
+||contentsquare.net^
+||decibelinsight.net^
+||glassboxdigital.io^
+||logrocket.io^
+||lr-ingest.io^
+||mouseStats.com^
+||yandex.ru/clck^
+||mc.yandex.ru^
+||yandex.ru/metrika^
+
+! -- Fingerprinting-as-a-service -------------------------------------------
+||fingerprintjs.com^
+||fpjs.io^
+||fpapi.io^
+||iovation.com^
+||threatmetrix.com^
+||online-metrix.net^
+||perimeterx.net^
+||px-cloud.net^
+||distilnetworks.com^
+||siftscience.com^
+||sift.com/js^
+
+! -- Email and link tracking -----------------------------------------------
+||mailchimp.com/tracking^
+||list-manage.com/track^
+||sendgrid.net/wf/open^
+||mandrillapp.com/track^
+||sparkpostmail.com/f/open^
+||hubspot.com/__ptq.gif^
+||track.hubspot.com^
+||mixmax.com/api/track^
+||bananatag.net^
+||yesware.com^
+||streak.com/api/pixel^
+
+! -- Cookie-stripping only: these are needed for the page but must not carry
+! -- a stable identifier across sites.
+||bat.bing.com^$third-party
+||ads.linkedin.com^$third-party

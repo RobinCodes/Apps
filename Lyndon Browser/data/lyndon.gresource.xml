@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/org/lyndon/Browser">
+    <file compressed="true">css/lyndon.css</file>
+  </gresource>
+  <gresource prefix="/org/lyndon/Browser/web">
+    <file compressed="true" alias="start.html">web/start.html</file>
+    <file compressed="true" alias="force-dark.css">web/force-dark.css</file>
+  </gresource>
+  <gresource prefix="/org/lyndon/Browser/rules">
+    <file compressed="true" alias="ads.txt">rules/ads.txt</file>
+    <file compressed="true" alias="trackers.txt">rules/trackers.txt</file>
+    <file compressed="true" alias="analytics.txt">rules/analytics.txt</file>
+    <file compressed="true" alias="social.txt">rules/social.txt</file>
+    <file compressed="true" alias="annoyances.txt">rules/annoyances.txt</file>
+    <file compressed="true" alias="cookie-notices.txt">rules/cookie-notices.txt</file>
+    <file compressed="true" alias="cryptomining.txt">rules/cryptomining.txt</file>
+  </gresource>
+</gresources>

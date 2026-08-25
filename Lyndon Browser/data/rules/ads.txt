@@ -1,0 +1,128 @@
+! Lyndon — built-in advertising rules
+! Hand-curated: the ad exchanges and creative servers responsible for the bulk
+! of requests on a typical page. Subscribe to EasyList in Settings for the long
+! tail; this list is here so a fresh install blocks something on first launch.
+
+! -- Google / Alphabet ------------------------------------------------------
+||doubleclick.net^
+||googlesyndication.com^
+||googleadservices.com^
+||2mdn.net^
+||googletagservices.com^
+||adservice.google.com^
+||googleads.g.doubleclick.net^
+||partner.googleadservices.com^
+
+! -- Amazon ----------------------------------------------------------------
+||amazon-adsystem.com^
+||assoc-amazon.com^
+||adtago.s3.amazonaws.com^
+
+! -- Exchanges and SSPs ----------------------------------------------------
+||adnxs.com^
+||adnxs-simple.com^
+||rubiconproject.com^
+||pubmatic.com^
+||openx.net^
+||openx.com^
+||casalemedia.com^
+||indexexchange.com^
+||districtm.io^
+||sovrn.com^
+||lijit.com^
+||smartadserver.com^
+||adform.net^
+||adformdsp.net^
+||yieldlab.net^
+||yieldmo.com^
+||triplelift.com^
+||sharethrough.com^
+||gumgum.com^
+||33across.com^
+||conversantmedia.com^
+||dotomi.com^
+||bidswitch.net^
+||adsrvr.org^
+||mathtag.com^
+||rlcdn.com^
+||agkn.com^
+||bluekai.com^
+||spotxchange.com^
+||spotx.tv^
+||teads.tv^
+||media.net^
+||contextweb.com^
+||bidr.io^
+||adroll.com^
+||adrta.com^
+||360yield.com^
+||improvedigital.com^
+||stickyadstv.com^
+||smaato.net^
+||inmobi.com^
+||applovin.com^
+||unityads.unity3d.com^
+||vungle.com^
+||mopub.com^
+
+! -- Retargeting and native ------------------------------------------------
+||criteo.com^
+||criteo.net^
+||taboola.com^
+||taboolasyndication.com^
+||outbrain.com^
+||zemanta.com^
+||revcontent.com^
+||mgid.com^
+||plista.com^
+||nativery.com^
+||engageya.com^
+
+! -- Verification and viewability ------------------------------------------
+||adsafeprotected.com^
+||moatads.com^
+||moatpixel.com^
+||doubleverify.com^
+||serving-sys.com^
+||flashtalking.com^
+||everesttech.net^
+||iasds01.com^
+
+! -- Low-quality and popunder networks -------------------------------------
+||propellerads.com^
+||propellerpops.com^
+||popads.net^
+||popcash.net^
+||adcash.com^
+||exoclick.com^
+||exosrv.com^
+||juicyads.com^
+||trafficjunky.com^
+||trafficfactory.biz^
+||zedo.com^
+||adsterra.com^
+||hilltopads.net^
+||clickadu.com^
+||onclickalgo.com^
+||adnium.com^
+||adsupply.com^
+
+! -- Generic paths ---------------------------------------------------------
+||*/adserver/*$script,image,subdocument
+/pagead/js/adsbygoogle.js
+/googlesyndication.com/pagead/*
+||*/prebid.js|$script
+/^https?:\/\/[a-z0-9-]+\.adtech\./
+
+! -- Common ad slot markup -------------------------------------------------
+##.adsbygoogle
+##ins.adsbygoogle
+##div[id^="google_ads_iframe"]
+##iframe[id^="google_ads_iframe"]
+##iframe[src*="doubleclick.net"]
+##iframe[src*="googlesyndication.com"]
+##div[class^="ad-slot"]
+##div[id^="div-gpt-ad"]
+##.taboola-container
+##.OUTBRAIN
+##.outbrain-widget

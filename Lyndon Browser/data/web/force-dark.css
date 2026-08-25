@@ -1,0 +1,58 @@
+/* force-dark.css — injected as a USER stylesheet when "enforce dark on all
+ * sites" is on.
+ *
+ * The gate attribute is set by Lyndon, not by the page: in Smart mode a probe
+ * script measures what the site actually painted and only sets it when the
+ * page came out light, so sites with a real dark theme are left alone.
+ *
+ * Inversion is deliberately done at the root rather than by rewriting colours.
+ * It is the only approach that works on every site without a per-site
+ * stylesheet, and it costs one compositor pass rather than a style recalc. */
+
+html[data-lyndon-dark="invert"] {
+  filter: invert(1) hue-rotate(180deg) !important;
+  background-color: #ffffff !important;   /* inverts to near-black */
+
+  /* Counter-intuitive but correct: form controls and scrollbars are painted by
+   * the UA in light colours, then the root filter turns them dark. Asking for
+   * a dark scheme here would invert them back to light. */
+  color-scheme: light !important;
+}
+
+/* Anything whose real colours matter gets inverted a second time, which
+ * returns it to normal. Filters compose, so this is exact, not approximate. */
+html[data-lyndon-dark="invert"] img,
+html[data-lyndon-dark="invert"] video,
+html[data-lyndon-dark="invert"] picture,
+html[data-lyndon-dark="invert"] canvas,
+html[data-lyndon-dark="invert"] iframe,
+html[data-lyndon-dark="invert"] embed,
+html[data-lyndon-dark="invert"] object,
+html[data-lyndon-dark="invert"] svg image,
+html[data-lyndon-dark="invert"] [style*="background-image"],
+html[data-lyndon-dark="invert"] [data-lyndon-keep] {
+  filter: invert(1) hue-rotate(180deg) !important;
+}
+
+/* Icon fonts and inline SVG icons are line art: inverting them back would make
+ * them dark-on-dark, so they are left alone. */
+html[data-lyndon-dark="invert"] svg:not(:has(image)),
+html[data-lyndon-dark="invert"] i[class*="icon"],
+html[data-lyndon-dark="invert"] i[class*="fa-"],
+html[data-lyndon-dark="invert"] span[class*="material-icons"] {
+  filter: none !important;
+}
+
+/* A transparent-PNG logo on a now-dark background usually reads better
+ * un-inverted only if it had its own backdrop; when it did not, the double
+ * inversion above already handled it. Nothing more to do here — this rule
+ * exists to stop pages re-applying their own filter on top. */
+html[data-lyndon-dark="invert"] img[src$=".svg"] {
+  mix-blend-mode: normal;
+}
+
+/* Selection stays legible after inversion. */
+html[data-lyndon-dark="invert"] ::selection {
+  background-color: #b8c4ff !important;
+  color: #000000 !important;
+}
