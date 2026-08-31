@@ -227,7 +227,19 @@ def prompt(parent, heading, body, action_label, callback, placeholder="", text="
                 callback(value)
 
     dialog.choose(parent, None, answered)
-    GLib.idle_add(entry.grab_focus)
+
+    # Focus has to be taken after the dialog is up, or the default response
+    # button keeps it -- but the grab must happen exactly once. Gtk.Entry
+    # inherits gtk_widget_grab_focus's gboolean return, and returning True
+    # from an idle callback means G_SOURCE_CONTINUE: the source is never
+    # removed and re-grabs tens of thousands of times a second. Since
+    # grabbing focus on an entry also selects its contents, that reselected
+    # the text between every keystroke and ate what had just been typed.
+    def focus_entry():
+        entry.grab_focus()
+        return GLib.SOURCE_REMOVE
+
+    GLib.idle_add(focus_entry)
 
 
 def open_url(widget, url):
