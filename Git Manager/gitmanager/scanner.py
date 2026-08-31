@@ -14,9 +14,16 @@ import os
 import time
 from dataclasses import dataclass
 
-CACHE = os.path.join(
-    os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "git-manager", "repos.json"
-)
+from . import winenv
+
+# Where the last scan is kept, so the window has rows before the walk ends.
+# Computed at import, because a test points XDG_CACHE_HOME at a scratch
+# directory before importing this module. winenv is what knows where a cache
+# belongs on each platform; reading XDG_CACHE_HOME directly, as this did, put
+# the file in a Unix-shaped ~/.cache on Windows that nothing else in the app
+# uses. Under an XDG_CACHE_HOME override the path is unchanged, and so is it
+# on Linux.
+CACHE = os.path.join(winenv.cache_home("git-manager"), "repos.json")
 
 # Directory names never worth descending into. These are where the time goes.
 PRUNE_NAMES = {
@@ -107,7 +114,8 @@ def scan(roots, max_depth=8, on_found=None, should_stop=None, follow_symlinks=Fa
 
         is_repo, bare = _is_repo_dir(path)
         if is_repo:
-            ref = RepoRef(path=path, name=os.path.basename(path.rstrip("/")) or path, bare=bare)
+            path = winenv.canonical(path)
+            ref = RepoRef(path=path, name=os.path.basename(path) or path, bare=bare)
             found.append(ref)
             if on_found:
                 on_found(ref)
@@ -154,6 +162,7 @@ def load_cache():
     for r in data.get("repos", []):
         # Drop anything deleted or moved since the scan.
         if isinstance(r, dict) and r.get("path") and os.path.isdir(r["path"]):
-            out.append(RepoRef(path=r["path"], name=r.get("name") or os.path.basename(r["path"]),
+            path = winenv.canonical(r["path"])
+            out.append(RepoRef(path=path, name=r.get("name") or os.path.basename(path),
                                bare=bool(r.get("bare"))))
     return out

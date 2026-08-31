@@ -307,16 +307,41 @@ class MainWindow(Adw.ApplicationWindow):
             if not gitcmd.is_repo(path):
                 continue
             keep.append(path)
-            refs.append(scanner.RepoRef(path=path, name=os.path.basename(path.rstrip("/")) or path))
+            refs.append(scanner.RepoRef(path=path, name=os.path.basename(path) or path))
         if keep != self.cfg["extra_repos"]:
             self.cfg["extra_repos"] = keep
             self.cfg.save()
         return refs
 
+    def _hidden_keys(self):
+        """Forgotten repositories, dropped from the note once they disappear.
+
+        isdir rather than is_repo: this runs on every rescan, and a git
+        process per forgotten folder is a cost the answer doesn't need.
+        """
+        keep = [p for p in self.cfg["hidden_repos"] if os.path.isdir(p)]
+        if keep != self.cfg["hidden_repos"]:
+            self.cfg["hidden_repos"] = keep
+            self.cfg.save()
+        return {winenv.path_key(p) for p in keep}
+
     def _with_extras(self, refs):
-        """Scan results plus the hand-added repos the scan cannot reach."""
-        known = {r.path for r in refs}
-        merged = list(refs) + [r for r in self._extra_refs() if r.path not in known]
+        """Scan results plus hand-added repos, minus the ones told to go away.
+
+        The filter belongs here rather than on the scan results alone: a
+        forgotten repository inside a scan root is found again by the very
+        next walk, and the scan itself has nowhere to remember that it was
+        forgotten. Deduplication is by canonical path, because the same
+        repository reaches this from two sources that spell it differently.
+        """
+        hidden = self._hidden_keys()
+        merged, known = [], set()
+        for ref in list(refs) + self._extra_refs():
+            key = winenv.path_key(ref.path)
+            if key in hidden or key in known:
+                continue
+            known.add(key)
+            merged.append(ref)
         merged.sort(key=lambda r: r.name.lower())
         return merged
 
@@ -366,11 +391,17 @@ class MainWindow(Adw.ApplicationWindow):
 
         # Reselect whatever was open before the rescan, else the last session's.
         want = (self.selected.path if self.selected else "") or self.cfg["last_repo"]
-        target = next((s for s in states if s.path == want), None)
+        target = next((s for s in states if winenv.same_path(s.path, want)), None)
         if target and target.row:
             self.repo_list.select_row(target.row)
         elif states and not self.selected:
             self.repo_list.select_row(states[0].row)
+        if not self.selected:
+            # Forgetting the last row leaves nothing to select, and the tabs
+            # would otherwise go on showing a repository that is no longer
+            # listed. Only the constructor used to reach this state.
+            self.content_stack.set_visible_child_name("empty")
+            self._sync_header()
 
         self.queue.clear()
         for state in states:
@@ -404,12 +435,12 @@ class MainWindow(Adw.ApplicationWindow):
         except (gitcmd.GitError, OSError):
             widgets.toast(self, f"{path} is not inside a git repository")
             return
-        state = next((s for s in self.states if s.path == top), None)
+        state = next((s for s in self.states if winenv.same_path(s.path, top)), None)
         if state and state.row:
             self.repo_list.select_row(state.row)
         else:
-            # Outside every scan root — add it for this session.
-            state = RepoState(scanner.RepoRef(path=top, name=os.path.basename(top)))
+            # Outside every scan root, or forgotten — add it for this session.
+            state = RepoState(scanner.RepoRef(path=top, name=os.path.basename(top) or top))
             self.states.append(state)
             self._apply_repos([s.ref for s in sorted(self.states, key=lambda s: s.name.lower())])
             if state.row:
@@ -703,18 +734,54 @@ class MainWindow(Adw.ApplicationWindow):
         view.refresh()
 
     def _forget_folder(self):
-        """Drop a hand-added repository from the list. Nothing is deleted."""
+        """Drop a repository from the list. Nothing on disk is touched.
+
+        Two things have to happen, and the older version of this did only the
+        first. Dropping the hand-added entry is enough for a repository the
+        scan cannot reach; one that sits inside a scan root is found again on
+        the next walk, so it also takes a note in hidden_repos to stay gone.
+        """
         state = self.selected
         if not state:
             return
-        if state.path not in self.cfg["extra_repos"]:
-            widgets.toast(self, "This one comes from the scan — change the scan roots instead")
-            return
-        self.cfg["extra_repos"] = [p for p in self.cfg["extra_repos"] if p != state.path]
+        path, name = state.path, state.name
+        self.cfg["extra_repos"] = [p for p in self.cfg["extra_repos"]
+                                   if not winenv.same_path(p, path)]
+        self.cfg["hidden_repos"] = [p for p in self.cfg["hidden_repos"]
+                                    if not winenv.same_path(p, path)] + [path]
+        if winenv.same_path(self.cfg["last_repo"], path):
+            self.cfg["last_repo"] = ""
         self.cfg.save()
         self.selected = None
-        self._apply_repos([s.ref for s in self.states if s.path != state.path])
-        widgets.toast(self, f"Forgot {state.name}")
+        self._apply_repos([s.ref for s in self.states if not winenv.same_path(s.path, path)])
+        widgets.undo_toast(self, f"Forgot {name}", "Undo",
+                           lambda: self._remember_folder(path, name))
+
+    def _remember_folder(self, path, name):
+        """Put back what Forget removed — the other half of the toast.
+
+        The row comes back without waiting for a rescan, because the scan
+        takes seconds and the toast offering the undo is gone in six. Which
+        also means re-adding the entry: un-hiding alone would restore a
+        repository the scan can reach, and lose one it cannot on the next
+        walk. Listing a scanned repository as hand-added costs nothing — the
+        two are merged by path.
+        """
+        self.cfg["hidden_repos"] = [p for p in self.cfg["hidden_repos"]
+                                    if not winenv.same_path(p, path)]
+        if not any(winenv.same_path(p, path) for p in self.cfg["extra_repos"]):
+            self.cfg["extra_repos"] = self.cfg["extra_repos"] + [path]
+        self.cfg.save()
+        if not gitcmd.is_repo(path):
+            widgets.toast(self, f"{name} is no longer a repository")
+            return
+        if any(winenv.same_path(s.path, path) for s in self.states):
+            return
+        refs = [s.ref for s in self.states] + [scanner.RepoRef(path=path, name=name)]
+        self._apply_repos(refs)
+        state = next((s for s in self.states if winenv.same_path(s.path, path)), None)
+        if state and state.row:
+            self.repo_list.select_row(state.row)
 
     def adopt_path(self, path, select=True):
         """Make sure a repository is in the sidebar, and select it.
@@ -729,12 +796,17 @@ class MainWindow(Adw.ApplicationWindow):
             top = gitcmd.toplevel(path)
         except (gitcmd.GitError, OSError):
             return None
-        state = next((s for s in self.states if s.path == top), None)
+        # Adding a folder on purpose is also how a Forget is taken back.
+        if any(winenv.same_path(p, top) for p in self.cfg["hidden_repos"]):
+            self.cfg["hidden_repos"] = [p for p in self.cfg["hidden_repos"]
+                                        if not winenv.same_path(p, top)]
+            self.cfg.save()
+        state = next((s for s in self.states if winenv.same_path(s.path, top)), None)
         if state is None:
-            if top not in self.cfg["extra_repos"]:
+            if not any(winenv.same_path(p, top) for p in self.cfg["extra_repos"]):
                 self.cfg["extra_repos"] = self.cfg["extra_repos"] + [top]
                 self.cfg.save()
-            state = RepoState(scanner.RepoRef(path=top, name=os.path.basename(top)))
+            state = RepoState(scanner.RepoRef(path=top, name=os.path.basename(top) or top))
             self.states.append(state)
             self.states.sort(key=lambda s: s.name.lower())
             self._apply_repos([s.ref for s in self.states])
@@ -770,7 +842,7 @@ class MainWindow(Adw.ApplicationWindow):
                 if os.path.realpath(top) != os.path.realpath(path):
                     self._folder_inside_repo(path, top)
                     return
-                if any(s.path == top for s in self.states):
+                if any(winenv.same_path(s.path, top) for s in self.states):
                     widgets.toast(self, "Already in the list")
                     self.adopt_path(top)
                     return
@@ -811,7 +883,7 @@ class MainWindow(Adw.ApplicationWindow):
             if answer == "connect":
                 self.connect_github(path)
             elif answer == "parent":
-                if any(s.path == top for s in self.states):
+                if any(winenv.same_path(s.path, top) for s in self.states):
                     widgets.toast(self, "Already in the list")
                     self.adopt_path(top)
                     return
@@ -890,6 +962,8 @@ class MainWindow(Adw.ApplicationWindow):
         group.add(depth)
         page.add(group)
 
+        self._forgotten_group(page)
+
         safety = Adw.PreferencesGroup(title="Safety")
         poll = Adw.SpinRow.new_with_range(5, 300, 5)
         poll.set_title("Status refresh (seconds)")
@@ -953,6 +1027,35 @@ class MainWindow(Adw.ApplicationWindow):
 
         dialog.connect("closed", closed)
         dialog.present(self)
+
+    def _forgotten_group(self, page):
+        """The way back for anything dropped with Forget this folder.
+
+        Without this the undo on the toast is the only one there is, and six
+        seconds later the folder is unreachable without editing config.json.
+        The group is absent rather than empty when nothing was forgotten.
+        """
+        forgotten = list(self.cfg["hidden_repos"])
+        if not forgotten:
+            return
+        group = Adw.PreferencesGroup(
+            title="Forgotten folders",
+            description="Repositories kept out of the list. Nothing here was deleted.",
+        )
+        for path in forgotten:
+            row = Adw.ActionRow(title=os.path.basename(path) or path,
+                                subtitle=filesystem.tilde(path))
+            restore = Gtk.Button(label="Restore", valign=Gtk.Align.CENTER)
+
+            def bring_back(_button, path=path, row=row, restore=restore):
+                self._remember_folder(path, os.path.basename(path) or path)
+                restore.set_sensitive(False)
+                row.set_subtitle("Back in the list")
+
+            restore.connect("clicked", bring_back)
+            row.add_suffix(restore)
+            group.add(row)
+        page.add(group)
 
     def _about(self):
         account = "not signed in"

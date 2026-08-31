@@ -24,13 +24,34 @@ META_FG = _rgba("rgba(128,128,128,0.95)")
 MAX_DIFF_LINES = 4000  # past this a diff is unreadable anyway, and slow to render
 
 
-def toast(widget, message, timeout=3):
-    """Find the nearest ToastOverlay and post a message on it."""
+def _overlay(widget):
+    """The nearest ToastOverlay above this widget, if there is one."""
     node = widget
     while node is not None and not isinstance(node, Adw.ToastOverlay):
         node = node.get_parent()
+    return node
+
+
+def toast(widget, message, timeout=3):
+    """Find the nearest ToastOverlay and post a message on it."""
+    node = _overlay(widget)
     if node is not None:
         node.add_toast(Adw.Toast(title=message, timeout=timeout))
+
+
+def undo_toast(widget, message, label, callback, timeout=6):
+    """A toast with the way back attached.
+
+    For changes that are easier to take back than to ask about first: the
+    dialog confirm() would put in front of one of these costs more than the
+    mistake does.
+    """
+    node = _overlay(widget)
+    if node is None:
+        return
+    notice = Adw.Toast(title=message, timeout=timeout, button_label=label)
+    notice.connect("button-clicked", lambda *_: callback())
+    node.add_toast(notice)
 
 
 def error_toast(widget, exc):

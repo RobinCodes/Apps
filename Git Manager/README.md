@@ -99,6 +99,15 @@ sidebar menu. Adding `/` works and is prevented from wandering into `/proc`,
 `/sys`, `/dev` and `/run`, but it is much slower and mostly finds other
 people's vendored dependencies.
 
+*Forget this folder*, in the Actions menu, takes one repository out of the
+list without touching anything on disk. It works on any row, not only the
+ones added by hand: a repository found by the scan would be found again by
+the next one, so forgetting it is written down and the merge that builds the
+list applies it every time. Nothing is deleted, and there are two ways back —
+**Undo** on the toast, and the **Forgotten folders** group that appears in
+Scan settings for as long as anything is in it. Adding the folder again with
+*Add existing folder…* also brings it back.
+
 ## What each tab does
 
 **Changes** lists staged and unstaged files separately. Selecting one shows its
@@ -269,6 +278,7 @@ files — rather than asking a generic "are you sure".
 | Stop tracking ignored files | Gitignore helper | Confirm, lists the paths; files stay on disk, the removal is staged |
 | Repoint an existing remote | Connect to GitHub | Flagged in the plan, naming the URL it forgets; nothing on either server changes |
 | Take a folder out of the repository around it | Connect to GitHub | Off unless switched on; counted in the plan first; files stay on disk, the removal is staged there, nothing is committed |
+| Forget this folder | Actions menu | No confirmation: nothing is deleted, and Undo on the toast or Scan settings puts it back |
 
 Force push is deliberately `--force-with-lease` rather than `--force`: it
 refuses if the remote moved since your last fetch, which is the difference

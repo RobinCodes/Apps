@@ -16,6 +16,10 @@ DEFAULTS = {
     # never descends into a working tree, so a repo nested inside another one
     # is unreachable by scanning alone and has to be remembered here.
     "extra_repos": [],
+    # Repositories dropped with "Forget this folder". A scan has no memory and
+    # would find one inside a scan root again on the very next walk, so the
+    # decision to be rid of it has to be kept somewhere the scan cannot undo.
+    "hidden_repos": [],
     "max_depth": 8,
     "confirm_destructive": True,   # answered "include, behind confirmation"
     "fetch_on_open": False,        # off by default: 19 repos of network on launch
@@ -29,6 +33,22 @@ DEFAULTS = {
     "last_repo": "",
     "diff_context": 3,
 }
+
+
+# Every list of paths below is one of these, and they arrive from three places
+# that spell them differently -- see winenv.canonical.
+PATH_LISTS = ("roots", "extra_repos", "hidden_repos")
+
+
+def _unique(paths):
+    """Order-preserving dedupe, case-insensitive where the filesystem is."""
+    seen, out = set(), []
+    for path in paths:
+        key = winenv.path_key(path)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(path)
+    return out
 
 
 class Config(dict):
@@ -46,6 +66,11 @@ class Config(dict):
                         self[k] = v
         except (OSError, ValueError):
             pass
+        # Settle the spelling on the way in, so a config written before this
+        # -- with git's forward slashes in it -- starts matching the scan.
+        for key in PATH_LISTS:
+            self[key] = _unique(winenv.canonical(p) for p in self[key] if p)
+        self["last_repo"] = winenv.canonical(self["last_repo"])
         if not self["roots"]:
             self["roots"] = [os.path.expanduser("~")]
         return self

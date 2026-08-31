@@ -229,7 +229,12 @@ def in_git_dir(path):
 
 
 def toplevel(path):
-    return git(path, "rev-parse", "--show-toplevel").strip()
+    """The top of the working tree, spelled the way the rest of the app spells it.
+
+    git answers with forward slashes on every platform, which on Windows is
+    not what anything else here produces -- see winenv.canonical.
+    """
+    return winenv.canonical(git(path, "rev-parse", "--show-toplevel").strip())
 
 
 # ----------------------------------------------------------------- diffs ----

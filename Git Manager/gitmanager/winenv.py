@@ -1,7 +1,7 @@
 """Windows support: the platform differences the rest of the app shouldn't carry.
 
-This app was written for Linux, and three things about Windows differ enough
-to break it. All three are answered here so that no other module has to know
+This app was written for Linux, and four things about Windows differ enough
+to break it. All four are answered here so that no other module has to know
 which operating system it is running on.
 
 *Where files go.* XDG puts settings under ~/.config and state under
@@ -21,6 +21,15 @@ found, put that directory on PATH so the child processes see it too.
 console of its own unless it is told otherwise. Git Manager polls `git
 status` every fifteen seconds; without CREATE_NO_WINDOW that is a black
 rectangle blinking over the window for as long as the app is open.
+
+*How a path is spelled.* One directory has one name on Linux. On Windows it
+has several: git answers `rev-parse --show-toplevel` with forward slashes
+whatever the platform, os.scandir and the file chooser hand back backslashes,
+and the filesystem itself ignores case. Compared with `==`, the same
+repository read from two of those sources looks like two repositories --
+listed twice, and unmatchable against anything written to the config by the
+other. canonical() and same_path() below are what every such comparison goes
+through.
 """
 
 from __future__ import annotations
@@ -38,6 +47,25 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if WINDOWS else 0
 
 
 # ------------------------------------------------------------------ paths ----
+
+def canonical(path: str) -> str:
+    """One spelling per directory, whichever tool handed the path over.
+
+    normpath settles the separator and any trailing one; expanduser is here
+    because scan roots are typed into a text box by hand.
+    """
+    return os.path.normpath(os.path.expanduser(path)) if path else ""
+
+
+def path_key(path: str) -> str:
+    """A comparison key: canonical, and case-folded where the filesystem is."""
+    return os.path.normcase(canonical(path))
+
+
+def same_path(a: str, b: str) -> bool:
+    """True when two spellings name the same directory."""
+    return bool(a) and bool(b) and path_key(a) == path_key(b)
+
 
 def _xdg(var: str, app: str) -> str | None:
     """An XDG variable, honoured on every platform when it is actually set.
