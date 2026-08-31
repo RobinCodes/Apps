@@ -14,6 +14,8 @@
 #include "block.h"
 #include "store.h"
 #include "tab.h"
+#include "downloads.h"
+#include "passwords.h"
 
 #include <windows.h>
 
@@ -23,7 +25,8 @@ G_BEGIN_DECLS
 gboolean ly_window_register (HINSTANCE instance);
 
 LyWindow *ly_window_new (HINSTANCE instance, LyConfig *cfg, LyStore *store,
-                         LyBlock *block, const char *url);
+                         LyBlock *block, LyDownloads *downloads,
+                         LyPasswords *passwords, const char *url);
 
 /* Open another tab and select it. NULL url means the configured homepage. */
 void ly_window_open_tab (LyWindow *win, const char *url);

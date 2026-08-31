@@ -30,10 +30,9 @@ ly_import_result_clear (LyImportResult *result)
 /* ------------------------------------------------------------ discovery */
 
 static void
-add_chromium_profiles (GPtrArray *sources, const char *relative, const char *label)
+add_chromium_root (GPtrArray *sources, const char *root, const char *label)
 {
-  g_autofree char *root = g_build_filename (g_get_user_config_dir (), relative, NULL);
-  if (!g_file_test (root, G_FILE_TEST_IS_DIR))
+  if (root == NULL || !g_file_test (root, G_FILE_TEST_IS_DIR))
     return;
 
   g_autoptr (GDir) dir = g_dir_open (root, 0, NULL);
@@ -68,10 +67,9 @@ add_chromium_profiles (GPtrArray *sources, const char *relative, const char *lab
 }
 
 static void
-add_firefox_profiles (GPtrArray *sources)
+add_firefox_root (GPtrArray *sources, const char *root)
 {
-  g_autofree char *root = g_build_filename (g_get_home_dir (), ".mozilla", "firefox", NULL);
-  if (!g_file_test (root, G_FILE_TEST_IS_DIR))
+  if (root == NULL || !g_file_test (root, G_FILE_TEST_IS_DIR))
     return;
 
   g_autoptr (GDir) dir = g_dir_open (root, 0, NULL);
@@ -99,18 +97,58 @@ add_firefox_profiles (GPtrArray *sources)
   }
 }
 
+/* The same browsers, in the two places the two platforms put them.
+ *
+ * Chromium keeps <root>/Default and <root>/Profile N either way; what differs
+ * is the root. Linux uses the XDG config directory; Windows uses
+ * %LOCALAPPDATA% with a vendor/product/User Data tree, and Firefox is under
+ * %APPDATA% rather than a dotfile. Everything below the root is identical,
+ * which is why only this function is conditional. */
 GPtrArray *
 ly_import_sources (void)
 {
   GPtrArray *sources =
     g_ptr_array_new_with_free_func ((GDestroyNotify) ly_import_source_free);
 
-  add_chromium_profiles (sources, "google-chrome", "Google Chrome");
-  add_chromium_profiles (sources, "chromium", "Chromium");
-  add_chromium_profiles (sources, "BraveSoftware/Brave-Browser", "Brave");
-  add_chromium_profiles (sources, "microsoft-edge", "Microsoft Edge");
-  add_chromium_profiles (sources, "vivaldi", "Vivaldi");
-  add_firefox_profiles (sources);
+#ifdef _WIN32
+  const char *local = g_getenv ("LOCALAPPDATA");
+  const char *roaming = g_getenv ("APPDATA");
+
+  static const struct { const char *relative; const char *label; } chromium[] = {
+    { "Google/Chrome/User Data",              "Google Chrome"  },
+    { "Google/Chrome Beta/User Data",         "Chrome Beta"    },
+    { "Chromium/User Data",                   "Chromium"       },
+    { "BraveSoftware/Brave-Browser/User Data", "Brave"         },
+    { "Microsoft/Edge/User Data",             "Microsoft Edge" },
+    { "Vivaldi/User Data",                    "Vivaldi"        },
+    { "Opera Software/Opera Stable",          "Opera"          },
+  };
+  if (local) {
+    for (gsize i = 0; i < G_N_ELEMENTS (chromium); i++) {
+      g_autofree char *root = g_build_filename (local, chromium[i].relative, NULL);
+      add_chromium_root (sources, root, chromium[i].label);
+    }
+  }
+  if (roaming) {
+    g_autofree char *ff = g_build_filename (roaming, "Mozilla", "Firefox", "Profiles", NULL);
+    add_firefox_root (sources, ff);
+  }
+#else
+  const char *config = g_get_user_config_dir ();
+  static const struct { const char *relative; const char *label; } chromium[] = {
+    { "google-chrome",                 "Google Chrome"  },
+    { "chromium",                      "Chromium"       },
+    { "BraveSoftware/Brave-Browser",   "Brave"          },
+    { "microsoft-edge",                "Microsoft Edge" },
+    { "vivaldi",                       "Vivaldi"        },
+  };
+  for (gsize i = 0; i < G_N_ELEMENTS (chromium); i++) {
+    g_autofree char *root = g_build_filename (config, chromium[i].relative, NULL);
+    add_chromium_root (sources, root, chromium[i].label);
+  }
+  g_autofree char *ff = g_build_filename (g_get_home_dir (), ".mozilla", "firefox", NULL);
+  add_firefox_root (sources, ff);
+#endif
 
   return sources;
 }

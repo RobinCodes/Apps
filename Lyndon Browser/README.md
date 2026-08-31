@@ -351,23 +351,95 @@ that the shipped lists block what they are for, that a page's own resources
 are left alone, and that `notdoubleclick.net` is not treated as a subdomain of
 a blocked host.
 
-### What is not there yet
+### What is there
 
-The Windows build is a working browser — tabs, navigation, the address bar
-with the same keyword and search handling, element hiding, per-tab blocking
-with a count in the toolbar, history recorded to the same SQLite file, dark
-chrome that follows the system, per-monitor DPI. What has not been rewritten
-is the GTK-bound rest of `src/`:
+Tabs, navigation and the address bar with the same keyword and search
+handling as the Linux build. Blocking with a per-tab count and a switch in
+the toolbar, element hiding, history and bookmarks in the same SQLite file,
+dark chrome that follows the system, per-monitor DPI.
 
-* **Preferences** (`prefs.c`, 1051 lines of libadwaita) — settings are read
-  from `config.json` and honoured, but there is no window to edit them in yet.
-* **Bookmarks and history views.** Both are recorded; neither has a UI here.
-* **Saved passwords** (`passwords.c`) — libsecret has no Windows counterpart;
-  the Credential Manager would be the equivalent.
-* **Importing from other browsers** (`import.c`).
-* **Session restore.**
+On top of that, the parts that were GTK-bound and had to be built again:
 
-Downloads work, but they are WebView2's own UI rather than Lyndon's.
+| | Where it lives | Notes |
+|---|---|---|
+| **Settings** | `win32/prefs.c` | Seven pages, driven by a table bound to `LyConfig` by field offset — adding a setting is one line. |
+| **Bookmarks, history, downloads** | `win32/panel.c` | One drop-down with three sections and a filter box, rather than three dialogs. |
+| **Downloads** | `win32/downloads.c` | Lyndon's own list and its own file naming, not the Edge bubble. |
+| **Saved logins** | `win32/passwords.c` | Windows Credential Manager. |
+| **Importing** | `src/import.c` | The Linux file, compiled here; only the profile locations differ. |
+| **Session restore** | `win32/chrome.c` | The store's own session table, so both builds read the same rows. |
+| **The look** | `win32/ui.c` | `data/css/lyndon.css`, followed measurement for measurement. |
+| **`lyndon:start`** | `win32/scheme.c` | The same start page, on the same URL, from the same file. |
+
+### How it is drawn
+
+`data/css/lyndon.css` is the specification, and the Windows chrome follows it
+rather than approximating it: tabs and buttons at a 9px radius, the address
+bar a 32px pill at radius 16 with a two-pixel accent ring when it has the
+focus, hover fills at `alpha(currentColor, .07)` and `.09`, the blocked count
+in a filled accent pill, libadwaita's own palette down to the hex.
+
+None of that is drawn with GDI. `RoundRect` has no antialiasing, so a 9px
+corner comes out as a visible staircase and no amount of correct colour makes
+a browser built from staircases look like anything but 2003. `win32/ui.c`
+paints into a 32-bit DIB instead and fills the rounded shapes by evaluating a
+signed distance field per pixel, which gives a real one-pixel edge; icons are
+strokes with round caps at their distance to the segment, and the two filled
+ones are supersampled sixteen times a pixel. Text still goes through GDI,
+which is better at it than anything worth writing here.
+
+Two things follow from owning the pixels. The address bar shows its URL with
+everything but the registrable domain dimmed — the domain is the only part
+that says where you are, and an `EDIT` control has one colour for all of its
+text, so the entry only exists while it is being typed into and the rest of
+the time the URL is painted. And the load bar is a real two-pixel indeterminate
+sweep along the bottom of the chrome, because WebView2 reports no fraction and
+a bar that invents one is a lie.
+
+### The start page
+
+`lyndon:start` is the homepage in `config.ini` on both builds. WebKit gets
+that scheme from `webkit_web_context_register_uri_scheme`; WebView2 will only
+navigate to a scheme it was told about before the environment existed, and
+telling it means handing it an options object that the SDK provides in C++ and
+not at all in C. `win32/scheme.c` implements those four interfaces by hand so
+that the config file does not need a Windows-shaped exception in it.
+
+One trap worth writing down: `TargetCompatibleBrowserVersion` defaults, in the
+SDK's own C++ helper, to the version the SDK shipped with. Set that on a
+machine whose Edge is older and environment creation fails with `E_INVALIDARG`
+and no explanation. Lyndon asks the loader what is actually installed and
+targets that.
+
+Two of those reuse rather than reimplement. `src/import.c` compiles unchanged
+apart from a `#ifdef` over where Chrome, Edge, Brave, Vivaldi, Opera and
+Firefox keep their profiles. And the script that finds, fills and captures
+login forms lives in `src/password-script.h` and is shared verbatim: only the
+line that posts a message back differs, because WebKit gives each handler its
+own object and WebView2 gives one `postMessage` for everything. It is
+security-relevant code, and two copies of it would be two behaviours.
+
+Passwords go to Credential Manager for the same reason the Linux build uses
+libsecret: the browser should not invent its own crypto, and should not write
+a password to a file of its own. Credential Manager encrypts per user,
+unlocks at logon, and can be reviewed in Control Panel by someone who has
+never heard of Lyndon.
+
+### What is honestly missing
+
+* **Find in page.** WebView2 exposes no find API, so this would mean
+  highlighting matches from injected script — doable, not done.
+* **Translucent chrome.** `.fx-full` leaves the toolbars part-transparent and
+  lets the compositor blur what is behind them. Windows 11 has Mica, which is
+  the same idea, but wiring it up means compositing the chrome with real alpha
+  through DWM and it is not done here: the chrome is opaque at every effects
+  setting.
+* **A few settings this engine cannot honour.** WebGL, WebRTC, hardware
+  acceleration, the proxy and the WebKit-specific privacy switches have no
+  WebView2 equivalent. They are still shown, dimmed, under a heading that
+  says so, because they are real settings that the Linux build reads from the
+  same file — hiding them would make the two look like different products.
+* **Per-tab process control.** WebView2 decides that; Lyndon does not.
 
 ### The vendored header
 

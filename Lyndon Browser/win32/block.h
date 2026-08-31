@@ -72,6 +72,8 @@ gboolean ly_block_should_block (LyBlock        *b,
 char    *ly_block_cosmetic_css (LyBlock *b, const char *host);
 
 const LyBlockStats *ly_block_stats (LyBlock *b);
+/* Everything that can refuse a request, for the start page's counter. */
+guint ly_block_rule_count (LyBlock *b);
 void                ly_block_reset_counters (LyBlock *b);
 
 /* Map WebView2's resource context onto LyResourceKind. Declared here so the

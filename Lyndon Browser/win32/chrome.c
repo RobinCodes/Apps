@@ -1,22 +1,18 @@
 /* chrome.c — see chrome.h. */
 
 #include "chrome.h"
+#include "panel.h"
+#include "prefs.h"
 
 #include <dwmapi.h>
 #include <windowsx.h>
+#include <math.h>      /* the star in the bookmark button */
 #include <shlwapi.h>
 #include <string.h>
 
 #define CLASS_NAME     L"LyndonWindow"
 #define ID_ADDRESS     1001
-
-/* Design sizes at 96 dpi; everything is scaled by the window's own DPI. */
-#define TABBAR_H        36
-#define TOOLBAR_H       44
-#define TAB_MAX_W      220
-#define TAB_MIN_W       64
-#define BTN_W           34
-#define PAD              8
+#define TIMER_PROGRESS    1   /* the indeterminate load bar */
 
 static guint window_count;
 /* Every live window, so that the environment becoming ready can reach the
@@ -26,53 +22,26 @@ static gboolean env_ok;
 static gboolean env_settled;
 static char    *env_message;
 
-/* ------------------------------------------------------------------ theme */
+/* ------------------------------------------------------------------ sizes */
 
-typedef struct {
-  COLORREF bg;        /* the chrome behind the tabs      */
-  COLORREF tab;       /* the selected tab and toolbar    */
-  COLORREF tab_idle;
-  COLORREF text;
-  COLORREF text_dim;
-  COLORREF line;
-  COLORREF field;     /* the address bar                 */
-  COLORREF accent;
-} Theme;
-
-static gboolean
-system_is_dark (void)
-{
-  DWORD value = 1, size = sizeof value;
-  if (RegGetValueW (HKEY_CURRENT_USER,
-                    L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                    L"AppsUseLightTheme", RRF_RT_REG_DWORD, NULL, &value, &size) != ERROR_SUCCESS)
-    return FALSE;
-  return value == 0;
-}
-
-static void
-theme_for (Theme *t, gboolean dark)
-{
-  if (dark) {
-    t->bg       = RGB (0x1c, 0x1c, 0x20);
-    t->tab      = RGB (0x2b, 0x2b, 0x31);
-    t->tab_idle = RGB (0x22, 0x22, 0x27);
-    t->text     = RGB (0xe8, 0xe8, 0xec);
-    t->text_dim = RGB (0x9a, 0x9a, 0xa4);
-    t->line     = RGB (0x38, 0x38, 0x40);
-    t->field    = RGB (0x35, 0x35, 0x3d);
-    t->accent   = RGB (0x62, 0xa0, 0xea);
-  } else {
-    t->bg       = RGB (0xdf, 0xe1, 0xe6);
-    t->tab      = RGB (0xf8, 0xf9, 0xfb);
-    t->tab_idle = RGB (0xe9, 0xea, 0xee);
-    t->text     = RGB (0x1b, 0x1d, 0x22);
-    t->text_dim = RGB (0x60, 0x65, 0x70);
-    t->line     = RGB (0xc6, 0xc9, 0xd0);
-    t->field    = RGB (0xff, 0xff, 0xff);
-    t->accent   = RGB (0x1c, 0x71, 0xd8);
-  }
-}
+/* Straight out of data/css/lyndon.css, so the two builds are the same shape
+ * and not merely the same idea. Everything is at 96 dpi and scaled by sc(). */
+#define TOOLBAR_H          42   /* headerbar min-height          */
+#define TOOLBAR_H_COMPACT  36   /* .lyndon-compact               */
+#define TAB_H              30   /* tabbox > tab min-height       */
+#define TAB_R               9   /* tab and button border-radius  */
+#define TAB_GAP             1   /* tab margin: 0 1px             */
+#define TAB_PAD             6   /* tab padding: 0 6px            */
+#define TAB_MAX_W         240
+#define TAB_MIN_W          78
+#define STRIP_SIDE          4   /* tabbar .box padding: 0 4px 3px */
+#define STRIP_BOTTOM        3
+#define BTN                30   /* image-button min-width/height  */
+#define URL_H              32   /* .lyndon-url min-height         */
+#define URL_R              16   /* .lyndon-url border-radius      */
+#define PAD                 6   /* headerbar padding: 0 6px       */
+#define BADGE_R             7   /* .lyndon-shield-count           */
+#define PROGRESS_H          2   /* .lyndon-progress               */
 
 /* ----------------------------------------------------------------- window */
 
@@ -84,8 +53,21 @@ typedef enum {
   HIT_BACK,
   HIT_FORWARD,
   HIT_RELOAD,
+  HIT_HOME,
+  HIT_ADDRESS,
+  /* the right-hand end, in the order they are drawn from the edge inwards */
+  HIT_MENU,
+  HIT_LIBRARY,
   HIT_SHIELD,
+  HIT_STAR,
 } HitKind;
+
+#define RIGHT_N 4
+static const HitKind RIGHT_ORDER[RIGHT_N] = {
+  HIT_MENU, HIT_LIBRARY, HIT_SHIELD, HIT_STAR
+};
+/* The shield is wider because the count sits beside it in a pill. */
+static const int RIGHT_WIDTH[RIGHT_N] = { 32, 32, 52, 32 };
 
 struct _LyWindow {
   HWND       hwnd;
@@ -93,32 +75,49 @@ struct _LyWindow {
   WNDPROC    address_proc;
   HINSTANCE  instance;
 
-  LyConfig  *cfg;
-  LyStore   *store;
-  LyBlock   *block;
+  LyConfig    *cfg;
+  LyStore     *store;
+  LyBlock     *block;
+  LyDownloads *downloads;
+  LyPasswords *passwords;
+  LyPanel     *panel;
+  gboolean     bookmarked;
 
   GPtrArray *tabs;          /* LyTab*            */
   int        active;
   gboolean   address_dirty; /* user is typing; do not overwrite */
+  /* The entry is a real EDIT control, but only while it has the focus. The
+   * rest of the time the URL is painted here instead, which is the only way
+   * to dim the scheme and the path so the eye lands on the domain — an EDIT
+   * has one colour for all of its text. */
+  gboolean   editing_url;
 
-  Theme      theme;
-  gboolean   dark;
-  HFONT      font;
-  HFONT      font_small;
+  LyTheme    theme;
+  LyFonts    fonts;
   int        dpi;
 
   HitKind    hot_kind;
   int        hot_tab;
-  char      *pending_url;   /* wanted a tab before the runtime was up */
+  guint      progress_phase;  /* the indeterminate load bar */
+  gboolean   progress_on;
+  GPtrArray *pending;         /* char* */
 };
 
 static void layout (LyWindow *win);
 static void redraw_chrome (LyWindow *win);
+static void refresh_bookmark_state (LyWindow *win);
+static void toggle_bookmark (LyWindow *win);
+static void show_panel (LyWindow *win, LyPanelKind kind);
+static void show_menu (LyWindow *win);
+static void save_session (LyWindow *win);
+static gboolean restore_session (LyWindow *win);
+static void begin_url_edit (LyWindow *win);
+static void end_url_edit (LyWindow *win);
 
 static int
 sc (LyWindow *win, int v)
 {
-  return MulDiv (v, win->dpi, 96);
+  return ly_scale (win->dpi, v);
 }
 
 static LyTab *
@@ -129,22 +128,43 @@ active_tab (LyWindow *win)
   return g_ptr_array_index (win->tabs, win->active);
 }
 
-/* ------------------------------------------------------------ geometry */
+/* ---------------------------------------------------------------- geometry */
 
-static RECT
-tab_area (LyWindow *win)
+static int
+toolbar_height (LyWindow *win)
 {
-  RECT c;
-  GetClientRect (win->hwnd, &c);
-  RECT r = { 0, 0, c.right, sc (win, TABBAR_H) };
-  return r;
+  gboolean compact = win->cfg && win->cfg->compact_chrome;
+  return sc (win, compact ? TOOLBAR_H_COMPACT : TOOLBAR_H);
+}
+
+/* The strip is hidden with a single tab unless the option says otherwise,
+ * which is what .lyndon-chrome tabbar does on the other side. */
+static gboolean
+tabs_visible (LyWindow *win)
+{
+  if (win->tabs->len > 1)
+    return TRUE;
+  return win->cfg ? win->cfg->show_tab_bar_single : TRUE;
+}
+
+static int
+strip_height (LyWindow *win)
+{
+  return tabs_visible (win) ? sc (win, TAB_H + STRIP_BOTTOM + 3) : 0;
+}
+
+static int
+chrome_height (LyWindow *win)
+{
+  return strip_height (win) + toolbar_height (win);
 }
 
 static int
 tab_width (LyWindow *win)
 {
-  RECT bar = tab_area (win);
-  int usable = bar.right - sc (win, BTN_W) - sc (win, PAD);
+  RECT c;
+  GetClientRect (win->hwnd, &c);
+  int usable = c.right - sc (win, STRIP_SIDE * 2 + BTN);
   guint n = win->tabs->len ? win->tabs->len : 1;
   int w = usable / (int) n;
   return CLAMP (w, sc (win, TAB_MIN_W), sc (win, TAB_MAX_W));
@@ -154,7 +174,10 @@ static RECT
 tab_rect (LyWindow *win, guint i)
 {
   int w = tab_width (win);
-  RECT r = { (int) i * w, 0, (int) i * w + w, sc (win, TABBAR_H) };
+  int x = sc (win, STRIP_SIDE) + (int) i * w;
+  int top = sc (win, 3);
+  RECT r = { x + sc (win, TAB_GAP), top,
+             x + w - sc (win, TAB_GAP), top + sc (win, TAB_H) };
   return r;
 }
 
@@ -162,45 +185,83 @@ static RECT
 newtab_rect (LyWindow *win)
 {
   int w = tab_width (win);
-  int x = (int) win->tabs->len * w + sc (win, 4);
-  RECT r = { x, sc (win, 6), x + sc (win, 24), sc (win, TABBAR_H) - sc (win, 6) };
+  int x = sc (win, STRIP_SIDE) + (int) win->tabs->len * w + sc (win, 2);
+  int top = sc (win, 3);
+  RECT r = { x, top, x + sc (win, BTN), top + sc (win, TAB_H) };
   return r;
 }
 
 static RECT
 button_rect (LyWindow *win, int slot)
 {
-  int y = sc (win, TABBAR_H);
-  int h = sc (win, TOOLBAR_H);
-  int w = sc (win, BTN_W);
-  RECT r = { sc (win, PAD) + slot * w, y + sc (win, 6),
-             sc (win, PAD) + slot * w + w, y + h - sc (win, 6) };
+  int y = strip_height (win);
+  int h = toolbar_height (win);
+  int step = sc (win, BTN + 2);
+  int box = sc (win, BTN);
+  int left = sc (win, PAD) + slot * step;
+  RECT r = { left, y + (h - box) / 2, left + box, y + (h + box) / 2 };
   return r;
 }
 
+static gboolean
+has_home (LyWindow *win)
+{
+  return win->cfg && win->cfg->show_home_button;
+}
+
+static int
+left_slots (LyWindow *win)
+{
+  return has_home (win) ? 4 : 3;
+}
+
+/* Slot 0 is nearest the right edge; each one is placed inside the last. */
 static RECT
-shield_rect (LyWindow *win)
+right_rect (LyWindow *win, int slot)
 {
   RECT c;
   GetClientRect (win->hwnd, &c);
-  int y = sc (win, TABBAR_H);
-  int h = sc (win, TOOLBAR_H);
-  RECT r = { c.right - sc (win, PAD) - sc (win, 44), y + sc (win, 6),
-             c.right - sc (win, PAD), y + h - sc (win, 6) };
+  int y = strip_height (win);
+  int h = toolbar_height (win);
+  int box = sc (win, BTN);
+
+  int right = c.right - sc (win, PAD);
+  for (int i = 0; i < slot && i < RIGHT_N; i++)
+    right -= sc (win, RIGHT_WIDTH[i]);
+  int width = sc (win, RIGHT_WIDTH[CLAMP (slot, 0, RIGHT_N - 1)]);
+
+  RECT r = { right - width, y + (h - box) / 2, right, y + (h + box) / 2 };
   return r;
+}
+
+static int
+right_edge (LyWindow *win)
+{
+  return right_rect (win, RIGHT_N - 1).left;
 }
 
 static RECT
 address_rect (LyWindow *win)
 {
-  RECT c;
-  GetClientRect (win->hwnd, &c);
-  RECT last = button_rect (win, 3);
-  RECT sh = shield_rect (win);
-  int y = sc (win, TABBAR_H);
-  int h = sc (win, TOOLBAR_H);
-  RECT r = { last.right + sc (win, 4), y + sc (win, 7),
-             sh.left - sc (win, 8), y + h - sc (win, 7) };
+  RECT last = button_rect (win, left_slots (win) - 1);
+  int y = strip_height (win);
+  int h = toolbar_height (win);
+  int box = sc (win, URL_H);
+  RECT r = { last.right + sc (win, 6), y + (h - box) / 2,
+             right_edge (win) - sc (win, 6), y + (h + box) / 2 };
+  if (r.right < r.left + sc (win, 80))
+    r.right = r.left + sc (win, 80);
+  return r;
+}
+
+/* Where the EDIT sits when the address bar is being typed into: inside the
+ * pill, past the security icon. */
+static RECT
+address_text_rect (LyWindow *win)
+{
+  RECT a = address_rect (win);
+  RECT r = { a.left + sc (win, 30), a.top + sc (win, 5),
+             a.right - sc (win, 10), a.bottom - sc (win, 5) };
   return r;
 }
 
@@ -209,191 +270,300 @@ page_rect (LyWindow *win)
 {
   RECT c;
   GetClientRect (win->hwnd, &c);
-  RECT r = { 0, sc (win, TABBAR_H) + sc (win, TOOLBAR_H), c.right, c.bottom };
+  RECT r = { 0, chrome_height (win), c.right, c.bottom };
   if (r.bottom < r.top)
     r.bottom = r.top;
   return r;
 }
 
-/* -------------------------------------------------------------- painting */
+/* --------------------------------------------------------------- painting */
 
-static void
-fill (HDC dc, RECT r, COLORREF colour)
+/* alpha(currentColor, x) from the stylesheet: the text colour laid over
+ * whatever is behind it, which for the chrome is the header bar. */
+static COLORREF
+over_chrome (LyWindow *win, double amount)
 {
-  HBRUSH b = CreateSolidBrush (colour);
-  FillRect (dc, &r, b);
-  DeleteObject (b);
+  return ly_mix (win->theme.chrome, win->theme.text, amount);
 }
 
 static void
-draw_text_in (HDC dc, RECT r, const char *utf8, COLORREF colour, HFONT font, UINT flags)
+paint_tabs (LyWindow *win, LyCanvas *cv)
 {
-  if (utf8 == NULL)
+  if (!tabs_visible (win))
     return;
-  g_autofree wchar_t *w = (wchar_t *) g_utf8_to_utf16 (utf8, -1, NULL, NULL, NULL);
-  if (w == NULL)
-    return;
-  HFONT old = SelectObject (dc, font);
-  SetTextColor (dc, colour);
-  SetBkMode (dc, TRANSPARENT);
-  DrawTextW (dc, w, -1, &r, flags);
-  SelectObject (dc, old);
-}
 
-/* The toolbar glyphs. Drawn with lines rather than a font so they do not
- * depend on Segoe UI Symbol being present and cannot fall back to tofu. */
-static void
-draw_glyph (HDC dc, RECT r, HitKind kind, COLORREF colour, gboolean on)
-{
-  int cx = (r.left + r.right) / 2;
-  int cy = (r.top + r.bottom) / 2;
-  int s  = (r.bottom - r.top) / 5;
-  if (s < 3)
-    s = 3;
-
-  HPEN pen = CreatePen (PS_SOLID, MAX (1, s / 3), colour);
-  HPEN old = SelectObject (dc, pen);
-
-  switch (kind) {
-    case HIT_BACK:
-      MoveToEx (dc, cx + s / 2, cy - s, NULL);
-      LineTo (dc, cx - s / 2, cy);
-      LineTo (dc, cx + s / 2, cy + s);
-      break;
-    case HIT_FORWARD:
-      MoveToEx (dc, cx - s / 2, cy - s, NULL);
-      LineTo (dc, cx + s / 2, cy);
-      LineTo (dc, cx - s / 2, cy + s);
-      break;
-    case HIT_RELOAD: {
-      /* An open circle with a tick out of it reads as "reload" at this size
-         far better than a closed ring does. */
-      Arc (dc, cx - s, cy - s, cx + s, cy + s,
-           cx + s, cy - s / 2, cx - s / 2, cy - s);
-      MoveToEx (dc, cx + s, cy - s, NULL);
-      LineTo (dc, cx + s, cy - s / 4);
-      LineTo (dc, cx + s / 3, cy - s / 4);
-      break;
-    }
-    case HIT_NEWTAB:
-      MoveToEx (dc, cx - s, cy, NULL);
-      LineTo (dc, cx + s, cy);
-      MoveToEx (dc, cx, cy - s, NULL);
-      LineTo (dc, cx, cy + s);
-      break;
-    case HIT_TAB_CLOSE:
-      MoveToEx (dc, cx - s / 2, cy - s / 2, NULL);
-      LineTo (dc, cx + s / 2 + 1, cy + s / 2 + 1);
-      MoveToEx (dc, cx + s / 2, cy - s / 2, NULL);
-      LineTo (dc, cx - s / 2 - 1, cy + s / 2 + 1);
-      break;
-    case HIT_SHIELD: {
-      /* A shield outline; filled when blocking is on for this tab. */
-      POINT p[5] = {
-        { cx,     cy - s     }, { cx + s, cy - s / 2 }, { cx + s / 2, cy + s },
-        { cx - s / 2, cy + s }, { cx - s, cy - s / 2 },
-      };
-      if (on) {
-        HBRUSH br = CreateSolidBrush (colour);
-        HBRUSH ob = SelectObject (dc, br);
-        Polygon (dc, p, 5);
-        SelectObject (dc, ob);
-        DeleteObject (br);
-      } else {
-        Polyline (dc, p, 5);
-        LineTo (dc, p[0].x, p[0].y);
-      }
-      break;
-    }
-    default:
-      break;
-  }
-
-  SelectObject (dc, old);
-  DeleteObject (pen);
-}
-
-static void
-paint (LyWindow *win, HDC dc)
-{
-  Theme *t = &win->theme;
-  RECT c;
-  GetClientRect (win->hwnd, &c);
-
-  /* tab strip background */
-  RECT bar = tab_area (win);
-  fill (dc, bar, t->bg);
-
-  /* toolbar background */
-  RECT tool = { 0, sc (win, TABBAR_H), c.right, sc (win, TABBAR_H) + sc (win, TOOLBAR_H) };
-  fill (dc, tool, t->tab);
-  RECT edge = { 0, tool.bottom - 1, c.right, tool.bottom };
-  fill (dc, edge, t->line);
-
-  /* tabs */
   for (guint i = 0; i < win->tabs->len; i++) {
     LyTab *tab = g_ptr_array_index (win->tabs, i);
     RECT r = tab_rect (win, i);
-    gboolean sel = ((int) i == win->active);
+    if (r.right <= r.left)
+      continue;
 
-    RECT inner = r;
-    inner.left += sc (win, 2);
-    inner.right -= sc (win, 2);
-    inner.top += sc (win, 4);
-    fill (dc, inner, sel ? t->tab : t->tab_idle);
+    gboolean selected = ((int) i == win->active);
+    gboolean hot = (win->hot_kind == HIT_TAB && win->hot_tab == (int) i);
+    double radius = sc (win, TAB_R);
 
-    RECT label = inner;
-    label.left += sc (win, 10);
-    label.right -= sc (win, 24);
+    if (selected) {
+      /* box-shadow: 0 1px 2px alpha(shade, .5) */
+      ly_round_shadow (cv, r, radius, win->theme.shadow,
+                       win->theme.dark ? 0.5 : 0.22, 1, 2);
+      ly_round (cv, r, radius, win->theme.surface, 1.0);
+    } else if (hot) {
+      ly_round (cv, r, radius, over_chrome (win, 0.07), 1.0);
+    }
+
+    gboolean showing_close = (r.right - r.left) > sc (win, 96);
+    RECT label = { r.left + sc (win, TAB_PAD + 4), r.top,
+                   r.right - sc (win, showing_close ? 26 : TAB_PAD), r.bottom };
+
     const char *title = ly_tab_title (tab);
-    if (ly_tab_loading (tab))
-      title = "Loading…";
-    draw_text_in (dc, label, title, sel ? t->text : t->text_dim,
-                  win->font_small, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    if (title == NULL || *title == '\0')
+      title = "New tab";
 
-    if (inner.right - inner.left > sc (win, 90)) {
-      RECT x = { inner.right - sc (win, 22), inner.top + sc (win, 4),
-                 inner.right - sc (win, 4), inner.bottom - sc (win, 4) };
-      gboolean hot = (win->hot_kind == HIT_TAB_CLOSE && win->hot_tab == (int) i);
-      if (hot)
-        fill (dc, x, t->line);
-      draw_glyph (dc, x, HIT_TAB_CLOSE, sel ? t->text : t->text_dim, FALSE);
+    ly_text (cv, label, title,
+             selected ? win->theme.text : ly_mix (win->theme.chrome,
+                                                  win->theme.text, 0.7),
+             selected ? win->fonts.bold : win->fonts.normal,
+             DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    if (showing_close) {
+      RECT x = { r.right - sc (win, 25), r.top + sc (win, 4),
+                 r.right - sc (win, 3), r.bottom - sc (win, 4) };
+      gboolean close_hot = (win->hot_kind == HIT_TAB_CLOSE && win->hot_tab == (int) i);
+      if (close_hot)
+        ly_round (cv, x, sc (win, 6), over_chrome (win, 0.12), 1.0);
+      ly_glyph (cv, x, LY_GLYPH_CLOSE,
+                close_hot ? win->theme.text : win->theme.text_dim, FALSE);
     }
   }
 
-  /* new tab */
   RECT nt = newtab_rect (win);
   if (win->hot_kind == HIT_NEWTAB)
-    fill (dc, nt, t->tab_idle);
-  draw_glyph (dc, nt, HIT_NEWTAB, t->text_dim, FALSE);
+    ly_round (cv, nt, sc (win, TAB_R), over_chrome (win, 0.09), 1.0);
+  ly_glyph (cv, nt, LY_GLYPH_PLUS, win->theme.text_dim, FALSE);
+}
 
-  /* navigation buttons */
+/* An icon button with the hover and pressed fills the stylesheet gives them. */
+static void
+paint_button (LyWindow *win, LyCanvas *cv, RECT r, HitKind kind, LyGlyph glyph,
+              gboolean enabled)
+{
+  if (enabled && win->hot_kind == kind)
+    ly_round (cv, r, sc (win, TAB_R), over_chrome (win, 0.09), 1.0);
+
+  COLORREF ink = enabled ? ly_mix (win->theme.chrome, win->theme.text, 0.78)
+                         : ly_mix (win->theme.chrome, win->theme.text, 0.28);
+  if (enabled && win->hot_kind == kind)
+    ink = win->theme.text;
+  ly_glyph (cv, r, glyph, ink, FALSE);
+}
+
+/* The security indicator and the URL, with everything but the registrable
+ * domain dimmed — the domain is the only part that says where you are. */
+static void
+paint_address (LyWindow *win, LyCanvas *cv)
+{
+  RECT a = address_rect (win);
   LyTab *tab = active_tab (win);
-  struct { HitKind kind; gboolean on; } btns[] = {
-    { HIT_BACK,    tab && ly_tab_can_back (tab) },
-    { HIT_FORWARD, tab && ly_tab_can_forward (tab) },
-    { HIT_RELOAD,  tab != NULL },
-  };
-  for (int i = 0; i < 3; i++) {
-    RECT r = button_rect (win, i);
-    if (win->hot_kind == btns[i].kind && btns[i].on)
-      fill (dc, r, t->tab_idle);
-    draw_glyph (dc, r, btns[i].kind, btns[i].on ? t->text : t->line, FALSE);
+  double radius = sc (win, URL_R);
+  gboolean focused = win->editing_url;
+  gboolean hot = (win->hot_kind == HIT_ADDRESS);
+
+  if (focused) {
+    /* box-shadow: 0 0 0 2px alpha(accent, .18) */
+    RECT ring = { a.left - sc (win, 2), a.top - sc (win, 2),
+                  a.right + sc (win, 2), a.bottom + sc (win, 2) };
+    ly_round (cv, ring, radius + sc (win, 2), win->theme.accent, 0.18);
+    ly_round (cv, a, radius, win->theme.field, 1.0);
+    ly_round_ring (cv, a, radius, 1.0, win->theme.accent, 0.55);
+  } else {
+    double strength = hot ? 0.85 : 0.6;
+    ly_round (cv, a, radius, ly_mix (win->theme.chrome, win->theme.field, strength),
+              1.0);
+    ly_round_ring (cv, a, radius, 1.0, win->theme.line, win->theme.dark ? 0.5 : 0.8);
   }
 
-  /* the shield, with what it has stopped on this page */
-  RECT sh = shield_rect (win);
-  gboolean blocking = tab && ly_tab_blocking (tab);
-  RECT icon = sh;
-  icon.right = sh.left + sc (win, 22);
-  draw_glyph (dc, icon, HIT_SHIELD, blocking ? t->accent : t->text_dim, blocking);
-  if (tab && blocking) {
-    RECT num = sh;
-    num.left = icon.right;
-    g_autofree char *n = g_strdup_printf ("%u", ly_tab_blocked (tab));
-    draw_text_in (dc, num, n, t->text_dim, win->font_small,
-                  DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+  /* The padlock. Colours from .security-secure / -insecure / -internal. */
+  RECT icon = { a.left + sc (win, 7), a.top, a.left + sc (win, 27), a.bottom };
+  const char *url = tab ? ly_tab_url (tab) : NULL;
+  if (url && *url) {
+    if (ly_uri_is_internal (url))
+      ly_glyph (cv, icon, LY_GLYPH_GLOBE, ly_mix (win->theme.field,
+                                                  win->theme.text, 0.5), FALSE);
+    else if (ly_uri_is_secure (url))
+      ly_glyph (cv, icon, LY_GLYPH_LOCK, win->theme.success, FALSE);
+    else
+      ly_glyph (cv, icon, LY_GLYPH_WARNING, win->theme.warning, FALSE);
   }
+
+  if (focused)
+    return;   /* the EDIT is drawing the text */
+
+  RECT text = address_text_rect (win);
+  if (url == NULL || *url == '\0') {
+    ly_text (cv, text, "Search or enter an address", win->theme.text_dim,
+             win->fonts.normal, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    return;
+  }
+
+  g_autofree char *pretty = ly_pretty_uri (url);
+  if (pretty == NULL)
+    return;
+  g_autofree char *host = ly_uri_host (url);
+
+  /* Split at the end of the host, wherever that falls in the pretty form. */
+  const char *split = NULL;
+  if (host && *host) {
+    const char *found = strstr (pretty, host);
+    if (found)
+      split = found + strlen (host);
+  }
+
+  if (split == NULL || ly_uri_is_internal (url)) {
+    ly_text (cv, text, pretty, win->theme.text, win->fonts.normal,
+             DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+    return;
+  }
+
+  g_autofree char *head = g_strndup (pretty, (gsize) (split - pretty));
+  int head_w = ly_text_width (cv, head, win->fonts.normal);
+
+  ly_text (cv, text, head, win->theme.text, win->fonts.normal,
+           DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+  if (*split) {
+    RECT tail = text;
+    tail.left += head_w;
+    ly_text (cv, tail, split, win->theme.text_dim, win->fonts.normal,
+             DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+  }
+}
+
+static void
+paint_right (LyWindow *win, LyCanvas *cv)
+{
+  LyTab *tab = active_tab (win);
+  gboolean blocking = tab && ly_tab_blocking (tab);
+  guint active_downloads = win->downloads
+    ? ly_downloads_active_count (win->downloads) : 0;
+
+  for (int i = 0; i < RIGHT_N; i++) {
+    HitKind kind = RIGHT_ORDER[i];
+    RECT r = right_rect (win, i);
+    gboolean hot = (win->hot_kind == kind);
+    if (hot)
+      ly_round (cv, r, sc (win, TAB_R), over_chrome (win, 0.09), 1.0);
+
+    switch (kind) {
+      case HIT_STAR:
+        ly_glyph (cv, r, LY_GLYPH_STAR,
+                  win->bookmarked ? win->theme.accent_fg
+                                  : ly_mix (win->theme.chrome, win->theme.text, 0.7),
+                  win->bookmarked);
+        break;
+
+      case HIT_SHIELD: {
+        RECT icon = r;
+        icon.right = r.left + sc (win, BTN);
+        ly_glyph (cv, icon, LY_GLYPH_SHIELD,
+                  blocking ? win->theme.accent_fg
+                           : ly_mix (win->theme.chrome, win->theme.text, 0.4),
+                  blocking);
+
+        guint blocked = tab ? ly_tab_blocked (tab) : 0;
+        if (blocking && blocked) {
+          /* .lyndon-shield-count: a filled accent pill, not loose digits. */
+          g_autofree char *n = blocked > 99 ? g_strdup ("99+")
+                                            : g_strdup_printf ("%u", blocked);
+          int w = ly_text_width (cv, n, win->fonts.tiny_bold) + sc (win, 10);
+          RECT pill = { icon.right - sc (win, 4), r.top + sc (win, 5),
+                        icon.right - sc (win, 4) + w, r.bottom - sc (win, 5) };
+          ly_round (cv, pill, sc (win, BADGE_R), win->theme.accent, 1.0);
+          ly_text (cv, pill, n, win->theme.accent_text, win->fonts.tiny_bold,
+                   DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+        }
+        break;
+      }
+
+      case HIT_LIBRARY:
+        ly_glyph (cv, r, LY_GLYPH_LIBRARY,
+                  ly_mix (win->theme.chrome, win->theme.text, hot ? 1.0 : 0.78),
+                  FALSE);
+        if (active_downloads) {
+          /* A dot, not a number: that something is running is the news. */
+          RECT dot = { r.right - sc (win, 11), r.top + sc (win, 4),
+                       r.right - sc (win, 5), r.top + sc (win, 10) };
+          ly_round (cv, dot, sc (win, 3), win->theme.accent, 1.0);
+        }
+        break;
+
+      default:
+        ly_glyph (cv, r, LY_GLYPH_MENU,
+                  ly_mix (win->theme.chrome, win->theme.text, hot ? 1.0 : 0.78),
+                  FALSE);
+        break;
+    }
+  }
+}
+
+/* A two-pixel bar along the bottom of the chrome. WebView2 reports no
+ * fraction, so it is indeterminate: a bright segment sliding under a faint
+ * track, which says "working" without claiming to know how far along. */
+static void
+paint_progress (LyWindow *win, LyCanvas *cv, RECT chrome)
+{
+  if (!win->progress_on)
+    return;
+  int h = sc (win, PROGRESS_H);
+  RECT track = { 0, chrome.bottom - h, chrome.right, chrome.bottom };
+  ly_fill_alpha (cv, track, win->theme.accent, 0.16);
+
+  int width = chrome.right;
+  int seg = MAX (sc (win, 120), width / 5);
+  int span = width + seg;
+  int x = (int) ((win->progress_phase % 100) * span / 100) - seg;
+
+  for (int i = 0; i < seg; i++) {
+    int px = x + i;
+    if (px < 0 || px >= width)
+      continue;
+    /* Bright in the middle, feathered at both ends. */
+    double t = (double) i / seg;
+    double a = sin (t * G_PI);
+    RECT col = { px, track.top, px + 1, track.bottom };
+    ly_fill_alpha (cv, col, win->theme.accent, a);
+  }
+}
+
+static void
+paint (LyWindow *win, LyCanvas *cv)
+{
+  RECT c;
+  GetClientRect (win->hwnd, &c);
+  RECT chrome = { 0, 0, c.right, chrome_height (win) };
+
+  ly_fill (cv, chrome, win->theme.chrome);
+
+  paint_tabs (win, cv);
+  paint_address (win, cv);
+
+  LyTab *tab = active_tab (win);
+  struct { HitKind kind; LyGlyph glyph; gboolean on; } left[] = {
+    { HIT_BACK,    LY_GLYPH_BACK,    tab && ly_tab_can_back (tab)    },
+    { HIT_FORWARD, LY_GLYPH_FORWARD, tab && ly_tab_can_forward (tab) },
+    { HIT_RELOAD,  (tab && ly_tab_loading (tab)) ? LY_GLYPH_STOP : LY_GLYPH_RELOAD,
+      tab != NULL },
+    { HIT_HOME,    LY_GLYPH_HOME,    tab != NULL                     },
+  };
+  for (int i = 0; i < left_slots (win); i++)
+    paint_button (win, cv, button_rect (win, i), left[i].kind, left[i].glyph,
+                  left[i].on);
+
+  paint_right (win, cv);
+
+  /* border-bottom: 1px solid color-mix(borders 70%) */
+  RECT edge = { 0, chrome.bottom - 1, c.right, chrome.bottom };
+  ly_fill_alpha (cv, edge, win->theme.line, 0.7);
+
+  paint_progress (win, cv, chrome);
 }
 
 /* ------------------------------------------------------------- hit testing */
@@ -403,14 +573,15 @@ hit_test (LyWindow *win, POINT p, int *index)
 {
   *index = -1;
 
-  if (p.y < sc (win, TABBAR_H)) {
+  if (p.y < strip_height (win)) {
     for (guint i = 0; i < win->tabs->len; i++) {
       RECT r = tab_rect (win, i);
       if (!PtInRect (&r, p))
         continue;
       *index = (int) i;
-      RECT x = { r.right - sc (win, 26), r.top, r.right - sc (win, 2), r.bottom };
-      return PtInRect (&x, p) ? HIT_TAB_CLOSE : HIT_TAB;
+      RECT x = { r.right - sc (win, 25), r.top, r.right - sc (win, 3), r.bottom };
+      return ((r.right - r.left) > sc (win, 96) && PtInRect (&x, p))
+               ? HIT_TAB_CLOSE : HIT_TAB;
     }
     RECT nt = newtab_rect (win);
     if (PtInRect (&nt, p))
@@ -418,14 +589,19 @@ hit_test (LyWindow *win, POINT p, int *index)
     return HIT_NONE;
   }
 
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < left_slots (win); i++) {
     RECT r = button_rect (win, i);
     if (PtInRect (&r, p))
       return (HitKind) (HIT_BACK + i);
   }
-  RECT sh = shield_rect (win);
-  if (PtInRect (&sh, p))
-    return HIT_SHIELD;
+  for (int i = 0; i < RIGHT_N; i++) {
+    RECT r = right_rect (win, i);
+    if (PtInRect (&r, p))
+      return RIGHT_ORDER[i];
+  }
+  RECT a = address_rect (win);
+  if (PtInRect (&a, p))
+    return HIT_ADDRESS;
   return HIT_NONE;
 }
 
@@ -434,14 +610,14 @@ hit_test (LyWindow *win, POINT p, int *index)
 static void
 sync_address (LyWindow *win)
 {
+  /* Nothing to sync unless the entry is showing: the painted URL is read
+   * straight from the tab. */
   LyTab *tab = active_tab (win);
-  if (tab == NULL || win->address_dirty)
+  if (tab == NULL || !win->editing_url || win->address_dirty)
     return;
-  if (GetFocus () == win->address)
-    return;
-  g_autofree char *pretty = ly_pretty_uri (ly_tab_url (tab));
+  const char *url = ly_tab_url (tab);
   g_autofree wchar_t *w =
-      (wchar_t *) g_utf8_to_utf16 (pretty ? pretty : "", -1, NULL, NULL, NULL);
+      (wchar_t *) g_utf8_to_utf16 (url ? url : "", -1, NULL, NULL, NULL);
   SetWindowTextW (win->address, w ? w : L"");
 }
 
@@ -450,22 +626,53 @@ update_title (LyWindow *win)
 {
   LyTab *tab = active_tab (win);
   const char *t = tab ? ly_tab_title (tab) : NULL;
+  /* The start page is called Lyndon, and "Lyndon — Lyndon" is a bug report
+   * waiting to be filed. */
   g_autofree char *full =
-      g_strdup_printf ("%s%sLyndon", (t && *t) ? t : "", (t && *t) ? " — " : "");
+      (t == NULL || t[0] == 0 || g_strcmp0 (t, "Lyndon") == 0)
+        ? g_strdup ("Lyndon")
+        : g_strdup_printf ("%s — Lyndon", t);
   g_autofree wchar_t *w = (wchar_t *) g_utf8_to_utf16 (full, -1, NULL, NULL, NULL);
   SetWindowTextW (win->hwnd, w ? w : L"Lyndon");
+}
+
+/* The bar runs while anything is loading and stops when nothing is, so an
+ * idle browser is not repainting thirty times a second for no reason. */
+static void
+sync_progress (LyWindow *win)
+{
+  gboolean loading = FALSE;
+  for (guint i = 0; i < win->tabs->len; i++)
+    if (ly_tab_loading (g_ptr_array_index (win->tabs, i))) {
+      loading = TRUE;
+      break;
+    }
+  if (loading == win->progress_on)
+    return;
+
+  win->progress_on = loading;
+  if (loading) {
+    win->progress_phase = 0;
+    SetTimer (win->hwnd, TIMER_PROGRESS, 16, NULL);
+  } else {
+    KillTimer (win->hwnd, TIMER_PROGRESS);
+  }
+  redraw_chrome (win);
 }
 
 static void
 on_tab_changed (LyTab *tab, gpointer data)
 {
   LyWindow *win = data;
+  sync_progress (win);
   if (tab == active_tab (win)) {
     sync_address (win);
     update_title (win);
   }
   /* A background tab still redraws: its title and spinner are in the strip. */
   redraw_chrome (win);
+  if (tab == active_tab (win))
+    refresh_bookmark_state (win);
 
   /* Record the visit once the load has finished and a title exists. */
   if (!ly_tab_loading (tab) && win->store && win->cfg && win->cfg->remember_history) {
@@ -480,6 +687,254 @@ on_tab_changed (LyTab *tab, gpointer data)
 static void on_tab_new_window (LyTab *source, const char *url, gpointer data);
 static gboolean on_tab_accelerator (LyTab *tab, guint vkey, gpointer data);
 
+/* ------------------------------------------------------------- bookmarks */
+
+static void
+refresh_bookmark_state (LyWindow *win)
+{
+  LyTab *tab = active_tab (win);
+  gboolean now = FALSE;
+  if (tab && win->store) {
+    const char *url = ly_tab_url (tab);
+    if (url && *url && !ly_uri_is_internal (url))
+      now = ly_store_is_bookmarked (win->store, url);
+  }
+  if (now != win->bookmarked) {
+    win->bookmarked = now;
+    redraw_chrome (win);
+  }
+}
+
+static void
+toggle_bookmark (LyWindow *win)
+{
+  LyTab *tab = active_tab (win);
+  if (tab == NULL || win->store == NULL)
+    return;
+  const char *url = ly_tab_url (tab);
+  if (url == NULL || *url == 0 || ly_uri_is_internal (url))
+    return;
+
+  if (ly_store_is_bookmarked (win->store, url))
+    ly_store_remove_bookmark (win->store, url);
+  else
+    ly_store_add_bookmark (win->store, url, ly_tab_title (tab));
+
+  win->bookmarked = !win->bookmarked;
+  redraw_chrome (win);
+  if (ly_panel_is_open (win->panel))
+    ly_panel_refresh (win->panel);
+}
+
+/* ----------------------------------------------------------------- panel */
+
+static void
+on_panel_open (const char *url, gboolean new_tab, gpointer data)
+{
+  LyWindow *win = data;
+  if (new_tab) {
+    ly_window_open_tab (win, url);
+    return;
+  }
+  LyTab *tab = active_tab (win);
+  if (tab)
+    ly_tab_navigate (tab, url);
+  else
+    ly_window_open_tab (win, url);
+}
+
+static void
+show_panel (LyWindow *win, LyPanelKind kind)
+{
+  RECT anchor = right_rect (win, 1);          /* under the library button */
+  MapWindowPoints (win->hwnd, NULL, (POINT *) &anchor, 2);
+
+  if (ly_panel_is_open (win->panel)) {
+    ly_panel_close (win->panel);
+    return;
+  }
+  win->panel = ly_panel_show (win->hwnd, win->instance, anchor, kind, win->dpi,
+                              win->theme.dark, win->store, win->downloads,
+                              on_panel_open, win);
+}
+
+/* --------------------------------------------------------------- the menu */
+
+enum {
+  MENU_NEW_TAB = 100,
+  MENU_BOOKMARKS,
+  MENU_HISTORY,
+  MENU_DOWNLOADS,
+  MENU_BOOKMARK_THIS,
+  MENU_SETTINGS,
+  MENU_ABOUT,
+};
+
+static void
+show_menu (LyWindow *win)
+{
+  HMENU menu = CreatePopupMenu ();
+  if (menu == NULL)
+    return;
+
+  AppendMenuW (menu, MF_STRING, MENU_NEW_TAB,       L"New tab\tCtrl+T");
+  AppendMenuW (menu, MF_SEPARATOR, 0, NULL);
+  AppendMenuW (menu, MF_STRING, MENU_BOOKMARK_THIS,
+               win->bookmarked ? L"Remove bookmark" : L"Bookmark this page\tCtrl+D");
+  AppendMenuW (menu, MF_STRING, MENU_BOOKMARKS,     L"Bookmarks");
+  AppendMenuW (menu, MF_STRING, MENU_HISTORY,       L"History\tCtrl+H");
+  AppendMenuW (menu, MF_STRING, MENU_DOWNLOADS,     L"Downloads\tCtrl+J");
+  AppendMenuW (menu, MF_SEPARATOR, 0, NULL);
+  AppendMenuW (menu, MF_STRING, MENU_SETTINGS,      L"Settings\tCtrl+,");
+  AppendMenuW (menu, MF_STRING, MENU_ABOUT,         L"About Lyndon");
+
+  RECT r = right_rect (win, 0);
+  MapWindowPoints (win->hwnd, NULL, (POINT *) &r, 2);
+
+  /* TPM_RETURNCMD: the command comes back here rather than as WM_COMMAND,
+   * which keeps the menu handling in one place. */
+  int choice = (int) TrackPopupMenu (menu, TPM_RIGHTALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+                                     r.right, r.bottom, 0, win->hwnd, NULL);
+  DestroyMenu (menu);
+
+  switch (choice) {
+    case MENU_NEW_TAB:       ly_window_open_tab (win, NULL); break;
+    case MENU_BOOKMARK_THIS: toggle_bookmark (win); break;
+    case MENU_BOOKMARKS:     show_panel (win, LY_PANEL_BOOKMARKS); break;
+    case MENU_HISTORY:       show_panel (win, LY_PANEL_HISTORY); break;
+    case MENU_DOWNLOADS:     show_panel (win, LY_PANEL_DOWNLOADS); break;
+    case MENU_SETTINGS:
+      ly_prefs_show (win->hwnd, win->instance, win->cfg, win->store, win->passwords);
+      break;
+    case MENU_ABOUT: {
+      g_autofree char *runtime = ly_webview_runtime_version ();
+      g_autofree char *text = g_strdup_printf (
+          "Lyndon %s\n\nA small, fast, private browser.\n\n"
+          "Pages are drawn by WebView2 %s.",
+          LYNDON_VERSION, runtime ? runtime : "(unknown)");
+      g_autofree wchar_t *w = (wchar_t *) g_utf8_to_utf16 (text, -1, NULL, NULL, NULL);
+      MessageBoxW (win->hwnd, w, L"About Lyndon", MB_OK | MB_ICONINFORMATION);
+      break;
+    }
+    default: break;
+  }
+}
+
+/* ------------------------------------------------------------- downloads */
+
+static void
+on_downloads_changed (LyDownloads *downloads, gpointer data)
+{
+  LyWindow *win = data;
+  redraw_chrome (win);
+  if (ly_panel_is_open (win->panel))
+    ly_panel_refresh (win->panel);
+}
+
+static void
+on_download_done (const LyDownloadItem *item, gpointer data)
+{
+  LyWindow *win = data;
+  redraw_chrome (win);
+  if (ly_panel_is_open (win->panel))
+    ly_panel_refresh (win->panel);
+}
+
+/* -------------------------------------------------------------- passwords */
+
+static void
+on_tab_login (LyTab *tab, const char *origin, const char *username,
+              const char *password, gpointer data)
+{
+  LyWindow *win = data;
+  if (win->passwords == NULL || origin == NULL)
+    return;
+  if (ly_passwords_is_blocked (win->passwords, origin))
+    return;
+
+  g_autofree char *text = g_strdup_printf (
+      "Save the login for %s?\n\nUser: %s\n\n"
+      "It goes into Windows Credential Manager, not into a file of Lyndon's.\n\n"
+      "Choose No to skip it this time, or Cancel to never ask for this site.",
+      origin, (username && *username) ? username : "(none)");
+  g_autofree wchar_t *w = (wchar_t *) g_utf8_to_utf16 (text, -1, NULL, NULL, NULL);
+
+  int answer = MessageBoxW (win->hwnd, w, L"Lyndon",
+                            MB_YESNOCANCEL | MB_ICONQUESTION);
+  if (answer == IDYES)
+    ly_passwords_save (win->passwords, origin, username, password);
+  else if (answer == IDCANCEL)
+    ly_passwords_block (win->passwords, origin);
+}
+
+static LyPolicy
+on_tab_permission (LyTab *tab, LyPermKind kind, const char *origin, gpointer data)
+{
+  LyWindow *win = data;
+  if (win->cfg == NULL)
+    return LY_POLICY_ASK;
+
+  /* A per-site answer beats the global default, exactly as on Linux. */
+  if (win->store && origin) {
+    g_autofree char *host = ly_uri_host (origin);
+    if (host) {
+      int stored = ly_store_site_permission (win->store, host, (int) kind);
+      if (stored >= 0)
+        return (LyPolicy) stored;
+    }
+  }
+  return win->cfg->perm[kind];
+}
+
+/* --------------------------------------------------------------- session */
+
+/* Saved on close and restored on start, when the option is on. The rows are
+ * the store's own session table, so the Linux build reads the same thing. */
+static void
+save_session (LyWindow *win)
+{
+  if (win->store == NULL || win->cfg == NULL || !win->cfg->restore_session)
+    return;
+
+  GPtrArray *rows = g_ptr_array_new_with_free_func ((GDestroyNotify) ly_store_row_free);
+  for (guint i = 0; i < win->tabs->len; i++) {
+    LyTab *tab = g_ptr_array_index (win->tabs, i);
+    const char *url = ly_tab_url (tab);
+    if (url == NULL || *url == 0 || ly_uri_is_internal (url))
+      continue;
+    LyStoreRow *row = g_new0 (LyStoreRow, 1);
+    row->url = g_strdup (url);
+    row->title = g_strdup (ly_tab_title (tab));
+    row->window = 0;
+    row->index = (int) i;
+    g_ptr_array_add (rows, row);
+  }
+  ly_store_save_session (win->store, rows);
+  g_ptr_array_unref (rows);
+}
+
+static gboolean
+restore_session (LyWindow *win)
+{
+  if (win->store == NULL || win->cfg == NULL || !win->cfg->restore_session)
+    return FALSE;
+
+  GPtrArray *rows = ly_store_load_session (win->store);
+  if (rows == NULL)
+    return FALSE;
+
+  guint opened = 0;
+  for (guint i = 0; i < rows->len; i++) {
+    LyStoreRow *row = g_ptr_array_index (rows, i);
+    if (row->url && *row->url) {
+      ly_window_open_tab (win, row->url);
+      opened++;
+    }
+  }
+  g_ptr_array_unref (rows);
+  return opened > 0;
+}
+
 static void
 select_tab (LyWindow *win, int index)
 {
@@ -489,8 +944,12 @@ select_tab (LyWindow *win, int index)
     ly_tab_set_visible (g_ptr_array_index (win->tabs, i), (int) i == index);
   win->active = index;
   win->address_dirty = FALSE;
+  end_url_edit (win);
   sync_address (win);
   update_title (win);
+  /* The star belongs to the page, so it has to be asked again about this
+   * one rather than left showing the last tab's answer. */
+  refresh_bookmark_state (win);
   layout (win);
   redraw_chrome (win);
 }
@@ -504,14 +963,16 @@ ly_window_open_tab (LyWindow *win, const char *url)
                  ? win->cfg->homepage : "about:blank";
 
   if (!ly_webview_ready ()) {
-    g_free (win->pending_url);
-    win->pending_url = g_strdup (target);
+    g_ptr_array_add (win->pending, g_strdup (target));
     return;
   }
 
-  LyTab *tab = ly_tab_new (win->hwnd, win->cfg, win->block, target);
+  LyTab *tab = ly_tab_new (win->hwnd, win->cfg, win->block, win->downloads,
+                           win->passwords, win->store, target);
   ly_tab_set_callbacks (tab, on_tab_changed, on_tab_new_window, win);
   ly_tab_set_accelerator_handler (tab, on_tab_accelerator);
+  ly_tab_set_login_handler (tab, on_tab_login);
+  ly_tab_set_permission_handler (tab, on_tab_permission);
   g_ptr_array_add (win->tabs, tab);
   select_tab (win, (int) win->tabs->len - 1);
 }
@@ -543,10 +1004,11 @@ close_tab (LyWindow *win, int index)
 static void
 layout (LyWindow *win)
 {
-  RECT a = address_rect (win);
-  if (win->address)
-    MoveWindow (win->address, a.left + sc (win, 8), a.top + sc (win, 4),
-                (a.right - a.left) - sc (win, 16), (a.bottom - a.top) - sc (win, 8), TRUE);
+  if (win->address) {
+    RECT t = address_text_rect (win);
+    MoveWindow (win->address, t.left, t.top, t.right - t.left, t.bottom - t.top,
+                TRUE);
+  }
 
   RECT page = page_rect (win);
   for (guint i = 0; i < win->tabs->len; i++)
@@ -558,11 +1020,43 @@ redraw_chrome (LyWindow *win)
 {
   RECT c;
   GetClientRect (win->hwnd, &c);
-  c.bottom = sc (win, TABBAR_H) + sc (win, TOOLBAR_H);
+  c.bottom = chrome_height (win);
   InvalidateRect (win->hwnd, &c, FALSE);
 }
 
 /* ----------------------------------------------------------- address bar */
+
+/* The entry only exists while it is being typed into. Out of focus the URL is
+ * painted instead, which is the only way to dim everything but the domain. */
+static void
+begin_url_edit (LyWindow *win)
+{
+  if (win->editing_url)
+    return;
+  LyTab *tab = active_tab (win);
+  const char *url = tab ? ly_tab_url (tab) : "";
+  g_autofree wchar_t *w =
+    (wchar_t *) g_utf8_to_utf16 (url ? url : "", -1, NULL, NULL, NULL);
+
+  win->editing_url = TRUE;
+  SetWindowTextW (win->address, w ? w : L"");
+  layout (win);
+  ShowWindow (win->address, SW_SHOW);
+  SetFocus (win->address);
+  SendMessageW (win->address, EM_SETSEL, 0, -1);
+  redraw_chrome (win);
+}
+
+static void
+end_url_edit (LyWindow *win)
+{
+  if (!win->editing_url)
+    return;
+  win->editing_url = FALSE;
+  win->address_dirty = FALSE;
+  ShowWindow (win->address, SW_HIDE);
+  redraw_chrome (win);
+}
 
 static void
 go (LyWindow *win)
@@ -583,7 +1077,7 @@ go (LyWindow *win)
     ly_window_open_tab (win, url);
     return;
   }
-  win->address_dirty = FALSE;
+  end_url_edit (win);
   ly_tab_navigate (tab, url);
   ly_tab_focus (tab);
 }
@@ -599,8 +1093,7 @@ address_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       if (wp == VK_RETURN)
         return 0;
       if (wp == VK_ESCAPE) {
-        win->address_dirty = FALSE;
-        sync_address (win);
+        end_url_edit (win);
         LyTab *t = active_tab (win);
         if (t)
           ly_tab_focus (t);
@@ -620,36 +1113,18 @@ address_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       /* Select all on focus, the way every browser does. */
       PostMessageW (hwnd, EM_SETSEL, 0, -1);
       break;
+
+    case WM_KILLFOCUS:
+      /* Clicking away puts the painted URL back, dimmed path and all. */
+      end_url_edit (win);
+      break;
   }
   return CallWindowProcW (win->address_proc, hwnd, msg, wp, lp);
 }
 
 /* ------------------------------------------------------------ window proc */
 
-static void
-apply_dark_titlebar (HWND hwnd, gboolean dark)
-{
-  /* DWMWA_USE_IMMERSIVE_DARK_MODE. 20 on current Windows 10 and 11, 19 on
-   * the 1809-to-1903 builds; setting both is what everyone ends up doing. */
-  BOOL on = dark;
-  DwmSetWindowAttribute (hwnd, 20, &on, sizeof on);
-  DwmSetWindowAttribute (hwnd, 19, &on, sizeof on);
-}
 
-static void
-make_fonts (LyWindow *win)
-{
-  if (win->font)
-    DeleteObject (win->font);
-  if (win->font_small)
-    DeleteObject (win->font_small);
-  win->font = CreateFontW (-sc (win, 15), 0, 0, 0, FW_NORMAL, 0, 0, 0,
-                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                           CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI");
-  win->font_small = CreateFontW (-sc (win, 13), 0, 0, 0, FW_NORMAL, 0, 0, 0,
-                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Segoe UI");
-}
 
 static LRESULT CALLBACK
 window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -668,16 +1143,15 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       win->dpi = (int) GetDpiForWindow (hwnd);
       if (win->dpi <= 0)
         win->dpi = 96;
-      win->dark = system_is_dark ();
-      theme_for (&win->theme, win->dark);
-      make_fonts (win);
-      apply_dark_titlebar (hwnd, win->dark);
+      ly_theme_load (&win->theme, ly_wants_dark (win->cfg));
+      ly_fonts_make (&win->fonts, win->dpi);
+      ly_apply_dark_titlebar (hwnd, win->theme.dark);
 
       win->address = CreateWindowExW (
           0, L"EDIT", L"",
-          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_LEFT,
+          WS_CHILD | ES_AUTOHSCROLL | ES_LEFT,
           0, 0, 10, 10, hwnd, (HMENU) (UINT_PTR) ID_ADDRESS, win->instance, NULL);
-      SendMessageW (win->address, WM_SETFONT, (WPARAM) win->font, TRUE);
+      SendMessageW (win->address, WM_SETFONT, (WPARAM) win->fonts.normal, TRUE);
       SetWindowLongPtrW (win->address, GWLP_USERDATA, (LONG_PTR) win);
       win->address_proc = (WNDPROC) SetWindowLongPtrW (
           win->address, GWLP_WNDPROC, (LONG_PTR) address_proc);
@@ -691,8 +1165,8 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_DPICHANGED: {
       win->dpi = HIWORD (wp);
-      make_fonts (win);
-      SendMessageW (win->address, WM_SETFONT, (WPARAM) win->font, TRUE);
+      ly_fonts_make (&win->fonts, win->dpi);
+      SendMessageW (win->address, WM_SETFONT, (WPARAM) win->fonts.normal, TRUE);
       RECT *r = (RECT *) lp;
       SetWindowPos (hwnd, NULL, r->left, r->top, r->right - r->left,
                     r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -701,11 +1175,10 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_SETTINGCHANGE: {
-      gboolean dark = system_is_dark ();
-      if (dark != win->dark) {
-        win->dark = dark;
-        theme_for (&win->theme, dark);
-        apply_dark_titlebar (hwnd, dark);
+      gboolean dark = ly_wants_dark (win->cfg);
+      if (dark != win->theme.dark) {
+        ly_theme_load (&win->theme, dark);
+        ly_apply_dark_titlebar (hwnd, dark);
         InvalidateRect (hwnd, NULL, TRUE);
       }
       return 0;
@@ -728,19 +1201,13 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC dc = BeginPaint (hwnd, &ps);
-      /* Double buffered: the strip repaints on every title change and would
-         otherwise flicker over the page. */
       RECT c;
       GetClientRect (hwnd, &c);
-      int h = sc (win, TABBAR_H) + sc (win, TOOLBAR_H);
-      HDC mem = CreateCompatibleDC (dc);
-      HBITMAP bmp = CreateCompatibleBitmap (dc, c.right, h);
-      HBITMAP old = SelectObject (mem, bmp);
-      paint (win, mem);
-      BitBlt (dc, 0, 0, c.right, h, mem, 0, 0, SRCCOPY);
-      SelectObject (mem, old);
-      DeleteObject (bmp);
-      DeleteDC (mem);
+      LyCanvas canvas;
+      if (ly_canvas_begin (&canvas, dc, c.right, chrome_height (win))) {
+        paint (win, &canvas);
+        ly_canvas_end (&canvas);
+      }
       EndPaint (hwnd, &ps);
       return 0;
     }
@@ -765,6 +1232,17 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       redraw_chrome (win);
       return 0;
 
+    case WM_TIMER:
+      if (wp == TIMER_PROGRESS) {
+        win->progress_phase++;
+        RECT c;
+        GetClientRect (hwnd, &c);
+        RECT bar = { 0, chrome_height (win) - sc (win, PROGRESS_H) - 1,
+                     c.right, chrome_height (win) };
+        InvalidateRect (hwnd, &bar, FALSE);
+      }
+      return 0;
+
     case WM_LBUTTONDOWN: {
       POINT p = { GET_X_LPARAM (lp), GET_Y_LPARAM (lp) };
       int index;
@@ -782,6 +1260,14 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             ly_tab_reload (tab);
           }
           break;
+        case HIT_HOME:
+          if (tab && win->cfg && win->cfg->homepage && *win->cfg->homepage)
+            ly_tab_navigate (tab, win->cfg->homepage);
+          break;
+        case HIT_ADDRESS:  begin_url_edit (win); break;
+        case HIT_STAR:     toggle_bookmark (win); break;
+        case HIT_LIBRARY:  show_panel (win, LY_PANEL_BOOKMARKS); break;
+        case HIT_MENU:     show_menu (win); break;
         default: break;
       }
       return 0;
@@ -807,16 +1293,17 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       return 0;
 
     case WM_DESTROY: {
+      KillTimer (hwnd, TIMER_PROGRESS);
+      save_session (win);
+      if (win->panel)
+        ly_panel_close (win->panel);
       if (windows)
         g_ptr_array_remove_fast (windows, win);
       for (guint i = 0; i < win->tabs->len; i++)
         ly_tab_free (g_ptr_array_index (win->tabs, i));
       g_ptr_array_free (win->tabs, TRUE);
-      if (win->font)
-        DeleteObject (win->font);
-      if (win->font_small)
-        DeleteObject (win->font_small);
-      g_free (win->pending_url);
+      ly_fonts_free (&win->fonts);
+      g_ptr_array_free (win->pending, TRUE);
       g_free (win);
       if (--window_count == 0)
         PostQuitMessage (0);
@@ -844,8 +1331,14 @@ handle_vkey (LyWindow *win, guint vkey)
     switch (vkey) {
       case 'T': ly_window_open_tab (win, NULL); return TRUE;
       case 'W': close_tab (win, win->active); return TRUE;
-      case 'L': SetFocus (win->address); return TRUE;
+      case 'L': begin_url_edit (win); return TRUE;
       case 'R': if (tab) ly_tab_reload (tab); return TRUE;
+      case 'D': toggle_bookmark (win); return TRUE;
+      case 'H': show_panel (win, LY_PANEL_HISTORY); return TRUE;
+      case 'J': show_panel (win, LY_PANEL_DOWNLOADS); return TRUE;
+      case VK_OEM_COMMA:
+        ly_prefs_show (win->hwnd, win->instance, win->cfg, win->store, win->passwords);
+        return TRUE;
       case VK_TAB: {
         int n = (int) win->tabs->len;
         if (n > 1)
@@ -869,7 +1362,7 @@ handle_vkey (LyWindow *win, guint vkey)
         ly_tab_reload (tab);
       return TRUE;
     case VK_F6:
-      SetFocus (win->address);
+      begin_url_edit (win);
       return TRUE;
     case VK_BROWSER_BACK:
       if (tab)
@@ -928,14 +1421,18 @@ ly_window_register (HINSTANCE instance)
 
 LyWindow *
 ly_window_new (HINSTANCE instance, LyConfig *cfg, LyStore *store,
-               LyBlock *block, const char *url)
+               LyBlock *block, LyDownloads *downloads, LyPasswords *passwords,
+               const char *url)
 {
   LyWindow *win = g_new0 (LyWindow, 1);
   win->instance = instance;
   win->cfg = cfg;
   win->store = store;
   win->block = block;
+  win->downloads = downloads;
+  win->passwords = passwords;
   win->tabs = g_ptr_array_new ();
+  win->pending = g_ptr_array_new_with_free_func (g_free);
   win->active = -1;
   win->hot_tab = -1;
   win->dpi = 96;
@@ -946,6 +1443,7 @@ ly_window_new (HINSTANCE instance, LyConfig *cfg, LyStore *store,
       CW_USEDEFAULT, CW_USEDEFAULT, w, h, NULL, NULL, instance, win);
   if (hwnd == NULL) {
     g_ptr_array_free (win->tabs, TRUE);
+    g_ptr_array_free (win->pending, TRUE);
     g_free (win);
     return NULL;
   }
@@ -955,6 +1453,10 @@ ly_window_new (HINSTANCE instance, LyConfig *cfg, LyStore *store,
     windows = g_ptr_array_new ();
   g_ptr_array_add (windows, win);
 
+  if (downloads)
+    ly_downloads_set_callbacks (downloads, on_downloads_changed,
+                                on_download_done, win);
+
   ShowWindow (hwnd, SW_SHOWDEFAULT);
   UpdateWindow (hwnd);
 
@@ -962,9 +1464,16 @@ ly_window_new (HINSTANCE instance, LyConfig *cfg, LyStore *store,
     g_autofree wchar_t *m = (wchar_t *) g_utf8_to_utf16 (
         env_message ? env_message : "WebView2 is unavailable.", -1, NULL, NULL, NULL);
     MessageBoxW (hwnd, m, L"Lyndon", MB_OK | MB_ICONERROR);
-  } else {
-    ly_window_open_tab (win, url);
+    return win;
   }
+
+  /* A URL on the command line wins over the saved session: it is what the
+   * user asked for just now. */
+  if (url && *url)
+    ly_window_open_tab (win, url);
+  else if (!restore_session (win))
+    ly_window_open_tab (win, NULL);
+
   return win;
 }
 
@@ -999,11 +1508,13 @@ ly_window_environment_ready (gboolean ok, const char *message)
       MessageBoxW (win->hwnd, m, L"Lyndon", MB_OK | MB_ICONERROR);
       continue;
     }
-    /* The window was asked for a tab before there was anything to put in
-     * one. Now there is. */
-    g_autofree char *url = g_steal_pointer (&win->pending_url);
-    if (url)
-      ly_window_open_tab (win, url);
+    /* The window was asked for tabs before there was anything to put in
+     * them. Now there is. Taken by steal so that opening them cannot see a
+     * queue that is still being drained. */
+    g_autoptr (GPtrArray) waiting = win->pending;
+    win->pending = g_ptr_array_new_with_free_func (g_free);
+    for (guint t = 0; t < waiting->len; t++)
+      ly_window_open_tab (win, g_ptr_array_index (waiting, t));
   }
 }
 

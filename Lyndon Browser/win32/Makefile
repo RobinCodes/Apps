@@ -17,7 +17,7 @@ VERSION    := 0.1.0
 APP_ID     := org.lyndon.Browser
 
 CC         ?= gcc
-PKGS       := glib-2.0 gio-2.0 sqlite3
+PKGS       := glib-2.0 gio-2.0 sqlite3 json-glib-1.0
 
 WARN       := -Wall -Wextra -Wno-unused-parameter -Wshadow -Wpointer-arith \
               -Wformat=2 -Wno-missing-field-initializers -Wno-cast-function-type
@@ -52,8 +52,10 @@ endif
 
 # -- sources ---------------------------------------------------------------
 # From src/, unchanged: everything that never names a GTK or WebKit type.
-SHARED     := src/abp.c src/config.c src/store.c src/util.c
-WINSRC     := win32/block.c win32/tab.c win32/chrome.c win32/main.c
+SHARED     := src/abp.c src/config.c src/store.c src/util.c src/import.c
+WINSRC     := win32/block.c win32/tab.c win32/chrome.c win32/main.c \
+              win32/ui.c win32/downloads.c win32/panel.c win32/prefs.c \
+              win32/passwords.c win32/scheme.c
 
 OBJDIR     := build-win
 OBJS       := $(patsubst %.c,$(OBJDIR)/%.o,$(SHARED) $(WINSRC))

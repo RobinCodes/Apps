@@ -551,6 +551,14 @@ ly_block_stats (LyBlock *b)
   return &b->stats;
 }
 
+guint
+ly_block_rule_count (LyBlock *b)
+{
+  if (b == NULL)
+    return 0;
+  return b->stats.domains + b->stats.patterns + b->stats.exceptions;
+}
+
 void
 ly_block_reset_counters (LyBlock *b)
 {

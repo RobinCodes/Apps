@@ -48,9 +48,10 @@ being handed a file to open is the point.
 It is C, not Python, and it is built on WebKitGTK, which has no Windows port
 at all. Its Windows build replaces the toolkit and the engine — Win32 for the
 window, WebView2 for the pages — while compiling the filter translator, the
-config file, the history store and the URL helpers from `src/` unchanged. See
-[its README](Lyndon%20Browser/#windows) for what that involved and what is not
-there yet.
+config file, the history store, the importer and the URL helpers from `src/`
+unchanged. Settings, bookmarks, history, downloads, saved logins and session
+restore are all there; see [its README](Lyndon%20Browser/#windows) for how,
+and for the short list of what this engine cannot do.
 
 ```bash
 cd "Lyndon Browser"

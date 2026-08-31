@@ -13,6 +13,17 @@
  */
 
 #include "tab.h"
+#include "scheme.h"
+#include "ui.h"   /* ly_system_is_dark, for the start page */
+
+#ifdef LY_DEBUG
+# include <stdio.h>
+# define TRACE(...) do { fprintf (stderr, "[lyndon] " __VA_ARGS__); fputc (10, stderr); fflush (stderr); } while (0)
+#else
+# define TRACE(...) do { } while (0)
+#endif
+
+#include <json-glib/json-glib.h>
 
 #include <shlwapi.h>
 #include <stdlib.h>
@@ -117,6 +128,7 @@ static struct {
   ICoreWebView2Environment *env;
   LyEnvReadyFn ready_fn;
   gpointer     ready_data;
+  char        *resources;   /* where data/web and data/rules live */
 } rt;
 
 static gboolean
@@ -175,10 +187,13 @@ EnvHandler_Invoke (ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *s
 }
 
 void
-ly_webview_init (const char *profile_dir, LyEnvReadyFn ready, gpointer user_data)
+ly_webview_init (const char *profile_dir, const char *resource_dir,
+                 LyConfig *cfg, LyEnvReadyFn ready, gpointer user_data)
 {
   rt.ready_fn = ready;
   rt.ready_data = user_data;
+  g_free (rt.resources);
+  rt.resources = g_strdup (resource_dir);
 
   if (!load_loader ()) {
     if (ready)
@@ -192,7 +207,26 @@ ly_webview_init (const char *profile_dir, LyEnvReadyFn ready, gpointer user_data
   }
 
   g_autofree wchar_t *dir = to_w (profile_dir);
-  HRESULT hr = rt.create_env (NULL, dir, NULL, EnvHandler_new (NULL));
+
+  /* The options object is what registers the lyndon: scheme, so the same
+   * homepage works on both builds. Without it the environment still starts;
+   * only the start page would be unreachable. */
+  g_autofree char *runtime = ly_webview_runtime_version ();
+  ICoreWebView2EnvironmentOptions *options =
+    ly_environment_options_new (cfg, runtime);
+  TRACE ("options=%p runtime=%s resources=%s", (void *) options,
+         runtime ? runtime : "(unknown)", rt.resources);
+  HRESULT hr = rt.create_env (NULL, dir, options, EnvHandler_new (NULL));
+  TRACE ("CreateCoreWebView2EnvironmentWithOptions -> 0x%08lx", (unsigned long) hr);
+  if (FAILED (hr) && options) {
+    TRACE ("options refused; retrying without the custom scheme");
+    ICoreWebView2EnvironmentOptions_Release (options);
+    options = NULL;
+    hr = rt.create_env (NULL, dir, NULL, EnvHandler_new (NULL));
+  }
+  if (options)
+    ICoreWebView2EnvironmentOptions_Release (options);
+
   if (FAILED (hr) && ready)
     ready (FALSE, "WebView2 refused to create a browser environment.", user_data);
 }
@@ -210,8 +244,11 @@ ly_webview_shutdown (void)
 
 struct _LyTab {
   HWND parent;
-  LyConfig *cfg;
-  LyBlock  *block;
+  LyConfig    *cfg;
+  LyBlock     *block;
+  LyDownloads *downloads;
+  LyPasswords *passwords;
+  LyStore     *store;
 
   ICoreWebView2Controller *controller;
   ICoreWebView2           *view;
@@ -227,11 +264,17 @@ struct _LyTab {
   guint    blocked;
   RECT     bounds;
 
-  LyTabChangedFn   changed;
-  LyTabNewWindowFn new_window;
-  LyTabAccelFn     accel;
-  gpointer         cb_data;
+  LyTabChangedFn    changed;
+  LyTabNewWindowFn  new_window;
+  LyTabAccelFn      accel;
+  LyTabLoginFn      login;
+  LyTabPermissionFn permission;
+  gpointer          cb_data;
 };
+
+static void apply_settings (LyTab *tab);
+static void inject_password_script (LyTab *tab);
+static void inject_start_page_stats (LyTab *tab);
 
 static void
 tab_changed (LyTab *tab)
@@ -270,6 +313,8 @@ NavDone_Invoke (ICoreWebView2NavigationCompletedEventHandler *self,
 {
   LyTab *tab = ((NavDone *) self)->data;
   tab->loading = FALSE;
+  if (tab->url && g_str_has_prefix (tab->url, LY_SCHEME ":"))
+    inject_start_page_stats (tab);
   tab_changed (tab);
   return S_OK;
 }
@@ -325,6 +370,97 @@ HistoryChanged_Invoke (ICoreWebView2HistoryChangedEventHandler *self,
   return S_OK;
 }
 
+/* -- the pages Lyndon serves itself -------------------------------------- */
+
+/* "lyndon:start" -> <resources>/web/start.html. Only names made of letters
+ * are accepted, so nothing can walk out of the directory. */
+static char *
+internal_page_path (const char *uri)
+{
+  if (!g_str_has_prefix (uri, LY_SCHEME ":"))
+    return NULL;
+  const char *name = uri + strlen (LY_SCHEME ":");
+  while (*name == '/')
+    name++;
+
+  const char *end = strpbrk (name, "?#");
+  g_autofree char *bare = end ? g_strndup (name, (gsize) (end - name))
+                              : g_strdup (name);
+  if (*bare == '\0')
+    bare = g_strdup ("start");
+  for (const char *p = bare; *p; p++)
+    if (!g_ascii_isalnum (*p) && *p != '-')
+      return NULL;
+
+  g_autofree char *file = g_strconcat (bare, ".html", NULL);
+  return g_build_filename (rt.resources ? rt.resources : "data", "web", file, NULL);
+}
+
+/* The response for one of those pages, or NULL if there is no such page. */
+static ICoreWebView2WebResourceResponse *
+internal_page_response (const char *uri)
+{
+  if (rt.env == NULL)
+    return NULL;
+  g_autofree char *path = internal_page_path (uri);
+  TRACE ("internal page for %s -> %s", uri, path ? path : "(not ours)");
+  if (path == NULL)
+    return NULL;
+
+  g_autofree char *body = NULL;
+  gsize length = 0;
+  ICoreWebView2WebResourceResponse *res = NULL;
+
+  if (!g_file_get_contents (path, &body, &length, NULL)) {
+    ICoreWebView2Environment_CreateWebResourceResponse (
+        rt.env, NULL, 404, L"Not Found",
+        L"Content-Type: text/plain; charset=utf-8", &res);
+    return res;
+  }
+
+  /* SHCreateMemStream copies, so the buffer can go out of scope. */
+  IStream *stream = SHCreateMemStream ((const BYTE *) body, (UINT) length);
+  ICoreWebView2Environment_CreateWebResourceResponse (
+      rt.env, stream, 200, L"OK",
+      L"Content-Type: text/html; charset=utf-8\r\n"
+      L"Cache-Control: no-store", &res);
+  if (stream)
+    IStream_Release (stream);
+  return res;
+}
+
+/* The three numbers on the start page, filled in exactly as src/tab.c does. */
+static void
+inject_start_page_stats (LyTab *tab)
+{
+  if (tab->view == NULL || tab->cfg == NULL)
+    return;
+
+  const char *scheme_name;
+  if (tab->cfg->force_dark != LY_DARK_OFF)
+    scheme_name = tab->cfg->force_dark == LY_DARK_ALWAYS ? "Dark (forced)"
+                                                         : "Dark (smart)";
+  else
+    scheme_name = ly_wants_dark (tab->cfg) ? "Dark" : "Light";
+
+  const char *cookies;
+  switch (tab->cfg->cookie_policy) {
+    case LY_COOKIES_NONE: cookies = "Blocked"; break;
+    case LY_COOKIES_ALL:  cookies = "Allowed"; break;
+    default:              cookies = "1st party"; break;
+  }
+
+  guint rules = tab->cfg->block_enabled ? ly_block_rule_count (tab->block) : 0;
+
+  g_autofree char *js =
+    g_strdup_printf ("if(window.lyndonStats)window.lyndonStats("
+                     "{rules:%u,cookies:\"%s\",appearance:\"%s\"});",
+                     rules, cookies, scheme_name);
+  g_autofree wchar_t *w = to_w (js);
+  if (w)
+    ICoreWebView2_ExecuteScript (tab->view, w, NULL);
+}
+
 /* -- the blocker hook ---------------------------------------------------- */
 
 #define HANDLER_ARGS_ResourceReq ICoreWebView2 *sender, ICoreWebView2WebResourceRequestedEventArgs *args
@@ -336,7 +472,7 @@ ResourceReq_Invoke (ICoreWebView2WebResourceRequestedEventHandler *self,
                     ICoreWebView2WebResourceRequestedEventArgs *args)
 {
   LyTab *tab = ((ResourceReq *) self)->data;
-  if (!tab->blocking || tab->block == NULL || rt.env == NULL)
+  if (rt.env == NULL)
     return S_OK;
 
   ICoreWebView2WebResourceRequest *req = NULL;
@@ -346,6 +482,22 @@ ResourceReq_Invoke (ICoreWebView2WebResourceRequestedEventHandler *self,
   LPWSTR uri_w = NULL;
   ICoreWebView2WebResourceRequest_get_Uri (req, &uri_w);
   g_autofree char *uri = take_w (uri_w);
+
+  /* Lyndon's own pages are answered from disk before anything else looks at
+   * the request. */
+  TRACE ("request: %s", uri ? uri : "(null)");
+  ICoreWebView2WebResourceResponse *page = internal_page_response (uri);
+  if (page) {
+    ICoreWebView2WebResourceRequestedEventArgs_put_Response (args, page);
+    ICoreWebView2WebResourceResponse_Release (page);
+    ICoreWebView2WebResourceRequest_Release (req);
+    return S_OK;
+  }
+
+  if (!tab->blocking || tab->block == NULL) {
+    ICoreWebView2WebResourceRequest_Release (req);
+    return S_OK;
+  }
 
   COREWEBVIEW2_WEB_RESOURCE_CONTEXT ctx = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
   ICoreWebView2WebResourceRequestedEventArgs_get_ResourceContext (args, &ctx);
@@ -379,6 +531,10 @@ ContentLoading_Invoke (ICoreWebView2ContentLoadingEventHandler *self,
                        ICoreWebView2 *sender, ICoreWebView2ContentLoadingEventArgs *args)
 {
   LyTab *tab = ((ContentLoading *) self)->data;
+
+  inject_password_script (tab);
+  ly_tab_apply_config (tab);
+
   if (!tab->blocking || tab->block == NULL || tab->url == NULL)
     return S_OK;
 
@@ -401,6 +557,21 @@ ContentLoading_Invoke (ICoreWebView2ContentLoadingEventHandler *self,
   return S_OK;
 }
 
+/* The login-form script, injected per navigation rather than registered once
+ * with AddScriptToExecuteOnDocumentCreated: it wants a document to look at,
+ * and document-created is too early for that. */
+static void
+inject_password_script (LyTab *tab)
+{
+  if (tab->view == NULL || tab->passwords == NULL || tab->cfg == NULL)
+    return;
+  if (!tab->cfg->save_passwords && !tab->cfg->password_autofill)
+    return;
+  g_autofree wchar_t *w = to_w (ly_passwords_user_script ());
+  if (w)
+    ICoreWebView2_ExecuteScript (tab->view, w, NULL);
+}
+
 /* -- links that want a window -------------------------------------------- */
 
 #define HANDLER_ARGS_NewWindow ICoreWebView2 *sender, ICoreWebView2NewWindowRequestedEventArgs *args
@@ -420,6 +591,263 @@ NewWindow_Invoke (ICoreWebView2NewWindowRequestedEventHandler *self,
   ICoreWebView2NewWindowRequestedEventArgs_put_Handled (args, TRUE);
   if (tab->new_window && url)
     tab->new_window (tab, url, tab->cb_data);
+  return S_OK;
+}
+
+/* -- downloads ----------------------------------------------------------- */
+
+/* The list entry a download operation belongs to. WebView2 gives each
+ * operation its own event source, so the handler carries the item rather
+ * than having to look it up. */
+typedef struct {
+  LyTab          *tab;
+  LyDownloadItem *item;
+  ICoreWebView2DownloadOperation *op;
+} DownloadLink;
+
+static void
+download_sync (DownloadLink *link)
+{
+  if (link->item == NULL || link->op == NULL)
+    return;
+
+  /* The panel sets this when the user presses cancel; the engine object is
+   * only reachable from here. */
+  if (link->item->cancelled && !link->item->finished) {
+    ICoreWebView2DownloadOperation_Cancel (link->op);
+    return;
+  }
+
+  INT64 received = 0;
+  ICoreWebView2DownloadOperation_get_BytesReceived (link->op, &received);
+  ly_downloads_progress (link->tab->downloads, link->item, (guint64) received);
+}
+
+#define HANDLER_ARGS_DlBytes ICoreWebView2DownloadOperation *sender, IUnknown *args
+HANDLER_HEAD (DlBytes, ICoreWebView2BytesReceivedChangedEventHandler)
+
+static HRESULT STDMETHODCALLTYPE
+DlBytes_Invoke (ICoreWebView2BytesReceivedChangedEventHandler *self,
+                ICoreWebView2DownloadOperation *sender, IUnknown *args)
+{
+  download_sync (((DlBytes *) self)->data);
+  return S_OK;
+}
+
+#define HANDLER_ARGS_DlState ICoreWebView2DownloadOperation *sender, IUnknown *args
+HANDLER_HEAD (DlState, ICoreWebView2StateChangedEventHandler)
+
+static HRESULT STDMETHODCALLTYPE
+DlState_Invoke (ICoreWebView2StateChangedEventHandler *self,
+                ICoreWebView2DownloadOperation *sender, IUnknown *args)
+{
+  DownloadLink *link = ((DlState *) self)->data;
+  COREWEBVIEW2_DOWNLOAD_STATE state = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
+  ICoreWebView2DownloadOperation_get_State (sender, &state);
+
+  if (state == COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS) {
+    download_sync (link);
+    return S_OK;
+  }
+
+  if (state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED) {
+    download_sync (link);
+    ly_downloads_finish (link->tab->downloads, link->item, TRUE, NULL);
+  } else {
+    COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON why =
+      COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;
+    ICoreWebView2DownloadOperation_get_InterruptReason (sender, &why);
+    const char *text =
+      (why == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED)
+        ? "Cancelled" : "The download was interrupted.";
+    ly_downloads_finish (link->tab->downloads, link->item, FALSE, text);
+  }
+
+  if (link->op) {
+    ICoreWebView2DownloadOperation_Release (link->op);
+    link->op = NULL;
+  }
+  return S_OK;
+}
+
+#define HANDLER_ARGS_DlStart ICoreWebView2 *sender, ICoreWebView2DownloadStartingEventArgs *args
+HANDLER_HEAD (DlStart, ICoreWebView2DownloadStartingEventHandler)
+
+static HRESULT STDMETHODCALLTYPE
+DlStart_Invoke (ICoreWebView2DownloadStartingEventHandler *self,
+                ICoreWebView2 *sender,
+                ICoreWebView2DownloadStartingEventArgs *args)
+{
+  LyTab *tab = ((DlStart *) self)->data;
+  if (tab->downloads == NULL)
+    return S_OK;
+
+  ICoreWebView2DownloadOperation *op = NULL;
+  if (FAILED (ICoreWebView2DownloadStartingEventArgs_get_DownloadOperation (args, &op))
+      || op == NULL)
+    return S_OK;
+
+  LPWSTR wsuggested = NULL;
+  ICoreWebView2DownloadOperation_get_ResultFilePath (op, &wsuggested);
+  g_autofree char *suggested = take_w (wsuggested);
+
+  LPWSTR wuri = NULL;
+  ICoreWebView2DownloadOperation_get_Uri (op, &wuri);
+  g_autofree char *uri = take_w (wuri);
+
+  INT64 total = 0;
+  ICoreWebView2DownloadOperation_get_TotalBytesToReceive (op, &total);
+
+  /* Lyndon picks the path, so the configured folder is honoured and an
+   * existing file is never quietly overwritten. */
+  g_autofree char *path = ly_downloads_target_path (tab->downloads, suggested);
+  g_autofree wchar_t *wpath = to_w (path);
+  if (wpath)
+    ICoreWebView2DownloadStartingEventArgs_put_ResultFilePath (args, wpath);
+
+  /* Handled, so Edge shows no download bubble of its own: the panel is
+   * Lyndon's, and two download UIs would be one too many. */
+  ICoreWebView2DownloadStartingEventArgs_put_Handled (args, TRUE);
+
+  DownloadLink *link = g_new0 (DownloadLink, 1);
+  link->tab = tab;
+  link->op = op;
+  ICoreWebView2DownloadOperation_AddRef (op);
+  link->item = ly_downloads_begin (tab->downloads, uri, path,
+                                   (guint64) MAX (total, 0), op);
+
+  EventRegistrationToken tok;
+  ICoreWebView2DownloadOperation_add_BytesReceivedChanged (op, DlBytes_new (link), &tok);
+  ICoreWebView2DownloadOperation_add_StateChanged (op, DlState_new (link), &tok);
+
+  ICoreWebView2DownloadOperation_Release (op);
+  return S_OK;
+}
+
+/* -- permissions --------------------------------------------------------- */
+
+static LyPermKind
+perm_from_webview2 (int kind)
+{
+  /* COREWEBVIEW2_PERMISSION_KIND, in its declared order. The two lists do
+   * not line up exactly; anything without a counterpart is treated as a
+   * device-information request, which is the most conservative of ours. */
+  switch (kind) {
+    case 1:  return LY_PERM_MICROPHONE;
+    case 2:  return LY_PERM_CAMERA;
+    case 3:  return LY_PERM_GEOLOCATION;
+    case 4:  return LY_PERM_NOTIFICATIONS;
+    case 6:  return LY_PERM_CLIPBOARD;
+    default: return LY_PERM_DEVICE_INFO;
+  }
+}
+
+#define HANDLER_ARGS_PermReq ICoreWebView2 *sender, ICoreWebView2PermissionRequestedEventArgs *args
+HANDLER_HEAD (PermReq, ICoreWebView2PermissionRequestedEventHandler)
+
+static HRESULT STDMETHODCALLTYPE
+PermReq_Invoke (ICoreWebView2PermissionRequestedEventHandler *self,
+                ICoreWebView2 *sender,
+                ICoreWebView2PermissionRequestedEventArgs *args)
+{
+  LyTab *tab = ((PermReq *) self)->data;
+
+  COREWEBVIEW2_PERMISSION_KIND kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+  ICoreWebView2PermissionRequestedEventArgs_get_PermissionKind (args, &kind);
+  LyPermKind mine = perm_from_webview2 ((int) kind);
+
+  LPWSTR wuri = NULL;
+  ICoreWebView2PermissionRequestedEventArgs_get_Uri (args, &wuri);
+  g_autofree char *uri = take_w (wuri);
+
+  LyPolicy policy = tab->cfg ? tab->cfg->perm[mine] : LY_POLICY_ASK;
+  if (tab->permission)
+    policy = tab->permission (tab, mine, uri, tab->cb_data);
+
+  if (policy == LY_POLICY_ALLOW)
+    ICoreWebView2PermissionRequestedEventArgs_put_State (
+        args, COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+  else if (policy == LY_POLICY_DENY)
+    ICoreWebView2PermissionRequestedEventArgs_put_State (
+        args, COREWEBVIEW2_PERMISSION_STATE_DENY);
+  /* ASK is left alone, and WebView2 puts up its own prompt. */
+  return S_OK;
+}
+
+/* -- the password channel ------------------------------------------------ */
+
+/* Fill the form if exactly one login is stored for this origin. Two would be
+ * a choice, and a choice needs a prompt rather than a guess. */
+static void
+autofill_found (GPtrArray *found, gpointer user_data)
+{
+  LyTab *tab = user_data;
+  if (found->len != 1)
+    return;
+  const LyCredential *c = g_ptr_array_index (found, 0);
+  if (c->password)
+    ly_tab_fill_login (tab, c->username, c->password);
+}
+
+#define HANDLER_ARGS_WebMsg ICoreWebView2 *sender, ICoreWebView2WebMessageReceivedEventArgs *args
+HANDLER_HEAD (WebMsg, ICoreWebView2WebMessageReceivedEventHandler)
+
+static HRESULT STDMETHODCALLTYPE
+WebMsg_Invoke (ICoreWebView2WebMessageReceivedEventHandler *self,
+               ICoreWebView2 *sender,
+               ICoreWebView2WebMessageReceivedEventArgs *args)
+{
+  LyTab *tab = ((WebMsg *) self)->data;
+
+  LPWSTR wjson = NULL;
+  if (FAILED (ICoreWebView2WebMessageReceivedEventArgs_TryGetWebMessageAsString (args, &wjson))
+      || wjson == NULL)
+    return S_OK;
+  g_autofree char *json = take_w (wjson);
+
+  g_autoptr (JsonParser) parser = json_parser_new ();
+  if (!json_parser_load_from_data (parser, json, -1, NULL))
+    return S_OK;
+
+  JsonNode *root = json_parser_get_root (parser);
+  if (root == NULL || !JSON_NODE_HOLDS_OBJECT (root))
+    return S_OK;
+  JsonObject *envelope = json_node_get_object (root);
+
+  /* Every page can post on this one channel, so the envelope has to say what
+   * it is. Anything that does not name the password channel is a page
+   * talking to itself and is none of our business. */
+  if (g_strcmp0 (json_object_get_string_member_with_default (envelope, "channel", ""),
+                 "lyndonPasswords") != 0)
+    return S_OK;
+  if (!json_object_has_member (envelope, "body"))
+    return S_OK;
+
+  JsonNode *body_node = json_object_get_member (envelope, "body");
+  if (!JSON_NODE_HOLDS_OBJECT (body_node))
+    return S_OK;
+  JsonObject *body = json_node_get_object (body_node);
+
+  const char *type = json_object_get_string_member_with_default (body, "type", "");
+  const char *origin = json_object_get_string_member_with_default (body, "origin", "");
+
+  if (g_strcmp0 (type, "submit") == 0) {
+    if (tab->cfg && !tab->cfg->save_passwords)
+      return S_OK;
+    const char *user = json_object_get_string_member_with_default (body, "username", "");
+    const char *pass = json_object_get_string_member_with_default (body, "password", "");
+    if (*pass && tab->login)
+      tab->login (tab, origin, user, pass, tab->cb_data);
+    return S_OK;
+  }
+
+  if (g_strcmp0 (type, "forms") == 0) {
+    if (tab->passwords == NULL || tab->cfg == NULL || !tab->cfg->password_autofill)
+      return S_OK;
+    if (json_object_get_int_member_with_default (body, "count", 0) < 1)
+      return S_OK;
+    ly_passwords_lookup (tab->passwords, origin, autofill_found, tab);
+  }
   return S_OK;
 }
 
@@ -475,6 +903,25 @@ apply_settings (LyTab *tab)
   ICoreWebView2Settings_put_IsBuiltInErrorPageEnabled (s, TRUE);
 
   ICoreWebView2Settings_Release (s);
+
+  /* Pages that honour prefers-color-scheme should follow the browser, not the
+   * system, when the two disagree. The profile is on ICoreWebView2_13. */
+  ICoreWebView2_13 *v13 = NULL;
+  if (SUCCEEDED (ICoreWebView2_QueryInterface (tab->view, &IID_ICoreWebView2_13,
+                                               (void **) &v13)) && v13) {
+    ICoreWebView2Profile *profile = NULL;
+    if (SUCCEEDED (ICoreWebView2_13_get_Profile (v13, &profile)) && profile) {
+      COREWEBVIEW2_PREFERRED_COLOR_SCHEME want =
+        (c == NULL || c->scheme == LY_SCHEME_SYSTEM)
+          ? COREWEBVIEW2_PREFERRED_COLOR_SCHEME_AUTO
+          : (c->scheme == LY_SCHEME_DARK
+               ? COREWEBVIEW2_PREFERRED_COLOR_SCHEME_DARK
+               : COREWEBVIEW2_PREFERRED_COLOR_SCHEME_LIGHT);
+      ICoreWebView2Profile_put_PreferredColorScheme (profile, want);
+      ICoreWebView2Profile_Release (profile);
+    }
+    ICoreWebView2_13_Release (v13);
+  }
 }
 
 /* -- controller created -------------------------------------------------- */
@@ -495,7 +942,22 @@ wire_events (LyTab *tab)
    * The filter has to be added before the handler will fire. */
   ICoreWebView2_AddWebResourceRequestedFilter (tab->view, L"*",
                                                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+  /* "*" does not reach a custom scheme; it has to be named. */
+  ICoreWebView2_AddWebResourceRequestedFilter (tab->view, L"" LY_SCHEME ":*",
+                                               COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
   ICoreWebView2_add_WebResourceRequested (tab->view, ResourceReq_new (tab), &tok);
+
+  /* Downloads arrived in ICoreWebView2_4, so it is behind a QueryInterface
+   * rather than on the base interface. An older runtime simply does not get
+   * Lyndon-managed downloads, which is better than refusing to start. */
+  ICoreWebView2_4 *v4 = NULL;
+  if (SUCCEEDED (ICoreWebView2_QueryInterface (tab->view, &IID_ICoreWebView2_4,
+                                               (void **) &v4)) && v4) {
+    ICoreWebView2_4_add_DownloadStarting (v4, DlStart_new (tab), &tok);
+    ICoreWebView2_4_Release (v4);
+  }
+  ICoreWebView2_add_PermissionRequested (tab->view, PermReq_new (tab), &tok);
+  ICoreWebView2_add_WebMessageReceived (tab->view, WebMsg_new (tab), &tok);
 
   /* On the controller, not the view: this one is about the host window. */
   ICoreWebView2Controller_add_AcceleratorKeyPressed (tab->controller,
@@ -535,12 +997,17 @@ CtrlHandler_Invoke (ICoreWebView2CreateCoreWebView2ControllerCompletedHandler *s
 /* ------------------------------------------------------------------- API */
 
 LyTab *
-ly_tab_new (HWND parent, LyConfig *cfg, LyBlock *block, const char *url)
+ly_tab_new (HWND parent, LyConfig *cfg, LyBlock *block,
+            LyDownloads *downloads, LyPasswords *passwords,
+            LyStore *store, const char *url)
 {
   LyTab *tab = g_new0 (LyTab, 1);
   tab->parent = parent;
   tab->cfg = cfg;
   tab->block = block;
+  tab->downloads = downloads;
+  tab->passwords = passwords;
+  tab->store = store;
   tab->visible = TRUE;
   tab->blocking = cfg ? !!cfg->block_enabled : TRUE;
   tab->url = g_strdup (url ? url : "");
@@ -584,6 +1051,53 @@ void
 ly_tab_set_accelerator_handler (LyTab *tab, LyTabAccelFn accel)
 {
   tab->accel = accel;
+}
+
+void
+ly_tab_set_login_handler (LyTab *tab, LyTabLoginFn login)
+{
+  tab->login = login;
+}
+
+void
+ly_tab_set_permission_handler (LyTab *tab, LyTabPermissionFn permission)
+{
+  tab->permission = permission;
+}
+
+void
+ly_tab_fill_login (LyTab *tab, const char *username, const char *password)
+{
+  if (tab->view == NULL || password == NULL)
+    return;
+  /* __lyndonFill is installed by the injected script and knows how to write
+   * through the prototype setter, which is what makes React notice. */
+  g_autofree char *u = ly_escape_js_string (username ? username : "");
+  g_autofree char *p = ly_escape_js_string (password);
+  g_autofree char *js =
+    g_strdup_printf ("window.__lyndonFill&&window.__lyndonFill(\"%s\",\"%s\")", u, p);
+  g_autofree wchar_t *w = to_w (js);
+  if (w)
+    ICoreWebView2_ExecuteScript (tab->view, w, NULL);
+}
+
+void
+ly_tab_apply_config (LyTab *tab)
+{
+  if (tab->view == NULL)
+    return;
+  apply_settings (tab);
+
+  /* Zoom: the per-site value if there is one and the option is on, and the
+   * configured default otherwise. */
+  double zoom = tab->cfg ? tab->cfg->default_zoom : 1.0;
+  if (tab->cfg && tab->cfg->per_site_zoom && tab->store && tab->url) {
+    g_autofree char *host = ly_uri_host (tab->url);
+    if (host)
+      zoom = ly_store_zoom_for (tab->store, host, zoom);
+  }
+  if (zoom > 0.1 && tab->controller)
+    ICoreWebView2Controller_put_ZoomFactor (tab->controller, zoom);
 }
 
 void

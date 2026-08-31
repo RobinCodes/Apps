@@ -16,6 +16,9 @@
 
 #include "lyndon.h"
 #include "block.h"
+#include "downloads.h"
+#include "passwords.h"
+#include "store.h"
 
 #include <windows.h>
 
@@ -38,22 +41,44 @@ typedef void (*LyTabNewWindowFn) (LyTab *source, const char *url, gpointer user_
  * can work while a page is focused. */
 typedef gboolean (*LyTabAccelFn) (LyTab *tab, guint vkey, gpointer user_data);
 
+/* A login the page just submitted, for the window to offer to remember. The
+ * tab does not save it itself: whether to ask, and what the answer was, is a
+ * question for the window that has somewhere to put the question. */
+typedef void (*LyTabLoginFn) (LyTab *tab, const char *origin, const char *username,
+                              const char *password, gpointer user_data);
+
+/* A site asking for the camera, the microphone, a location. Return an
+ * LyPolicy; LY_POLICY_ASK leaves the decision to WebView2's own prompt. */
+typedef LyPolicy (*LyTabPermissionFn) (LyTab *tab, LyPermKind kind,
+                                       const char *origin, gpointer user_data);
+
 /* Create the shared environment. `ready` fires on the UI thread once tabs can
  * be made; it fires with ok=FALSE when the WebView2 runtime is missing. */
 typedef void (*LyEnvReadyFn) (gboolean ok, const char *message, gpointer user_data);
-void ly_webview_init (const char *profile_dir, LyEnvReadyFn ready, gpointer user_data);
+void ly_webview_init (const char *profile_dir, const char *resource_dir,
+                      LyConfig *cfg, LyEnvReadyFn ready, gpointer user_data);
 void ly_webview_shutdown (void);
 gboolean ly_webview_ready (void);
 
 /* The version of the installed runtime, or NULL. Free with g_free(). */
 char *ly_webview_runtime_version (void);
 
-LyTab *ly_tab_new  (HWND parent, LyConfig *cfg, LyBlock *block, const char *url);
+LyTab *ly_tab_new  (HWND parent, LyConfig *cfg, LyBlock *block,
+                    LyDownloads *downloads, LyPasswords *passwords,
+                    LyStore *store, const char *url);
 void   ly_tab_free (LyTab *tab);
 
 void ly_tab_set_callbacks (LyTab *tab, LyTabChangedFn changed,
                            LyTabNewWindowFn new_window, gpointer user_data);
 void ly_tab_set_accelerator_handler (LyTab *tab, LyTabAccelFn accel);
+void ly_tab_set_login_handler (LyTab *tab, LyTabLoginFn login);
+void ly_tab_set_permission_handler (LyTab *tab, LyTabPermissionFn permission);
+
+/* Put a saved login into the form the page is showing. */
+void ly_tab_fill_login (LyTab *tab, const char *username, const char *password);
+
+/* Re-read the settings that WebView2 can be told about after creation. */
+void ly_tab_apply_config (LyTab *tab);
 
 void ly_tab_navigate (LyTab *tab, const char *url);
 void ly_tab_back     (LyTab *tab);

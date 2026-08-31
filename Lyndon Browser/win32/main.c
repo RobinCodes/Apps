@@ -8,6 +8,8 @@
  */
 
 #include "chrome.h"
+#include "panel.h"
+#include "prefs.h"
 
 #include <commctrl.h>
 #include <objbase.h>
@@ -69,8 +71,12 @@ wWinMain (HINSTANCE instance, HINSTANCE prev, PWSTR cmdline, int show)
   if (g_file_test (custom, G_FILE_TEST_EXISTS))
     ly_block_add_file (block, custom, NULL);
 
-  if (!ly_window_register (instance)) {
-    MessageBoxW (NULL, L"Could not register the window class.", L"Lyndon",
+  LyDownloads *downloads = ly_downloads_new (cfg);
+  LyPasswords *passwords = ly_passwords_new (cfg);
+
+  if (!ly_window_register (instance) || !ly_panel_register (instance) ||
+      !ly_prefs_register (instance)) {
+    MessageBoxW (NULL, L"Could not register the window classes.", L"Lyndon",
                  MB_OK | MB_ICONERROR);
     return 1;
   }
@@ -85,7 +91,8 @@ wWinMain (HINSTANCE instance, HINSTANCE prev, PWSTR cmdline, int show)
     LocalFree (argv);
   }
 
-  LyWindow *win = ly_window_new (instance, cfg, store, block, first);
+  LyWindow *win = ly_window_new (instance, cfg, store, block, downloads,
+                                 passwords, first);
   if (win == NULL)
     return 1;
 
@@ -93,7 +100,7 @@ wWinMain (HINSTANCE instance, HINSTANCE prev, PWSTR cmdline, int show)
   g_autofree char *data_home = ly_data_dir ();
   g_autofree char *profile = g_build_filename (data_home, "webview2", NULL);
   g_mkdir_with_parents (profile, 0700);
-  ly_webview_init (profile, on_environment, NULL);
+  ly_webview_init (profile, data_dir, cfg, on_environment, NULL);
 
   MSG msg;
   while (GetMessageW (&msg, NULL, 0, 0) > 0) {
@@ -105,6 +112,8 @@ wWinMain (HINSTANCE instance, HINSTANCE prev, PWSTR cmdline, int show)
   }
 
   ly_webview_shutdown ();
+  ly_passwords_free (passwords);
+  ly_downloads_free (downloads);
   ly_store_free (store);
   ly_block_free (block);
   ly_config_free (cfg);
