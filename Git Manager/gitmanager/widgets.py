@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -24,19 +26,85 @@ META_FG = _rgba("rgba(128,128,128,0.95)")
 MAX_DIFF_LINES = 4000  # past this a diff is unreadable anyway, and slow to render
 
 
+ERROR_TIMEOUT = 10  # a failure gets longer on screen than a confirmation does
+
+
+def _descendant_overlay(root):
+    """Breadth-first hunt for a ToastOverlay somewhere below `root`."""
+    queue = [root]
+    while queue:
+        node = queue.pop(0)
+        if isinstance(node, Adw.ToastOverlay):
+            return node
+        child = node.get_first_child()
+        while child is not None:
+            queue.append(child)
+            child = child.get_next_sibling()
+    return None
+
+
 def _overlay(widget):
-    """The nearest ToastOverlay above this widget, if there is one."""
+    """The ToastOverlay a message posted from `widget` belongs on.
+
+    Walking up the parent chain is not enough on its own, and the two places
+    it misses are the two that matter most:
+
+      * the overlay is a *child* of the window, so anything posting as the
+        window itself walks straight past it to a None parent;
+      * an Adw.Dialog hangs off the AdwDialogHost, which sits *above* the
+        overlay rather than below it.
+
+    Both used to return None here and drop the message on the floor -- which
+    is how a Pull could fail with a perfectly good error and say nothing at
+    all. So: try the cheap walk up, then fall back to the window and look down.
+    """
     node = widget
-    while node is not None and not isinstance(node, Adw.ToastOverlay):
+    while node is not None:
+        if isinstance(node, Adw.ToastOverlay):
+            return node
         node = node.get_parent()
-    return node
+
+    root = widget.get_root() if isinstance(widget, Gtk.Widget) else None
+    if root is None:
+        return None
+    known = getattr(root, "toasts", None)
+    if isinstance(known, Adw.ToastOverlay):
+        return known
+    return _descendant_overlay(root)
 
 
-def toast(widget, message, timeout=3):
-    """Find the nearest ToastOverlay and post a message on it."""
+def _unposted(message):
+    """A message with nowhere to go still goes somewhere.
+
+    Under pythonw.exe there are no console streams at all, so this is a weak
+    last resort -- which is why error_toast() does not rely on it and falls
+    back to a dialog instead.
+    """
+    stream = sys.stderr or sys.stdout
+    if stream is None:
+        return
+    try:
+        print(f"[git-manager] no ToastOverlay for message: {message}", file=stream, flush=True)
+    except (OSError, ValueError):
+        pass  # a closed or detached stream is not worth taking the app down for
+
+
+def toast(widget, message, timeout=3, button=None, on_click=None):
+    """Post a message on the nearest ToastOverlay.
+
+    Returns whether it actually landed, and never fails quietly: with no
+    overlay to post on, the message goes to stderr rather than nowhere.
+    """
     node = _overlay(widget)
-    if node is not None:
-        node.add_toast(Adw.Toast(title=message, timeout=timeout))
+    if node is None:
+        _unposted(message)
+        return False
+    notice = Adw.Toast(title=message, timeout=timeout)
+    if button and on_click:
+        notice.set_button_label(button)
+        notice.connect("button-clicked", lambda *_: on_click())
+    node.add_toast(notice)
+    return True
 
 
 def undo_toast(widget, message, label, callback, timeout=6):
@@ -46,17 +114,76 @@ def undo_toast(widget, message, label, callback, timeout=6):
     dialog confirm() would put in front of one of these costs more than the
     mistake does.
     """
-    node = _overlay(widget)
-    if node is None:
-        return
-    notice = Adw.Toast(title=message, timeout=timeout, button_label=label)
-    notice.connect("button-clicked", lambda *_: callback())
-    node.add_toast(notice)
+    if not toast(widget, message, timeout=timeout, button=label, on_click=callback):
+        # The change has already happened and the offer of an undo is the only
+        # thing that got lost, so say that rather than imply it was declined.
+        _unposted(f"{message} -- undo ({label}) was never offered")
 
 
-def error_toast(widget, exc):
-    text = str(exc).strip().splitlines()
-    toast(widget, text[0] if text else "Something went wrong", timeout=6)
+def describe_error(exc, context=""):
+    """A one-line summary and the full text, for any exception we surface."""
+    body = str(exc).strip()
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    head = lines[0].strip() if lines else exc.__class__.__name__
+    for noise in ("error: ", "fatal: ", "warning: "):
+        if head.lower().startswith(noise):
+            head = head[len(noise):]
+            break
+    if len(lines) > 1:
+        head += f"  (+{len(lines) - 1} more — see Details)"
+    if context:
+        head = f"{context}: {head}"
+
+    detail = body or repr(exc)
+    cmd = getattr(exc, "cmd", None)
+    if cmd:
+        detail = f"$ {cmd}\n(exit {getattr(exc, 'returncode', '?')})\n\n{detail}"
+    return head, detail
+
+
+def detail_dialog(widget, summary, detail, heading="Something went wrong"):
+    """The whole of a failure -- selectable, scrollable, copyable."""
+    dialog = Adw.AlertDialog(heading=heading, body=summary)
+
+    view = Gtk.TextView(
+        editable=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+        top_margin=8, bottom_margin=8, left_margin=8, right_margin=8,
+    )
+    view.get_buffer().set_text(detail)
+    scroller = Gtk.ScrolledWindow(
+        hexpand=True, vexpand=True, min_content_height=180, max_content_height=360,
+        css_classes=["card"], margin_top=6,
+    )
+    scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+    scroller.set_child(view)
+    dialog.set_extra_child(scroller)
+
+    dialog.add_response("copy", "Copy")
+    dialog.add_response("close", "Close")
+    dialog.set_default_response("close")
+    dialog.set_close_response("close")
+
+    def answered(dlg, result):
+        if dlg.choose_finish(result) == "copy":
+            display = Gdk.Display.get_default()
+            if display:
+                display.get_clipboard().set(detail)
+                toast(widget, "Copied the full error")
+
+    dialog.choose(widget.get_root() or widget, None, answered)
+
+
+def error_toast(widget, exc, context=""):
+    """Report a failure. This is the one message that must never be lost."""
+    summary, detail = describe_error(exc, context)
+    posted = toast(
+        widget, summary, timeout=ERROR_TIMEOUT, button="Details",
+        on_click=lambda: detail_dialog(widget, summary, detail),
+    )
+    if not posted:
+        # Nowhere to post it and stderr is a black hole under pythonw.exe. An
+        # unexpected dialog beats an error the user never learns about.
+        detail_dialog(widget, summary, detail)
 
 
 def confirm(parent, heading, body, action_label, callback, destructive=True):

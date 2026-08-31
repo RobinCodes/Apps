@@ -30,35 +30,62 @@ _ENV = {
 
 
 class GitError(Exception):
-    def __init__(self, args_, returncode, stderr):
+    def __init__(self, args_, returncode, stderr, stdout=""):
         self.cmd = "git " + " ".join(args_)
         self.returncode = returncode
         self.stderr = (stderr or "").strip()
-        super().__init__(self.stderr or f"{self.cmd} exited {returncode}")
+        self.stdout = (stdout or "").strip()
+        # Not everything git considers a failure explains itself on stderr: a
+        # pull that ends in a merge conflict writes "CONFLICT (content): ..."
+        # and "Automatic merge failed" to *stdout* and leaves stderr empty.
+        # Falling straight through to "git pull exited 1" there would be
+        # technically true and completely useless.
+        super().__init__(self.stderr or self.stdout or f"{self.cmd} exited {returncode}")
 
 
 def git(repo, *args, check=True, stdin=None, timeout=120):
     """Run git in `repo` and return stdout. Raises GitError unless check=False."""
-    proc = subprocess.run(
-        [GIT, *args],
-        cwd=repo,
-        env=_ENV,
-        input=stdin,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        creationflags=winenv.NO_WINDOW,
-    )
+    try:
+        proc = subprocess.run(
+            [GIT, *args],
+            cwd=repo,
+            env=_ENV,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=winenv.NO_WINDOW,
+        )
+    # The two ways the call never gets as far as an exit code. Both used to
+    # escape as themselves and reach the user as OS-speak ("[WinError 2] The
+    # system cannot find the file specified") or not at all.
+    except FileNotFoundError as exc:
+        raise GitError(
+            list(args), -1,
+            f"git could not be run: no executable at {GIT!r}. "
+            "Install git, or make sure it is on PATH.",
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(
+            list(args), -1,
+            f"git did not finish within {timeout}s and was stopped. "
+            "A transport step may be waiting on a network or credential prompt.",
+        ) from exc
     if check and proc.returncode != 0:
-        raise GitError(list(args), proc.returncode, proc.stderr)
+        raise GitError(list(args), proc.returncode, proc.stderr, proc.stdout)
     return proc.stdout
 
 
 def git_bytes(repo, *args, check=True, timeout=120):
-    proc = subprocess.run(
-        [GIT, *args], cwd=repo, env=_ENV, capture_output=True, timeout=timeout,
-        creationflags=winenv.NO_WINDOW,
-    )
+    try:
+        proc = subprocess.run(
+            [GIT, *args], cwd=repo, env=_ENV, capture_output=True, timeout=timeout,
+            creationflags=winenv.NO_WINDOW,
+        )
+    except FileNotFoundError as exc:
+        raise GitError(list(args), -1, f"git could not be run: no executable at {GIT!r}.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(list(args), -1, f"git did not finish within {timeout}s and was stopped.") from exc
     if check and proc.returncode != 0:
         raise GitError(list(args), proc.returncode, proc.stderr.decode("utf-8", "replace"))
     return proc.stdout

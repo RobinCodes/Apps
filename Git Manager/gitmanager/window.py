@@ -106,6 +106,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_default_size(self.cfg["window_width"], self.cfg["window_height"])
         self.states = []
         self.selected = None
+        self._close_warned = False
         self.queue = jobs.Serial()
         self._scan_generation = 0
 
@@ -117,9 +118,21 @@ class MainWindow(Adw.ApplicationWindow):
         self.split.set_sidebar(self._build_sidebar())
         self.split.set_content(self._build_content())
 
+        # Anything failing on a worker thread without a handler of its own
+        # still has to reach the user.
+        jobs.on_unhandled = lambda exc: widgets.error_toast(self, exc, context="Background task failed")
+
         self._install_actions()
         self.connect("close-request", self._on_close)
         self.connect("notify::is-active", self._on_active_changed)
+
+        if self.cfg.last_error:
+            # There is no overlay to post on until the window is up.
+            def _report_config_error():
+                widgets.toast(self, self.cfg.last_error, timeout=widgets.ERROR_TIMEOUT)
+                return GLib.SOURCE_REMOVE
+
+            GLib.idle_add(_report_config_error)
 
         self._load_repos()
         GLib.timeout_add_seconds(max(5, self.cfg["status_poll_seconds"]), self._poll)
@@ -310,7 +323,7 @@ class MainWindow(Adw.ApplicationWindow):
             refs.append(scanner.RepoRef(path=path, name=os.path.basename(path) or path))
         if keep != self.cfg["extra_repos"]:
             self.cfg["extra_repos"] = keep
-            self.cfg.save()
+            self._save_cfg()
         return refs
 
     def _hidden_keys(self):
@@ -322,7 +335,7 @@ class MainWindow(Adw.ApplicationWindow):
         keep = [p for p in self.cfg["hidden_repos"] if os.path.isdir(p)]
         if keep != self.cfg["hidden_repos"]:
             self.cfg["hidden_repos"] = keep
-            self.cfg.save()
+            self._save_cfg()
         return {winenv.path_key(p) for p in keep}
 
     def _with_extras(self, refs):
@@ -521,6 +534,14 @@ class MainWindow(Adw.ApplicationWindow):
             bits.append(f"{st.state} in progress")
         self.title_widget.set_subtitle("  ·  ".join(bits))
 
+    def _save_cfg(self):
+        """Persist settings, and say so when the write does not happen."""
+        if not self.cfg.save():
+            widgets.toast(self, self.cfg.last_error or "Settings could not be saved",
+                          timeout=widgets.ERROR_TIMEOUT)
+            return False
+        return True
+
     def _poll(self):
         if self.is_active() and self.selected:
             self.refresh_selected()
@@ -536,6 +557,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _run_git(self, label, fn, then=None):
         """Run a git operation with a busy header and toast on completion."""
         if not self.selected:
+            widgets.toast(self, f"{label}: no repository is selected")
             return
         state = self.selected
         self.fetch_btn.set_sensitive(False)
@@ -559,18 +581,24 @@ class MainWindow(Adw.ApplicationWindow):
         def failed(exc):
             restore()
             self._sync_header()
-            widgets.error_toast(self, exc)
+            widgets.error_toast(self, exc, context=f"{label} failed")
+            # A failure is rarely a no-op: a conflicted pull leaves the repo
+            # mid-merge, and showing the state from before it would be its own
+            # kind of lie.
+            self.refresh_selected(force=True)
 
         jobs.run(fn, done, failed)
 
     def do_fetch(self):
         if not self.selected:
+            widgets.toast(self, "Fetch: pick a repository first")
             return
         path = self.selected.path
         self._run_git("Fetch", lambda: gitcmd.fetch(path))
 
     def do_pull(self):
         if not self.selected:
+            widgets.toast(self, "Pull: pick a repository first")
             return
         path = self.selected.path
         self._run_git("Pull", lambda: gitcmd.pull(path))
@@ -578,6 +606,7 @@ class MainWindow(Adw.ApplicationWindow):
     def do_push(self, force=False):
         state = self.selected
         if not state:
+            widgets.toast(self, "Push: pick a repository first")
             return
         st = state.status
         path = state.path
@@ -613,21 +642,54 @@ class MainWindow(Adw.ApplicationWindow):
     def fetch_all(self):
         targets = list(self.states)
         if not targets:
+            widgets.toast(self, "There are no repositories to fetch")
             return
         widgets.toast(self, f"Fetching {len(targets)} repositories…")
-        done_count = {"n": 0}
+        # Failures used to go to `lambda _e: None`, after which the run
+        # announced "Fetched N repositories" whether or not it had.
+        tally = {"done": 0, "failed": []}
+
+        def finish():
+            total, bad = len(targets), tally["failed"]
+            if not bad:
+                widgets.toast(self, f"Fetched {total} repositories")
+                return
+            names = ", ".join(name for name, _ in bad[:3])
+            if len(bad) > 3:
+                names += f" and {len(bad) - 3} more"
+            widgets.toast(
+                self,
+                f"Fetched {total - len(bad)} of {total} — {len(bad)} failed: {names}",
+                timeout=widgets.ERROR_TIMEOUT, button="Details",
+                on_click=lambda: widgets.detail_dialog(
+                    self,
+                    f"{len(bad)} of {total} repositories could not be fetched",
+                    "\n\n".join(f"{name}\n{err}" for name, err in bad),
+                    heading="Fetch all",
+                ),
+            )
+
+        def step():
+            tally["done"] += 1
+            if tally["done"] == len(targets):
+                finish()
 
         def after(state):
             def _(_result):
-                done_count["n"] += 1
                 self._queue_status(state)
-                if done_count["n"] == len(targets):
-                    widgets.toast(self, f"Fetched {len(targets)} repositories")
+                step()
+            return _
+
+        def oops(state):
+            def _(exc):
+                summary, _detail = widgets.describe_error(exc)
+                tally["failed"].append((state.name, summary))
+                step()
             return _
 
         for state in targets:
             path = state.path
-            self.queue.submit(lambda p=path: gitcmd.fetch(p), after(state), lambda _e: None)
+            self.queue.submit(lambda p=path: gitcmd.fetch(p), after(state), oops(state))
 
     def hard_reset_upstream(self):
         state = self.selected
@@ -751,7 +813,7 @@ class MainWindow(Adw.ApplicationWindow):
                                     if not winenv.same_path(p, path)] + [path]
         if winenv.same_path(self.cfg["last_repo"], path):
             self.cfg["last_repo"] = ""
-        self.cfg.save()
+        self._save_cfg()
         self.selected = None
         self._apply_repos([s.ref for s in self.states if not winenv.same_path(s.path, path)])
         widgets.undo_toast(self, f"Forgot {name}", "Undo",
@@ -771,7 +833,7 @@ class MainWindow(Adw.ApplicationWindow):
                                     if not winenv.same_path(p, path)]
         if not any(winenv.same_path(p, path) for p in self.cfg["extra_repos"]):
             self.cfg["extra_repos"] = self.cfg["extra_repos"] + [path]
-        self.cfg.save()
+        self._save_cfg()
         if not gitcmd.is_repo(path):
             widgets.toast(self, f"{name} is no longer a repository")
             return
@@ -800,12 +862,12 @@ class MainWindow(Adw.ApplicationWindow):
         if any(winenv.same_path(p, top) for p in self.cfg["hidden_repos"]):
             self.cfg["hidden_repos"] = [p for p in self.cfg["hidden_repos"]
                                         if not winenv.same_path(p, top)]
-            self.cfg.save()
+            self._save_cfg()
         state = next((s for s in self.states if winenv.same_path(s.path, top)), None)
         if state is None:
             if not any(winenv.same_path(p, top) for p in self.cfg["extra_repos"]):
                 self.cfg["extra_repos"] = self.cfg["extra_repos"] + [top]
-                self.cfg.save()
+                self._save_cfg()
             state = RepoState(scanner.RepoRef(path=top, name=os.path.basename(top) or top))
             self.states.append(state)
             self.states.sort(key=lambda s: s.name.lower())
@@ -924,7 +986,7 @@ class MainWindow(Adw.ApplicationWindow):
                 if path not in roots:
                     roots.append(path)
                     self.cfg["roots"] = roots
-                    self.cfg.save()
+                    self._save_cfg()
                 widgets.toast(self, f"Scanning {filesystem.tilde(path)} from now on")
                 self.rescan()
 
@@ -1021,7 +1083,7 @@ class MainWindow(Adw.ApplicationWindow):
             elif chosen:
                 widgets.toast(self, f"{chosen} is not a folder — audit folder unchanged")
             self.cfg["backup_max_depth"] = int(backup_depth.get_value())
-            self.cfg.save()
+            self._save_cfg()
             if changed:
                 self.rescan()
 
@@ -1076,5 +1138,13 @@ class MainWindow(Adw.ApplicationWindow):
         width, height = self.get_default_size()
         self.cfg["window_width"] = width
         self.cfg["window_height"] = height
-        self.cfg.save()
+        if not self.cfg.save() and not self._close_warned:
+            # A toast posted during teardown is one nobody reads. Refuse the
+            # close once so the message is actually on screen; a second attempt
+            # goes through, having been told.
+            self._close_warned = True
+            widgets.toast(self, self.cfg.last_error or "Settings could not be saved",
+                          timeout=widgets.ERROR_TIMEOUT)
+            widgets.toast(self, "Close again to quit anyway", timeout=widgets.ERROR_TIMEOUT)
+            return True
         return False

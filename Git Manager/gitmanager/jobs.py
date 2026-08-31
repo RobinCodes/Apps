@@ -14,6 +14,13 @@ import traceback
 from gi.repository import GLib
 
 
+# Installed by the window at startup. A caller that passes no on_error still
+# has its exception land here rather than nowhere: under pythonw.exe there is
+# no console for traceback.print_exc() to print to, so "no handler" otherwise
+# means the failure is invisible.
+on_unhandled = None
+
+
 def run(fn, on_done=None, on_error=None):
     """Call fn() on a worker thread; deliver its result on the main loop."""
 
@@ -22,8 +29,9 @@ def run(fn, on_done=None, on_error=None):
             result = fn()
         except Exception as exc:  # noqa: BLE001 - surfaced to the user as a toast
             traceback.print_exc()
-            if on_error:
-                GLib.idle_add(_once, on_error, exc)
+            handler = on_error or on_unhandled
+            if handler:
+                GLib.idle_add(_once, handler, exc)
             return
         if on_done:
             GLib.idle_add(_once, on_done, result)

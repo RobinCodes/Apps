@@ -54,9 +54,11 @@ def _unique(paths):
 class Config(dict):
     def __init__(self):
         super().__init__(DEFAULTS)
+        self.last_error = None  # why the last load or save did not work
         self.load()
 
     def load(self):
+        self.last_error = None
         try:
             with open(PATH) as fh:
                 data = json.load(fh)
@@ -64,8 +66,13 @@ class Config(dict):
                 for k, v in data.items():
                     if k in DEFAULTS and isinstance(v, type(DEFAULTS[k])):
                         self[k] = v
-        except (OSError, ValueError):
-            pass
+        except FileNotFoundError:
+            pass  # first run: defaults are the answer, not a failure
+        except (OSError, ValueError) as exc:
+            # Defaults still apply, but a config that exists and would not load
+            # is worth saying out loud -- the alternative is a window that
+            # quietly forgets every setting the user has.
+            self.last_error = f"Could not read {PATH}: {exc}"
         # Settle the spelling on the way in, so a config written before this
         # -- with git's forward slashes in it -- starts matching the scan.
         for key in PATH_LISTS:
@@ -76,11 +83,15 @@ class Config(dict):
         return self
 
     def save(self):
+        """Write the config. Returns False (and records why) if it did not."""
         try:
             os.makedirs(DIR, exist_ok=True)
             tmp = PATH + ".tmp"
             with open(tmp, "w") as fh:
                 json.dump(dict(self), fh, indent=2)
             os.replace(tmp, PATH)
-        except OSError:
-            pass
+        except OSError as exc:
+            self.last_error = f"Could not save settings to {PATH}: {exc}"
+            return False
+        self.last_error = None
+        return True
