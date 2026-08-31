@@ -357,3 +357,67 @@ without spending a token — which is how both are tested.
   fraction renders as `dx=`.
 * Only the last 300 transcript entries are built as widgets; the rest stay on
   disk. Tool results are stored truncated at 20 000 characters.
+
+---
+
+## Windows
+
+The app runs on Windows unchanged in everything but three places, which are
+answered once in `winenv.py` so no other module has to know which operating
+system it is on:
+
+* **Where files go.** XDG has one root with subdirectories; Windows has two
+  roots. Settings go to `%APPDATA%`, regenerable state to `%LOCALAPPDATA%`.
+  An explicitly set `XDG_CONFIG_HOME` still wins on both — the test suite
+  points it at a scratch directory, and ignoring that would make a test run
+  write to real settings.
+* **Where the tools are.** A Windows installer puts its program in
+  `Program Files` and edits the PATH of interactive shells, which a process
+  started from a shortcut does not inherit. `winenv.which()` looks where the
+  installers actually put things and puts what it finds on PATH, so child
+  processes see it too.
+* **Console windows.** Every child process of a windowed program opens a
+  console unless told not to, so each one is started with `CREATE_NO_WINDOW`.
+
+### Installing
+
+GTK4 does exist for Windows, but only from MSYS2 — PyGObject publishes no
+Windows wheels, so `pip install pygobject` cannot work. Install
+[MSYS2](https://www.msys2.org/), then in an **MSYS2 MINGW64** shell:
+
+```bash
+pacman -S mingw-w64-x86_64-gtk4 mingw-w64-x86_64-libadwaita mingw-w64-x86_64-python-gobject
+```
+
+Then, from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\install.ps1 -Desktop
+```
+
+That checks the runtime is really there before it makes anything, generates
+the icons from the `.svg`, and puts a shortcut in the Start Menu (and on the
+Desktop with `-Desktop`). `-Uninstall` removes them again.
+
+The shortcuts run MSYS2's `pythonw.exe` directly rather than going through the
+`.bat`. Windows looks for a program's DLLs beside the `.exe` first, so GTK is
+found without anything being added to PATH — and going direct means no console
+window blinks up before the app appears. The `.bat` in this folder stays for
+running it from a command line, where being handed a file to open is the point.
+
+### What it needs
+
+The `claude` CLI itself, which is not part of this app:
+
+```powershell
+npm install -g @anthropic-ai/claude-code
+```
+
+npm's global directory is under `%APPDATA%`, which a shortcut-started process
+does not have on PATH — `winenv.which()` knows to look there. Run `claude`
+once in a terminal and log in before using the app; without that every turn
+comes back `Not logged in`, because the credentials are the CLI's, not this
+app's. Point `CLAUDE_DESK_BIN` at the binary if it lives somewhere unusual.
+
+The protocol is identical on Windows: the same `stream-json` on stdin and
+stdout, the same control channel, the same `--permission-prompt-tool stdio`.

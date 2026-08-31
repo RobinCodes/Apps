@@ -30,11 +30,12 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import threading
 import uuid
 from dataclasses import dataclass, field
+
+from . import winenv
 
 CLAUDE_BIN = os.environ.get("CLAUDE_DESK_BIN", "claude")
 
@@ -42,43 +43,27 @@ CLAUDE_BIN = os.environ.get("CLAUDE_DESK_BIN", "claude")
 # PATH, which on XFCE is /usr/local/bin:/usr/bin and little else — no
 # ~/.local/bin, no npm prefix. Started from a terminal the app found `claude`;
 # started from the Applications menu it did not, and exited before drawing a
-# window. So look where installers actually put it, and once found, put that
-# directory on PATH so the child — and everything the child shells out to —
-# sees what an interactive shell would.
-BIN_DIRS = [
-    "~/.local/bin",
-    "~/.claude/local",
-    "~/.npm-global/bin",
-    "~/.bun/bin",
-    "/usr/local/bin",
-    "/opt/homebrew/bin",
-]
+# window. Windows is the same story with different directories: the npm
+# global prefix lives under %APPDATA%, which a process started
+# from a shortcut does not have. winenv.which knows both lists, and puts
+# what it finds on PATH so the child — and everything the child shells
+# out to — sees it too.
 
 
 def resolve_bin(name=None):
     """Absolute path to the `claude` binary, or None if there isn't one."""
     name = name or CLAUDE_BIN
-    if os.sep in name:  # CLAUDE_DESK_BIN pointing straight at a binary
+    # CLAUDE_DESK_BIN pointing straight at a binary. Both separators: a path
+    # typed on Windows may use either.
+    if os.sep in name or "/" in name:
         path = os.path.abspath(os.path.expanduser(name))
-        return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
+        # os.access(X_OK) is meaningless on Windows — it is true for any file
+        # that exists — so being a file is the whole test there.
+        if not os.path.isfile(path):
+            return None
+        return path if winenv.WINDOWS or os.access(path, os.X_OK) else None
 
-    found = shutil.which(name)
-    if found:
-        return found
-
-    for directory in BIN_DIRS:
-        directory = os.path.expanduser(directory)
-        candidate = os.path.join(directory, name)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            _prepend_path(directory)
-            return candidate
-    return None
-
-
-def _prepend_path(directory):
-    path = os.environ.get("PATH", "")
-    if directory not in path.split(os.pathsep):
-        os.environ["PATH"] = os.pathsep.join([directory, path]) if path else directory
+    return winenv.which(name)
 
 # The terminal offers these; we expose the same set minus the two that only
 # make sense with a human watching a TTY.
@@ -139,6 +124,7 @@ def run_standalone(name, cwd, on_done, timeout=60):
                 cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                 timeout=timeout,
                 env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "claude-desk"},
+                creationflags=winenv.NO_WINDOW,
             )
         except subprocess.TimeoutExpired:
             on_done("", f"/{name} took too long to answer.")
@@ -279,6 +265,7 @@ class Backend:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                creationflags=winenv.NO_WINDOW,
             )
         except OSError as exc:
             self._emit("error", message=f"Could not start Claude Code: {exc}")

@@ -1,0 +1,20 @@
+# Python bytecode. The repository currently tracks a set of .pyc files that
+# predate this; they are regenerated on every run and will show as modified.
+__pycache__/
+*.py[cod]
+
+# Lyndon Browser, Linux build
+/Lyndon Browser/build/
+/Lyndon Browser/lyndon
+/Lyndon Browser/tests/test-abp
+
+# Lyndon Browser, Windows build
+/Lyndon Browser/build-win/
+/Lyndon Browser/lyndon.exe
+/Lyndon Browser/dist/
+# Staged next to the executable by `make dist`; the copy that is kept lives
+# in win32/webview2/x64/.
+/Lyndon Browser/WebView2Loader.dll
+
+# Generated from the .svg files by windows/install.ps1
+/windows/icons/_preview*.png

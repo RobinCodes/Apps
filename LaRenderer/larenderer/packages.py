@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
+
+from . import winenv
 
 TLPDB = "/usr/share/tlpkg/texlive.tlpdb"
 
@@ -180,11 +181,13 @@ _installed_cache: dict[str, bool] = {}
 def installed(sty_files: list[str]) -> dict[str, bool]:
     """Ask kpsewhich about a batch of .sty files in one call."""
     unknown = [s for s in sty_files if s not in _installed_cache]
-    if unknown and shutil.which("kpsewhich"):
+    kpsewhich = winenv.which("kpsewhich") if unknown else None
+    if kpsewhich:
         try:
             out = subprocess.run(
-                ["kpsewhich"] + unknown,
+                [kpsewhich] + unknown,
                 capture_output=True, text=True, timeout=20, errors="replace",
+                creationflags=winenv.NO_WINDOW,
             ).stdout
         except (OSError, subprocess.SubprocessError):
             out = ""
@@ -262,8 +265,46 @@ def arch_package_for(sty: str) -> str:
     return _ARCH_PREFIX + collection[len("collection-"):]
 
 
+# The tlpdb-and-collections reasoning above is right for a distribution that
+# packages TeX Live by collection, which is how Arch does it. MiKTeX and
+# upstream TeX Live both install one package at a time and take the LaTeX
+# package name directly, so on those the answer is simpler than the lookup —
+# and on MiKTeX usually unnecessary, since it fetches missing packages during
+# the run when it is configured to.
+_MIKTEX = "miktex"
+_TEXLIVE = "texlive"
+_ARCH = "arch"
+
+
+def distribution() -> str:
+    """Which TeX distribution this machine has, for phrasing install advice."""
+    if winenv.which("miktex") or winenv.which("mpm"):
+        return _MIKTEX
+    if winenv.which("tlmgr"):
+        return _TEXLIVE
+    return _ARCH
+
+
+def _package_names(missing_sty: list[str]) -> list[str]:
+    """.sty basenames as the package names MiKTeX and tlmgr expect."""
+    names = []
+    for sty in missing_sty:
+        name = os.path.splitext(os.path.basename(sty))[0]
+        if name and name not in names:
+            names.append(name)
+    return sorted(names)
+
+
 def install_hint(missing_sty: list[str]) -> str:
-    """A single pacman command covering everything missing."""
+    """One command covering everything missing, in this machine's package manager."""
+    dist = distribution()
+    if dist in (_MIKTEX, _TEXLIVE):
+        names = _package_names(missing_sty)
+        if not names:
+            return ""
+        verb = "miktex packages install" if dist == _MIKTEX else "tlmgr install"
+        return f"{verb} " + " ".join(names)
+
     packages = []
     for sty in missing_sty:
         arch = arch_package_for(sty)
@@ -277,6 +318,12 @@ def install_hint(missing_sty: list[str]) -> str:
 def describe_missing(name: str) -> tuple[str, str]:
     """(what is missing, how to get it) for a package name from a log."""
     sty = BY_NAME[name].sty if name in BY_NAME else name + ".sty"
+    dist = distribution()
+    if dist == _MIKTEX:
+        return (f"{name} is not installed",
+                f"miktex packages install {name}")
+    if dist == _TEXLIVE:
+        return f"{name} is not installed", f"tlmgr install {name}"
     arch = arch_package_for(sty)
     if arch:
         return f"{name} is not installed", f"sudo pacman -S {arch}"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 
 import gi
@@ -13,7 +12,8 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import config, filesystem, github, gitcmd, ignore, jobs, link, readme, scanner, widgets  # noqa: E402
+from . import (config, filesystem, github, gitcmd, ignore, jobs, link, readme,  # noqa: E402
+                scanner, widgets, winenv)
 from .branches import BranchesTab  # noqa: E402
 from .changes import ChangesTab  # noqa: E402
 from .ghtab import GitHubTab  # noqa: E402
@@ -633,20 +633,41 @@ class MainWindow(Adw.ApplicationWindow):
         if self.selected:
             widgets.open_url(self, GLib.filename_to_uri(self.selected.path, None))
 
+    # A terminal takes its starting directory differently in every case, and
+    # on Windows the one people actually have is whichever shipped with the
+    # OS — so Windows Terminal first, then Git's bash, then cmd, which is
+    # always there. These want a console of their own: no NO_WINDOW here.
+    _TERMINALS_WINDOWS = (
+        ("wt.exe", ["-d"]),
+        ("git-bash.exe", ["--cd"]),
+        ("pwsh.exe", ["-NoExit", "-Command", "Set-Location"]),
+        ("cmd.exe", ["/K", "cd", "/d"]),
+    )
+    _TERMINALS_UNIX = (
+        ("xfce4-terminal", ["--working-directory"]),
+        ("gnome-terminal", ["--working-directory"]),
+        ("alacritty", ["--working-directory"]),
+        ("kitty", ["--directory"]),
+        ("foot", ["--working-directory"]),
+    )
+
     def _open_terminal(self):
         if not self.selected:
             return
-        for term, args in (
-            ("xfce4-terminal", ["--working-directory"]),
-            ("gnome-terminal", ["--working-directory"]),
-            ("alacritty", ["--working-directory"]),
-            ("kitty", ["--directory"]),
-            ("foot", ["--working-directory"]),
-        ):
-            exe = shutil.which(term)
-            if exe:
-                subprocess.Popen([exe, *args, self.selected.path])
-                return
+        table = self._TERMINALS_WINDOWS if winenv.WINDOWS else self._TERMINALS_UNIX
+        for term, args in table:
+            exe = winenv.which(term)
+            if not exe:
+                continue
+            # git-bash takes --cd=DIR as one argument; the rest take two.
+            argv = ([exe, f"{args[0]}={self.selected.path}"]
+                    if term == "git-bash.exe"
+                    else [exe, *args, self.selected.path])
+            try:
+                subprocess.Popen(argv, cwd=self.selected.path)
+            except OSError as exc:
+                widgets.toast(self, f"Could not open {term}: {exc}")
+            return
         widgets.toast(self, "No supported terminal emulator found")
 
     def _copy_path(self):

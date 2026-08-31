@@ -15,12 +15,10 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 
-CONFIG_DIR = os.path.join(
-    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "claude-desk"
-)
-DATA_DIR = os.path.join(
-    os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "claude-desk"
-)
+from . import winenv
+
+CONFIG_DIR = winenv.config_home("claude-desk")
+DATA_DIR = winenv.data_home("claude-desk")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 TRANSCRIPT_DIR = os.path.join(DATA_DIR, "transcripts")
 

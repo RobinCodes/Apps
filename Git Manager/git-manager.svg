@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Git Manager. A commit graph: a trunk, one branch leaving it and merging
+       back, and a node on each. It is the one picture that means "git" without
+       a word on it, and the shapes are large enough to survive 24px in a dock.
+       Pure paths and circles, so no font has to exist. -->
+  <defs>
+    <!-- userSpaceOnUse, not the default: the trunk is a perfectly vertical
+         line, so its bounding box has zero width and a bounding-box gradient
+         degenerates to nothing — the stroke disappears entirely. -->
+    <linearGradient id="trunk" gradientUnits="userSpaceOnUse"
+                    x1="46" y1="28" x2="46" y2="100">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#1c4fb8"/>
+    </linearGradient>
+    <linearGradient id="limb" gradientUnits="userSpaceOnUse"
+                    x1="44" y1="42" x2="88" y2="80">
+      <stop offset="0" stop-color="#ffbe6f"/>
+      <stop offset="1" stop-color="#e66100"/>
+    </linearGradient>
+  </defs>
+
+  <!-- the rounded plate the graph sits on -->
+  <rect x="10" y="10" width="108" height="108" rx="24" fill="#0f1b33" opacity="0.18"
+        transform="translate(0,3)"/>
+  <rect x="10" y="10" width="108" height="108" rx="24" fill="#f6f8fc"/>
+
+  <!-- the branch: out of the trunk, along, and back into it -->
+  <path d="M 46 44 C 46 62, 82 58, 82 74"
+        fill="none" stroke="url(#limb)" stroke-width="9" stroke-linecap="round"/>
+
+  <!-- the trunk, drawn after so it reads as the line the branch leaves -->
+  <path d="M 46 34 L 46 94"
+        fill="none" stroke="url(#trunk)" stroke-width="9" stroke-linecap="round"/>
+
+  <!-- commits: two on the trunk, one on the branch -->
+  <circle cx="46" cy="34" r="12" fill="#ffffff"/>
+  <circle cx="46" cy="34" r="8"  fill="url(#trunk)"/>
+  <circle cx="46" cy="94" r="12" fill="#ffffff"/>
+  <circle cx="46" cy="94" r="8"  fill="url(#trunk)"/>
+  <circle cx="82" cy="74" r="12" fill="#ffffff"/>
+  <circle cx="82" cy="74" r="8"  fill="url(#limb)"/>
+</svg>

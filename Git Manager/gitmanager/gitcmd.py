@@ -12,6 +12,13 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 
+from . import winenv
+
+# Resolved once. Windows installs git into Program Files and only edits the
+# PATH of interactive shells, so a process started from a shortcut has to be
+# told where to look; "git" is the answer everywhere else.
+GIT = winenv.which("git") or "git"
+
 # Stable output regardless of the user's locale, and no index.lock churn from
 # the status polling — status is read-only but git still refreshes the index.
 _ENV = {
@@ -33,13 +40,14 @@ class GitError(Exception):
 def git(repo, *args, check=True, stdin=None, timeout=120):
     """Run git in `repo` and return stdout. Raises GitError unless check=False."""
     proc = subprocess.run(
-        ["git", *args],
+        [GIT, *args],
         cwd=repo,
         env=_ENV,
         input=stdin,
         capture_output=True,
         text=True,
         timeout=timeout,
+        creationflags=winenv.NO_WINDOW,
     )
     if check and proc.returncode != 0:
         raise GitError(list(args), proc.returncode, proc.stderr)
@@ -48,7 +56,8 @@ def git(repo, *args, check=True, stdin=None, timeout=120):
 
 def git_bytes(repo, *args, check=True, timeout=120):
     proc = subprocess.run(
-        ["git", *args], cwd=repo, env=_ENV, capture_output=True, timeout=timeout
+        [GIT, *args], cwd=repo, env=_ENV, capture_output=True, timeout=timeout,
+        creationflags=winenv.NO_WINDOW,
     )
     if check and proc.returncode != 0:
         raise GitError(list(args), proc.returncode, proc.stderr.decode("utf-8", "replace"))

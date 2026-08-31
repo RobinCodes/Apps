@@ -260,3 +260,71 @@ to its last line.
 **Text labels, not icons**, for the same reason Git Manager uses them: the
 active `elementary` icon theme resolves several symbolic names successfully and
 then renders them blank.
+
+---
+
+## Windows
+
+The app runs on Windows unchanged in everything but three places, which are
+answered once in `winenv.py` so no other module has to know which operating
+system it is on:
+
+* **Where files go.** XDG has one root with subdirectories; Windows has two
+  roots. Settings go to `%APPDATA%`, regenerable state to `%LOCALAPPDATA%`.
+  An explicitly set `XDG_CONFIG_HOME` still wins on both — the test suite
+  points it at a scratch directory, and ignoring that would make a test run
+  write to real settings.
+* **Where the tools are.** A Windows installer puts its program in
+  `Program Files` and edits the PATH of interactive shells, which a process
+  started from a shortcut does not inherit. `winenv.which()` looks where the
+  installers actually put things and puts what it finds on PATH, so child
+  processes see it too.
+* **Console windows.** Every child process of a windowed program opens a
+  console unless told not to, so each one is started with `CREATE_NO_WINDOW`.
+
+### Installing
+
+GTK4 does exist for Windows, but only from MSYS2 — PyGObject publishes no
+Windows wheels, so `pip install pygobject` cannot work. Install
+[MSYS2](https://www.msys2.org/), then in an **MSYS2 MINGW64** shell:
+
+```bash
+pacman -S mingw-w64-x86_64-gtk4 mingw-w64-x86_64-libadwaita mingw-w64-x86_64-python-gobject
+```
+
+Then, from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\install.ps1 -Desktop
+```
+
+That checks the runtime is really there before it makes anything, generates
+the icons from the `.svg`, and puts a shortcut in the Start Menu (and on the
+Desktop with `-Desktop`). `-Uninstall` removes them again.
+
+The shortcuts run MSYS2's `pythonw.exe` directly rather than going through the
+`.bat`. Windows looks for a program's DLLs beside the `.exe` first, so GTK is
+found without anything being added to PATH — and going direct means no console
+window blinks up before the app appears. The `.bat` in this folder stays for
+running it from a command line, where being handed a file to open is the point.
+
+### What it needs
+
+A TeX distribution — MiKTeX or TeX Live — and poppler, which arrives with the
+GTK stack above. Both are found in their installed locations without being on
+PATH.
+
+Two things genuinely differ from Linux rather than merely moving:
+
+* **`TEXINPUTS` is separated by `;` on Windows, not `:`.** Hardcoding a colon
+  turns the whole variable into one directory that does not exist, and every
+  `\input` and `\includegraphics` silently stops resolving. It uses
+  `os.pathsep` now.
+* **SyncTeX records absolute paths under MiKTeX**, where TeX Live records the
+  relative name it was given. Forward search asked for the relative name and
+  got `No tag for paper.tex` every time, so the preview never followed the
+  caret. It now tries both forms, likelier one first.
+
+Missing packages are reported in the package manager this machine actually
+has: `miktex packages install siunitx` under MiKTeX, `tlmgr install` under TeX
+Live, and the existing `pacman` advice on Arch.

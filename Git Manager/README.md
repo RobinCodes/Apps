@@ -301,3 +301,62 @@ an editor while this sits in the background. The interval is in settings. A
 poll that finds a new HEAD invalidates the History tab; one that doesn't leaves
 the open diff exactly where it was, so a refresh never yanks the file you're
 reading out from under you.
+
+---
+
+## Windows
+
+The app runs on Windows unchanged in everything but three places, which are
+answered once in `winenv.py` so no other module has to know which operating
+system it is on:
+
+* **Where files go.** XDG has one root with subdirectories; Windows has two
+  roots. Settings go to `%APPDATA%`, regenerable state to `%LOCALAPPDATA%`.
+  An explicitly set `XDG_CONFIG_HOME` still wins on both — the test suite
+  points it at a scratch directory, and ignoring that would make a test run
+  write to real settings.
+* **Where the tools are.** A Windows installer puts its program in
+  `Program Files` and edits the PATH of interactive shells, which a process
+  started from a shortcut does not inherit. `winenv.which()` looks where the
+  installers actually put things and puts what it finds on PATH, so child
+  processes see it too.
+* **Console windows.** Every child process of a windowed program opens a
+  console unless told not to, so each one is started with `CREATE_NO_WINDOW`.
+
+### Installing
+
+GTK4 does exist for Windows, but only from MSYS2 — PyGObject publishes no
+Windows wheels, so `pip install pygobject` cannot work. Install
+[MSYS2](https://www.msys2.org/), then in an **MSYS2 MINGW64** shell:
+
+```bash
+pacman -S mingw-w64-x86_64-gtk4 mingw-w64-x86_64-libadwaita mingw-w64-x86_64-python-gobject
+```
+
+Then, from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\install.ps1 -Desktop
+```
+
+That checks the runtime is really there before it makes anything, generates
+the icons from the `.svg`, and puts a shortcut in the Start Menu (and on the
+Desktop with `-Desktop`). `-Uninstall` removes them again.
+
+The shortcuts run MSYS2's `pythonw.exe` directly rather than going through the
+`.bat`. Windows looks for a program's DLLs beside the `.exe` first, so GTK is
+found without anything being added to PATH — and going direct means no console
+window blinks up before the app appears. The `.bat` in this folder stays for
+running it from a command line, where being handed a file to open is the point.
+
+### What it needs
+
+`git`, and `gh` for the GitHub tab. Both are found in `Program Files` whether
+or not they are on PATH. The filesystem scan skips the Windows directories
+that make scanning a whole drive slow — `Windows`, `Program Files`,
+`ProgramData`, the package caches under `AppData`, `$Recycle.Bin` — and
+compares paths case-insensitively, which on this platform is what "the same
+directory" means.
+
+"Open in terminal" uses Windows Terminal if it is installed, then Git's bash,
+then `cmd`, which is always there.

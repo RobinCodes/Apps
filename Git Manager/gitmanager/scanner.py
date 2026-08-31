@@ -36,6 +36,30 @@ PRUNE_PATHS = {
     "/lost+found", "/boot",
 }
 
+# The Windows equivalents. These are the directories that make scanning "~" or
+# a whole drive take minutes instead of seconds, and none of them has ever
+# held a repository worth finding. Built from the environment rather than
+# hardcoded, because none of these paths is guaranteed to be on C:.
+if os.name == "nt":
+    _env = os.environ.get
+    _home = os.path.expanduser("~")
+    for _p in (
+        _env("SystemRoot"), _env("ProgramData"),
+        _env("ProgramFiles"), _env("ProgramFiles(x86)"), _env("ProgramW6432"),
+        _env("TEMP"), _env("TMP"),
+        os.path.join(_home, "AppData", "Local", "Temp"),
+        os.path.join(_home, "AppData", "Local", "Microsoft"),
+        os.path.join(_home, "AppData", "Local", "Packages"),
+        os.path.join(_home, "AppData", "LocalLow"),
+        os.path.join(_home, "OneDriveTemp"),
+        r"C:\$Recycle.Bin", r"C:\System Volume Information", r"C:\msys64",
+    ):
+        if _p:
+            PRUNE_PATHS.add(os.path.normcase(os.path.normpath(_p)))
+
+    PRUNE_NAMES |= {"$Recycle.Bin", "System Volume Information", "MSOCache",
+                    "Recovery", "WinSxS", "assembly"}
+
 
 @dataclass
 class RepoRef:
@@ -94,7 +118,8 @@ def scan(roots, max_depth=8, on_found=None, should_stop=None, follow_symlinks=Fa
         try:
             with os.scandir(path) as it:
                 for entry in it:
-                    if entry.name in PRUNE_NAMES or entry.path in PRUNE_PATHS:
+                    if (entry.name in PRUNE_NAMES
+                            or os.path.normcase(entry.path) in PRUNE_PATHS):
                         continue
                     try:
                         if not entry.is_dir(follow_symlinks=follow_symlinks):

@@ -20,12 +20,20 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 
-CACHE = os.path.join(
-    os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "larenderer"
-)
+from . import winenv
+
+CACHE = winenv.cache_home("larenderer")
 BUILD_ROOT = os.path.join(CACHE, "build")
 
 ENGINES = ["pdflatex", "xelatex", "lualatex"]
+
+# poppler ships with the GTK runtime; synctex comes from the TeX distribution
+# (MiKTeX puts it in %LOCALAPPDATA%, TeX Live under C:	exlive). Resolved once
+# here so a missing one is a clean "feature off" rather than an exception in a
+# worker thread.
+PDFINFO = winenv.which("pdfinfo") or "pdfinfo"
+PDFTOPPM = winenv.which("pdftoppm") or "pdftoppm"
+SYNCTEX = winenv.which("synctex")
 
 MAX_PASSES = 3          # a rerun costs ~0.2s; three is enough for any real doc
 MAX_LOG_CHARS = 400_000
@@ -82,11 +90,11 @@ class Result:
 
 
 def available_engines() -> list[str]:
-    return [e for e in ENGINES if shutil.which(e)]
+    return [e for e in ENGINES if winenv.which(e)]
 
 
 def have(tool: str) -> bool:
-    return shutil.which(tool) is not None
+    return winenv.which(tool) is not None
 
 
 # --------------------------------------------------------------------------
@@ -128,7 +136,12 @@ def _environment(source_dir: str) -> dict:
     # the buffer we just wrote here — the preview would lag the disk, not the
     # editor. Recursive "//" on the source tree so figures/ and chapters/ still
     # resolve; the trailing separator keeps the distribution's own path.
-    tree = f".:{source_dir}//:" if source_dir else ".:"
+    # kpathsea splits these on the platform's path separator — ';' on
+    # Windows, ':' everywhere else. Hardcoding ':' on Windows turns the whole
+    # variable into one nonexistent directory, and every \input silently
+    # stops resolving.
+    sep = os.pathsep
+    tree = f".{sep}{source_dir}//{sep}" if source_dir else f".{sep}"
     for var in ("TEXINPUTS", "BIBINPUTS", "BSTINPUTS"):
         env[var] = tree + env.get(var, "")
     # TeX wraps log lines at 79 columns by default, which splits file names and
@@ -169,6 +182,7 @@ class Job:
                 stderr=subprocess.STDOUT,
                 text=True,
                 errors="replace",
+                creationflags=winenv.NO_WINDOW,
             )
         except OSError as exc:
             return -1, str(exc)
@@ -195,7 +209,7 @@ def compile_document(
     started = time.monotonic()
     result = Result(engine=engine)
 
-    if not shutil.which(engine):
+    if not winenv.which(engine):
         result.failure = f"{engine} is not installed on this machine."
         return result
 
@@ -291,7 +305,7 @@ def _needs_rerun(log: str) -> bool:
 
 
 def _needs_bibtex(bdir: str, name: str, text: str) -> bool:
-    if not shutil.which("bibtex"):
+    if not winenv.which("bibtex"):
         return False
     if not re.search(r"\\(bibliography|addbibresource|nocite)\b", text):
         return False
@@ -454,8 +468,9 @@ def pdf_info(pdf: str) -> tuple[int, tuple[float, float]]:
     """Page count and first-page size in points. Assumes a uniform page size."""
     try:
         out = subprocess.run(
-            ["pdfinfo", pdf],
+            [PDFINFO, pdf],
             capture_output=True, text=True, timeout=15, errors="replace",
+            creationflags=winenv.NO_WINDOW,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return 0, (612.0, 792.0)
@@ -474,32 +489,50 @@ def render_page(pdf: str, page: int, dpi: int) -> bytes | None:
     """One page as PNG bytes, straight from poppler's rasteriser."""
     try:
         proc = subprocess.run(
-            ["pdftoppm", "-png", "-r", str(dpi), "-f", str(page), "-l", str(page),
+            [PDFTOPPM, "-png", "-r", str(dpi), "-f", str(page), "-l", str(page),
              "-aa", "yes", "-aaVector", "yes", pdf],
             capture_output=True, timeout=60,
+            creationflags=winenv.NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     return proc.stdout or None
 
 
+def _synctex_names(pdf: str, tex_name: str) -> list[str]:
+    """The names synctex might have filed this document's source under.
+
+    `synctex view -i` matches the *string* the engine recorded, not the file.
+    TeX Live records the path it was handed — "./paper.tex" — so the bare name
+    matches. MiKTeX resolves it first and records the absolute path, and the
+    bare name then fails with "No tag for paper.tex" and no forward search at
+    all. The buffer is always written beside the PDF, so the absolute form is
+    known; try the likelier one for this platform first and keep the other as
+    a fallback rather than branching on the distribution.
+    """
+    absolute = os.path.join(os.path.dirname(os.path.abspath(pdf)), tex_name)
+    return [absolute, tex_name] if winenv.WINDOWS else [tex_name, absolute]
+
+
 def forward_search(pdf: str, tex_name: str, line: int, column: int = 1):
     """Editor line -> (page, x_pt, y_pt). Returns None when synctex can't say."""
-    if not shutil.which("synctex"):
+    if not SYNCTEX:
         return None
-    try:
-        out = subprocess.run(
-            ["synctex", "view", "-i", f"{line}:{column}:{tex_name}", "-o", pdf],
-            capture_output=True, text=True, timeout=15, errors="replace",
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return None
-    page = re.search(r"^Page:(\d+)", out, re.M)
-    x = re.search(r"^x:([\d.-]+)", out, re.M)
-    y = re.search(r"^y:([\d.-]+)", out, re.M)
-    if not (page and x and y):
-        return None
-    return int(page.group(1)), float(x.group(1)), float(y.group(1))
+    for name in _synctex_names(pdf, tex_name):
+        try:
+            out = subprocess.run(
+                [SYNCTEX, "view", "-i", f"{line}:{column}:{name}", "-o", pdf],
+                capture_output=True, text=True, timeout=15, errors="replace",
+                creationflags=winenv.NO_WINDOW,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        page = re.search(r"^Page:(\d+)", out, re.M)
+        x = re.search(r"^x:([\d.-]+)", out, re.M)
+        y = re.search(r"^y:([\d.-]+)", out, re.M)
+        if page and x and y:
+            return int(page.group(1)), float(x.group(1)), float(y.group(1))
+    return None
 
 
 def export_pdf(result_pdf: str, destination: str) -> None:

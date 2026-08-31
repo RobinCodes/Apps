@@ -11,12 +11,19 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
 
-GH = shutil.which("gh")
+from . import winenv
+
+GH = winenv.which("gh")
+
+_GH_MISSING = (
+    "The GitHub CLI (gh) is not installed — winget install GitHub.cli"
+    if winenv.WINDOWS
+    else "The GitHub CLI (gh) is not installed — pacman -S github-cli"
+)
 NET_TIMEOUT = 60
 
 
@@ -30,10 +37,11 @@ def available():
 
 def _gh(*args, timeout=NET_TIMEOUT, check=True):
     if not GH:
-        raise GhError("The GitHub CLI (gh) is not installed — pacman -S github-cli")
+        raise GhError(_GH_MISSING)
     proc = subprocess.run(
         [GH, *args], capture_output=True, text=True, timeout=timeout,
         env={**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"},
+        creationflags=winenv.NO_WINDOW,
     )
     if check and proc.returncode != 0:
         raise GhError((proc.stderr or proc.stdout or "").strip() or f"gh {args[0]} failed")
@@ -61,7 +69,7 @@ class Account:
 
 def auth_status():
     if not GH:
-        return Account(message="The GitHub CLI (gh) is not installed — pacman -S github-cli")
+        return Account(message=_GH_MISSING)
     try:
         out = _gh("auth", "status", timeout=20, check=False)
     except (GhError, subprocess.TimeoutExpired) as e:
@@ -361,13 +369,16 @@ def create_repo(name, private=True, description="", source=None, push=False, rem
 def create_pr(repo_path, title, body="", base=None, draft=False):
     """Open a PR from the checked-out branch. Runs inside the repo directory."""
     if not GH:
-        raise GhError("The GitHub CLI (gh) is not installed — pacman -S github-cli")
+        raise GhError(_GH_MISSING)
     args = [GH, "pr", "create", "--title", title, "--body", body or ""]
     if base:
         args += ["--base", base]
     if draft:
         args.append("--draft")
-    proc = subprocess.run(args, cwd=repo_path, capture_output=True, text=True, timeout=120)
+    proc = subprocess.run(
+        args, cwd=repo_path, capture_output=True, text=True, timeout=120,
+        creationflags=winenv.NO_WINDOW,
+    )
     if proc.returncode != 0:
         raise GhError((proc.stderr or proc.stdout).strip())
     return proc.stdout.strip()

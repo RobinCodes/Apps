@@ -3,12 +3,22 @@
  * Lyndon is deliberately small: one process for the UI, one shared WebKit
  * network session, and a plain C configuration struct instead of GSettings so
  * that startup costs nothing but a single GKeyFile parse.
+ *
+ * The toolkit is behind _WIN32 because there is no WebKitGTK for Windows —
+ * the port there is Win32 and WebView2, in win32/. Everything below this
+ * include block is the same on both, which is what lets config.c, util.c,
+ * store.c, abp.c and import.c compile unchanged for either build.
  */
 #pragma once
 
-#include <adwaita.h>
-#include <gtk/gtk.h>
-#include <webkit/webkit.h>
+#ifdef _WIN32
+# include <glib.h>
+# include <gio/gio.h>
+#else
+# include <adwaita.h>
+# include <gtk/gtk.h>
+# include <webkit/webkit.h>
+#endif
 
 G_BEGIN_DECLS
 
@@ -212,12 +222,19 @@ char     *ly_escape_js_string(const char *s);
 typedef struct _LyBlocker LyBlocker;
 typedef struct _LyStore   LyStore;
 
-#define LY_TYPE_APP    (ly_app_get_type ())
-#define LY_TYPE_WINDOW (ly_window_get_type ())
-#define LY_TYPE_TAB    (ly_tab_get_type ())
+#ifdef _WIN32
+/* No GObjects in the Windows build: the window and the tab are plain structs
+ * around an HWND and an ICoreWebView2. See win32/chrome.h and win32/tab.h. */
+typedef struct _LyWindow LyWindow;
+typedef struct _LyTab    LyTab;
+#else
+# define LY_TYPE_APP    (ly_app_get_type ())
+# define LY_TYPE_WINDOW (ly_window_get_type ())
+# define LY_TYPE_TAB    (ly_tab_get_type ())
 
 G_DECLARE_FINAL_TYPE (LyApp,    ly_app,    LY, APP,    AdwApplication)
 G_DECLARE_FINAL_TYPE (LyWindow, ly_window, LY, WINDOW, AdwApplicationWindow)
 G_DECLARE_FINAL_TYPE (LyTab,    ly_tab,    LY, TAB,    GtkWidget)
+#endif
 
 G_END_DECLS

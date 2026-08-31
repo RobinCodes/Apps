@@ -291,3 +291,91 @@ unsupported syntax, and JSON escaping.
 ## Licence
 
 MIT. See `LICENSE`.
+
+---
+
+## Windows
+
+Lyndon is built on WebKitGTK, and **there is no WebKitGTK for Windows** — no
+port exists, and MSYS2 ships no package for it. So the Windows build is not a
+recompile. It keeps everything below the toolkit and replaces the two things
+that cannot come over: the window is Win32, and the engine is WebView2, the
+Edge runtime that is already on every Windows 10 and 11 machine.
+
+```bash
+make -f win32/Makefile          # build lyndon.exe
+make -f win32/Makefile check    # the blocker's own tests
+make -f win32/Makefile dist     # a folder that runs without MSYS2
+```
+
+in an **MSYS2 MINGW64** shell, with `mingw-w64-x86_64-gcc`,
+`mingw-w64-x86_64-glib2` and `mingw-w64-x86_64-sqlite3` installed. The result
+is about 380 KB of executable and five GLib DLLs; `dist` gathers them, the
+`data/` directory and the WebView2 loader into one folder that needs no MSYS2
+on the machine it runs on.
+
+### What is shared and what is new
+
+`src/lyndon.h` drops the toolkit includes under `_WIN32`, and that is the
+whole of what porting the shared half took — **`abp.c`, `config.c`, `store.c`
+and `util.c` compile from `src/` unchanged** and are the same code the Linux
+build runs. The filter translator, the config file, the SQLite history store
+and the URL helpers are therefore not forked, and a change to any of them
+lands on both.
+
+| | Linux | Windows |
+|---|---|---|
+| Window, tabs, toolbar | GTK4 + libadwaita | `win32/chrome.c`, drawn |
+| Web engine | WebKitGTK 6 | WebView2, `win32/tab.c` |
+| Request matching | WebKit's own DFA | `win32/block.c` |
+| Filter translation | `src/abp.c` | `src/abp.c` |
+| Config, history, URLs | `src/config.c`, `store.c`, `util.c` | the same files |
+
+### The blocker
+
+This is the part WebKit was doing for free. It compiles the rules to a DFA and
+matches them in its network process; WebView2 offers a callback per request and
+nothing else, so the matching had to be written.
+
+It is built for the shape filter lists actually have. Nearly every rule is
+`||host^`, so those go in a hash table and are answered by walking the
+request's labels right to left — four lookups for a four-label host, no regex.
+Everything else is indexed by the longest literal run in the pattern, so a
+request only tests rules that share a token with its URL. Patterns are turned
+into regexes by `ly_abp_pattern_to_regex()` from `abp.c`, the same function
+that produces the Linux build's WebKit JSON, so the two agree about what a
+rule means.
+
+`make -f win32/Makefile check` runs it against the lists in `data/rules/`:
+that the shipped lists block what they are for, that a page's own resources
+are left alone, and that `notdoubleclick.net` is not treated as a subdomain of
+a blocked host.
+
+### What is not there yet
+
+The Windows build is a working browser — tabs, navigation, the address bar
+with the same keyword and search handling, element hiding, per-tab blocking
+with a count in the toolbar, history recorded to the same SQLite file, dark
+chrome that follows the system, per-monitor DPI. What has not been rewritten
+is the GTK-bound rest of `src/`:
+
+* **Preferences** (`prefs.c`, 1051 lines of libadwaita) — settings are read
+  from `config.json` and honoured, but there is no window to edit them in yet.
+* **Bookmarks and history views.** Both are recorded; neither has a UI here.
+* **Saved passwords** (`passwords.c`) — libsecret has no Windows counterpart;
+  the Credential Manager would be the equivalent.
+* **Importing from other browsers** (`import.c`).
+* **Session restore.**
+
+Downloads work, but they are WebView2's own UI rather than Lyndon's.
+
+### The vendored header
+
+`win32/webview2/WebView2.h` is Microsoft's SDK header, unmodified, from the
+`Microsoft.Web.WebView2` NuGet package. It is included with `-isystem` because
+it is MIDL output and warns several hundred times under GCC. The **runtime** is
+not vendored — it ships with Edge. `WebView2Loader.dll` is opened by name at
+startup rather than linked, because the import library Microsoft ships is
+MSVC-format; that also gives somewhere to say "the runtime is missing" instead
+of failing to start with no window and no message.
+

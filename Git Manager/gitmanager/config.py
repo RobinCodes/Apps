@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import os
 
-DIR = os.path.join(
-    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "git-manager"
-)
+from . import winenv
+
+DIR = winenv.config_home("git-manager")
 PATH = os.path.join(DIR, "config.json")
 
 DEFAULTS = {
