@@ -13,21 +13,6 @@ struct _LyPasswords {
   char         *status;
 };
 
-void
-ly_credential_free (LyCredential *credential)
-{
-  if (credential == NULL)
-    return;
-  g_free (credential->origin);
-  g_free (credential->username);
-  if (credential->password != NULL) {
-    /* Do not leave the plaintext lying in freed heap. */
-    memset (credential->password, 0, strlen (credential->password));
-    g_free (credential->password);
-  }
-  g_free (credential);
-}
-
 /* ---------------------------------------------------------------- schema */
 
 static const SecretSchema *
@@ -208,6 +193,14 @@ ly_passwords_list (LyPasswords *passwords, LyCredentialsFn callback, gpointer us
 
 /* ------------------------------------------------------------ store/forget */
 
+static char *
+login_label (const char *origin, const char *username)
+{
+  return g_strdup_printf ("%s \u2014 %s", origin,
+                          (username && *username) ? username : "login");
+}
+
+
 static void
 on_stored (GObject *source, GAsyncResult *result, gpointer data)
 {
@@ -224,8 +217,7 @@ ly_passwords_save (LyPasswords *passwords, const char *origin,
   if (!ly_passwords_available (passwords) || origin == NULL || password == NULL)
     return;
 
-  g_autofree char *label =
-    g_strdup_printf ("%s — %s", origin, (username && *username) ? username : "login");
+  g_autofree char *label = login_label (origin, username);
 
   secret_password_store (login_schema (), SECRET_COLLECTION_DEFAULT, label, password,
                          passwords->cancel, on_stored, NULL,
@@ -253,6 +245,61 @@ ly_passwords_forget (LyPasswords *passwords, const char *origin, const char *use
                          "origin",   origin,
                          "username", username ?: "",
                          NULL);
+}
+
+/* -------------------------------------------------------- edit and import */
+
+gboolean
+ly_passwords_save_sync (LyPasswords *passwords, const char *origin,
+                        const char *username, const char *password,
+                        GError **error)
+{
+  if (!ly_passwords_available (passwords)) {
+    g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                         "No keyring is available to store passwords in");
+    return FALSE;
+  }
+  if (origin == NULL || *origin == '\0' || password == NULL) {
+    g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                         "A site and a password are both required");
+    return FALSE;
+  }
+
+  g_autofree char *label = login_label (origin, username);
+
+  /* The attributes are the identity of the item, so this replaces a row with
+   * the same origin and username rather than adding a second one. */
+  return secret_password_store_sync (login_schema (), SECRET_COLLECTION_DEFAULT,
+                                     label, password, NULL, error,
+                                     "origin",   origin,
+                                     "username", username ?: "",
+                                     NULL);
+}
+
+gboolean
+ly_passwords_update (LyPasswords *passwords,
+                     const char *old_origin, const char *old_username,
+                     const char *origin, const char *username,
+                     const char *password, GError **error)
+{
+  if (!ly_passwords_save_sync (passwords, origin, username, password, error))
+    return FALSE;
+
+  gboolean same = g_strcmp0 (old_origin, origin) == 0 &&
+                  g_strcmp0 (old_username ?: "", username ?: "") == 0;
+  if (same || old_origin == NULL)
+    return TRUE;
+
+  /* The replacement is safely stored, so losing this delete costs a duplicate
+   * row rather than the login itself. */
+  g_autoptr (GError) local = NULL;
+  if (!secret_password_clear_sync (login_schema (), NULL, &local,
+                                   "origin",   old_origin,
+                                   "username", old_username ?: "",
+                                   NULL) && local != NULL)
+    g_warning ("passwords: could not remove the row it replaced: %s", local->message);
+
+  return TRUE;
 }
 
 /* ---------------------------------------------------------- never-ask list */

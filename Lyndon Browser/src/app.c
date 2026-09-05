@@ -591,6 +591,16 @@ ly_app_shutdown (GApplication *application)
 
   ly_app_save_session (app);
 
+  /* Quitting (Ctrl+Q, or the session manager) ends the loop without any
+   * window being asked to close, so the shape of the one still on screen is
+   * taken here. The list is most-recently-focused first. */
+  for (GList *l = gtk_application_get_windows (GTK_APPLICATION (app)); l != NULL; l = l->next) {
+    if (LY_IS_WINDOW (l->data)) {
+      ly_window_save_geometry (LY_WINDOW (l->data));
+      break;
+    }
+  }
+
   if (app->cfg != NULL && app->cfg->clear_on_exit && app->engine != NULL) {
     g_autoptr (GMainLoop) loop = g_main_loop_new (NULL, FALSE);
     guint timeout = g_timeout_add_seconds (3, exit_clear_timeout, loop);

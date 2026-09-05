@@ -1944,10 +1944,50 @@ on_blocker_ready (LyBlocker *blocker, gpointer data)
   sync_chrome (self);
 }
 
+/* -------------------------------------------------------------- geometry */
+
+void
+ly_window_save_geometry (LyWindow *self)
+{
+  GtkWindow *window = GTK_WINDOW (self);
+
+  /* GTK keeps default-width/height at the size the window had when it was
+   * last neither maximised nor fullscreen, which is exactly the size to come
+   * back to. Guard against the zeroes an unrealised window reports. */
+  int width = 0, height = 0;
+  gtk_window_get_default_size (window, &width, &height);
+  if (width > 0 && height > 0) {
+    self->cfg->window_width  = width;
+    self->cfg->window_height = height;
+  }
+  self->cfg->window_maximized = gtk_window_is_maximized (window);
+
+  ly_config_queue_save (self->cfg);
+}
+
+static void
+on_geometry_changed (GObject *object, GParamSpec *pspec, gpointer data)
+{
+  ly_window_save_geometry (LY_WINDOW (data));
+}
+
+static gboolean
+on_close_request (GtkWindow *window, gpointer data)
+{
+  ly_window_save_geometry (LY_WINDOW (data));
+  return GDK_EVENT_PROPAGATE;   /* carry on closing */
+}
+
 static void
 ly_window_dispose (GObject *object)
 {
   LyWindow *self = LY_WINDOW (object);
+
+  /* Stop tracking before the parent unrealises the window: the size it
+   * reports on the way out is not one to remember, and at application
+   * shutdown the config it would be written to is already gone. */
+  g_signal_handlers_disconnect_by_func (self, on_geometry_changed, self);
+  g_signal_handlers_disconnect_by_func (self, on_close_request, self);
 
   if (self->downloads != NULL)
     ly_downloads_set_callbacks (self->downloads, NULL, NULL, NULL);
@@ -1983,10 +2023,12 @@ ly_window_init (LyWindow *self)
 static LyWindow *
 window_create (LyApp *app, WebKitNetworkSession *session)
 {
+  LyConfig *cfg = ly_app_config (app);
+
   LyWindow *self = g_object_new (LY_TYPE_WINDOW,
                                  "application", app,
-                                 "default-width", 1180,
-                                 "default-height", 760,
+                                 "default-width", cfg->window_width,
+                                 "default-height", cfg->window_height,
                                  "title", session != NULL ? "Lyndon — Private" : "Lyndon",
                                  NULL);
 
@@ -1994,7 +2036,7 @@ window_create (LyApp *app, WebKitNetworkSession *session)
   self->private_session = session;
 
   self->app       = app;
-  self->cfg       = ly_app_config (app);
+  self->cfg       = cfg;
   self->engine    = ly_app_engine (app);
   self->blocker   = ly_app_blocker (app);
   self->downloads = ly_app_downloads (app);
@@ -2150,6 +2192,17 @@ window_create (LyApp *app, WebKitNetworkSession *session)
 
   ly_downloads_set_callbacks (self->downloads, on_downloads_changed, NULL, self);
   ly_blocker_set_ready_callback (self->blocker, on_blocker_ready, self);
+
+  /* Track the size as it changes rather than only on close: Ctrl+Q ends the
+   * loop without any window ever being asked to close. The config save is
+   * debounced, so a drag-resize costs one write once it settles. */
+  g_signal_connect (self, "notify::default-width",  G_CALLBACK (on_geometry_changed), self);
+  g_signal_connect (self, "notify::default-height", G_CALLBACK (on_geometry_changed), self);
+  g_signal_connect (self, "notify::maximized",      G_CALLBACK (on_geometry_changed), self);
+  g_signal_connect (self, "close-request",          G_CALLBACK (on_close_request), self);
+
+  if (self->cfg->window_maximized)
+    gtk_window_maximize (GTK_WINDOW (self));
 
   ly_window_refresh (self);
   return self;

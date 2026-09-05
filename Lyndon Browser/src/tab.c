@@ -21,9 +21,18 @@ struct _LyTab {
   /* password save prompt */
   GtkWidget *password_bar;
   GtkWidget *password_label;
+  GtkWidget *password_fields;
+  GtkWidget *password_user_entry;
+  GtkWidget *password_pass_entry;
+  GtkWidget *password_save;
   char      *pending_origin;
   char      *pending_username;
   char      *pending_password;
+  gint64     pending_at;
+  guint      pending_timeout;
+  char      *seen_origin;       /* a username from a two-step login's first  */
+  char      *seen_username;     /* screen, to offer on the screen after it   */
+  gint64     seen_at;
 
   WebKitWebView            *view;
   WebKitUserContentManager *ucm;
@@ -182,25 +191,73 @@ on_permission_request (WebKitWebView *view, WebKitPermissionRequest *request, gp
 
 /* ------------------------------------------------------------- passwords */
 
+/* What the page managed to tell us about the login it just saw. Anything short
+ * of both halves is still worth offering: the missing half is one entry box
+ * away, and a login quietly dropped is worse than one extra question. */
+typedef enum {
+  LOGIN_COMPLETE,      /* a username and a password were both captured */
+  LOGIN_NO_USERNAME,   /* a password, but nothing that named the account */
+  LOGIN_NO_PASSWORD,   /* a sign-in happened; the password could not be read */
+} LoginKind;
+
 static void
 clear_pending_login (LyTab *tab)
 {
+  /* Cleared first: this also runs from the timeout's own callback, where
+   * removing the source that is currently dispatching would be a warning. */
+  if (tab->pending_timeout != 0) {
+    g_source_remove (tab->pending_timeout);
+    tab->pending_timeout = 0;
+  }
+  tab->pending_at = 0;
+
   g_clear_pointer (&tab->pending_origin, g_free);
   g_clear_pointer (&tab->pending_username, g_free);
   if (tab->pending_password != NULL) {
     memset (tab->pending_password, 0, strlen (tab->pending_password));
     g_clear_pointer (&tab->pending_password, g_free);
   }
-  if (tab->password_bar != NULL)
-    gtk_widget_set_visible (tab->password_bar, FALSE);
+
+  if (tab->password_bar == NULL)
+    return;
+
+  /* Anything typed into the bar is a password too, and the widget would keep
+   * holding it for as long as the tab lives. */
+  gtk_editable_set_text (GTK_EDITABLE (tab->password_user_entry), "");
+  gtk_editable_set_text (GTK_EDITABLE (tab->password_pass_entry), "");
+  gtk_widget_set_visible (tab->password_bar, FALSE);
+}
+
+static gboolean
+on_login_offer_expired (gpointer data)
+{
+  LyTab *tab = data;
+  tab->pending_timeout = 0;
+  clear_pending_login (tab);
+  return G_SOURCE_REMOVE;
 }
 
 static void
 on_password_save (GtkButton *button, gpointer data)
 {
   LyTab *tab = data;
-  ly_passwords_save (tab->passwords, tab->pending_origin,
-                     tab->pending_username, tab->pending_password);
+
+  const char *username = tab->pending_username;
+  if (gtk_widget_get_visible (tab->password_user_entry))
+    username = gtk_editable_get_text (GTK_EDITABLE (tab->password_user_entry));
+
+  g_autofree char *typed = NULL;
+  const char *password = tab->pending_password;
+  if (gtk_widget_get_visible (tab->password_pass_entry)) {
+    typed = g_strdup (gtk_editable_get_text (GTK_EDITABLE (tab->password_pass_entry)));
+    password = typed;
+  }
+
+  if (password != NULL && *password != '\0')
+    ly_passwords_save (tab->passwords, tab->pending_origin, username, password);
+
+  if (typed != NULL)
+    memset (typed, 0, strlen (typed));
   clear_pending_login (tab);
 }
 
@@ -218,10 +275,30 @@ on_password_dismiss (GtkButton *button, gpointer data)
   clear_pending_login ((LyTab *) data);
 }
 
+/* Nothing to save until the box the user was asked to fill has something in
+ * it; the other cases keep Save live from the moment the bar appears. */
+static void
+on_typed_password_changed (GObject *entry, GParamSpec *pspec, gpointer data)
+{
+  LyTab *tab = data;
+  const char *text = gtk_editable_get_text (GTK_EDITABLE (entry));
+  gtk_widget_set_sensitive (tab->password_save, text != NULL && *text != '\0');
+}
+
+static void
+on_field_activated (GtkWidget *entry, gpointer data)
+{
+  LyTab *tab = data;
+  if (gtk_widget_get_sensitive (tab->password_save))
+    g_signal_emit_by_name (tab->password_save, "clicked");
+}
+
 static GtkWidget *
 build_password_bar (LyTab *tab)
 {
-  GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  /* One row normally; a second row of entry boxes appears underneath only when
+   * the page left a gap for the user to fill. */
+  GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
   gtk_widget_add_css_class (bar, "lyndon-permission");
   gtk_widget_add_css_class (bar, "card");
   gtk_widget_set_halign (bar, GTK_ALIGN_CENTER);
@@ -229,35 +306,132 @@ build_password_bar (LyTab *tab)
   gtk_widget_set_visible (bar, FALSE);
   gtk_widget_set_margin_top (bar, 10);
 
+  GtkWidget *top = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_box_append (GTK_BOX (bar), top);
+
   GtkWidget *icon = gtk_image_new_from_icon_name ("dialog-password-symbolic");
   gtk_widget_set_margin_start (icon, 12);
-  gtk_box_append (GTK_BOX (bar), icon);
+  gtk_box_append (GTK_BOX (top), icon);
 
   tab->password_label = gtk_label_new ("");
   gtk_label_set_ellipsize (GTK_LABEL (tab->password_label), PANGO_ELLIPSIZE_MIDDLE);
   gtk_widget_set_margin_top (tab->password_label, 8);
   gtk_widget_set_margin_bottom (tab->password_label, 8);
-  gtk_box_append (GTK_BOX (bar), tab->password_label);
+  gtk_box_append (GTK_BOX (top), tab->password_label);
 
   GtkWidget *never = gtk_button_new_with_label ("Never");
   gtk_widget_add_css_class (never, "flat");
   g_signal_connect (never, "clicked", G_CALLBACK (on_password_never), tab);
-  gtk_box_append (GTK_BOX (bar), never);
+  gtk_box_append (GTK_BOX (top), never);
 
   GtkWidget *not_now = gtk_button_new_with_label ("Not now");
   gtk_widget_add_css_class (not_now, "flat");
   g_signal_connect (not_now, "clicked", G_CALLBACK (on_password_dismiss), tab);
-  gtk_box_append (GTK_BOX (bar), not_now);
+  gtk_box_append (GTK_BOX (top), not_now);
 
-  GtkWidget *save = gtk_button_new_with_label ("Save");
-  gtk_widget_add_css_class (save, "suggested-action");
-  gtk_widget_set_margin_end (save, 8);
-  gtk_widget_set_margin_top (save, 6);
-  gtk_widget_set_margin_bottom (save, 6);
-  g_signal_connect (save, "clicked", G_CALLBACK (on_password_save), tab);
-  gtk_box_append (GTK_BOX (bar), save);
+  tab->password_save = gtk_button_new_with_label ("Save");
+  gtk_widget_add_css_class (tab->password_save, "suggested-action");
+  gtk_widget_set_margin_end (tab->password_save, 8);
+  gtk_widget_set_margin_top (tab->password_save, 6);
+  gtk_widget_set_margin_bottom (tab->password_save, 6);
+  g_signal_connect (tab->password_save, "clicked", G_CALLBACK (on_password_save), tab);
+  gtk_box_append (GTK_BOX (top), tab->password_save);
+
+  tab->password_fields = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_widget_set_margin_start (tab->password_fields, 12);
+  gtk_widget_set_margin_end (tab->password_fields, 12);
+  gtk_widget_set_margin_bottom (tab->password_fields, 10);
+  gtk_widget_set_visible (tab->password_fields, FALSE);
+  gtk_box_append (GTK_BOX (bar), tab->password_fields);
+
+  tab->password_user_entry = gtk_entry_new ();
+  gtk_entry_set_placeholder_text (GTK_ENTRY (tab->password_user_entry),
+                                  "Username for this site");
+  gtk_widget_set_hexpand (tab->password_user_entry, TRUE);
+  g_signal_connect (tab->password_user_entry, "activate",
+                    G_CALLBACK (on_field_activated), tab);
+  gtk_box_append (GTK_BOX (tab->password_fields), tab->password_user_entry);
+
+  tab->password_pass_entry = gtk_password_entry_new ();
+  gtk_password_entry_set_show_peek_icon (GTK_PASSWORD_ENTRY (tab->password_pass_entry), TRUE);
+  g_object_set (tab->password_pass_entry, "placeholder-text", "Password", NULL);
+  gtk_widget_set_hexpand (tab->password_pass_entry, TRUE);
+  g_signal_connect (tab->password_pass_entry, "notify::text",
+                    G_CALLBACK (on_typed_password_changed), tab);
+  g_signal_connect (tab->password_pass_entry, "activate",
+                    G_CALLBACK (on_field_activated), tab);
+  gtk_box_append (GTK_BOX (tab->password_fields), tab->password_pass_entry);
 
   return bar;
+}
+
+/* Remembered from the first screen of a two-step login, where the name is
+ * asked for on one page and the password on the next. */
+static void
+remember_username (LyTab *tab, const char *origin, const char *username)
+{
+  g_clear_pointer (&tab->seen_origin, g_free);
+  g_clear_pointer (&tab->seen_username, g_free);
+  tab->seen_origin   = g_strdup (origin);
+  tab->seen_username = g_strdup (username);
+  tab->seen_at       = g_get_monotonic_time ();
+}
+
+static const char *
+remembered_username (LyTab *tab, const char *origin)
+{
+  if (tab->seen_username == NULL || g_strcmp0 (tab->seen_origin, origin) != 0)
+    return NULL;
+  if (g_get_monotonic_time () - tab->seen_at > 10 * 60 * G_USEC_PER_SEC)
+    return NULL;
+  return tab->seen_username;
+}
+
+static void
+show_login_offer (LyTab *tab, LoginKind kind, const char *origin,
+                  const char *username, const char *password, gboolean is_update)
+{
+  clear_pending_login (tab);
+
+  tab->pending_origin   = g_strdup (origin);
+  tab->pending_username = g_strdup (username ?: "");
+  tab->pending_password = password != NULL ? g_strdup (password) : NULL;
+  tab->pending_at       = g_get_monotonic_time ();
+
+  gboolean ask_user = kind == LOGIN_NO_USERNAME;
+  gboolean ask_pass = kind == LOGIN_NO_PASSWORD;
+
+  g_autofree char *host = ly_uri_host (origin);
+  const char *where = (host && *host) ? host : origin;
+
+  g_autofree char *text = NULL;
+  if (ask_pass)
+    text = g_strdup_printf ("Signed in to %s as %s — type the password to save it:",
+                            where, username);
+  else if (ask_user)
+    text = g_strdup_printf ("Save the password for %s?", where);
+  else
+    text = is_update ? g_strdup_printf ("Update the saved password for %s?", username)
+                     : g_strdup_printf ("Save the password for %s?", username);
+  gtk_label_set_text (GTK_LABEL (tab->password_label), text);
+
+  if (ask_user) {
+    const char *guess = remembered_username (tab, origin);
+    if (guess != NULL)
+      gtk_editable_set_text (GTK_EDITABLE (tab->password_user_entry), guess);
+  }
+
+  gtk_widget_set_visible (tab->password_user_entry, ask_user);
+  gtk_widget_set_visible (tab->password_pass_entry, ask_pass);
+  gtk_widget_set_visible (tab->password_fields, ask_user || ask_pass);
+  /* Nothing to save yet in the one case where the user is the source of it. */
+  gtk_widget_set_sensitive (tab->password_save, !ask_pass);
+
+  gtk_widget_set_visible (tab->password_bar, TRUE);
+
+  /* An offer nobody answered should not still be sitting there an hour later,
+   * over a page that has nothing to do with it. */
+  tab->pending_timeout = g_timeout_add_seconds (90, on_login_offer_expired, tab);
 }
 
 /* Async work outlives the tab that started it, so every continuation reaches
@@ -316,11 +490,24 @@ on_credentials_for_save (GPtrArray *credentials, gpointer data)
   }
   LyTab *tab = LY_TAB (object);
 
+  const char *username = work->username ?: "";
+
+  /* A form that never showed a name field, on a site with exactly one account
+   * already saved, is that account — and calling it so is what turns a second
+   * anonymous row into an ordinary password update. */
+  if (*username == '\0' && credentials->len == 1) {
+    LyCredential *sole = g_ptr_array_index (credentials, 0);
+    if (sole->username != NULL && *sole->username != '\0')
+      username = sole->username;
+  }
+  if (*username == '\0')
+    username = remembered_username (tab, work->origin) ?: "";
+
   /* Nothing to ask about if this exact pair is already stored. */
   gboolean is_update = FALSE;
   for (guint i = 0; i < credentials->len; i++) {
     LyCredential *credential = g_ptr_array_index (credentials, i);
-    if (g_strcmp0 (credential->username, work->username) != 0)
+    if (g_strcmp0 (credential->username, username) != 0)
       continue;
     if (g_strcmp0 (credential->password, work->password) == 0) {
       login_work_free (work);
@@ -329,19 +516,34 @@ on_credentials_for_save (GPtrArray *credentials, gpointer data)
     is_update = TRUE;
   }
 
-  clear_pending_login (tab);
-  tab->pending_origin   = g_strdup (work->origin);
-  tab->pending_username = g_strdup (work->username);
-  tab->pending_password = g_strdup (work->password);
+  show_login_offer (tab, *username != '\0' ? LOGIN_COMPLETE : LOGIN_NO_USERNAME,
+                    work->origin, username, work->password, is_update);
+  login_work_free (work);
+}
 
-  const char *who = (work->username && *work->username) ? work->username : "this login";
-  g_autofree char *text =
-    is_update ? g_strdup_printf ("Update the saved password for %s?", who)
-              : g_strdup_printf ("Save the password for %s?", who);
+static void
+on_credentials_for_partial (GPtrArray *credentials, gpointer data)
+{
+  LoginWork *work = data;
+  g_autoptr (GObject) object = g_weak_ref_get (&work->tab_ref);
 
-  gtk_label_set_text (GTK_LABEL (tab->password_label), text);
-  gtk_widget_set_visible (tab->password_bar, TRUE);
+  if (object == NULL) {
+    login_work_free (work);
+    return;
+  }
 
+  /* This account is already saved, and whether its password has changed is
+   * precisely what could not be read — so there is nothing worth asking. */
+  for (guint i = 0; i < credentials->len; i++) {
+    LyCredential *credential = g_ptr_array_index (credentials, i);
+    if (g_strcmp0 (credential->username, work->username) == 0) {
+      login_work_free (work);
+      return;
+    }
+  }
+
+  show_login_offer (LY_TAB (object), LOGIN_NO_PASSWORD,
+                    work->origin, work->username, NULL, FALSE);
   login_work_free (work);
 }
 
@@ -352,6 +554,23 @@ js_string_property (JSCValue *object, const char *name)
   if (value == NULL || jsc_value_is_undefined (value) || jsc_value_is_null (value))
     return NULL;
   return jsc_value_to_string (value);
+}
+
+static gboolean
+js_bool_property (JSCValue *object, const char *name)
+{
+  g_autoptr (JSCValue) value = jsc_value_object_get_property (object, name);
+  return value != NULL && jsc_value_to_boolean (value);
+}
+
+static LoginWork *
+login_work_new (LyTab *tab, const char *origin, const char *username)
+{
+  LoginWork *work = g_new0 (LoginWork, 1);
+  g_weak_ref_init (&work->tab_ref, tab);
+  work->origin   = g_strdup (origin);
+  work->username = g_strdup (username ?: "");
+  return work;
 }
 
 static void
@@ -378,28 +597,42 @@ on_password_message (WebKitUserContentManager *ucm, JSCValue *value, gpointer da
     if (count == NULL || jsc_value_to_int32 (count) <= 0)
       return;
 
-    LoginWork *work = g_new0 (LoginWork, 1);
-    g_weak_ref_init (&work->tab_ref, tab);
-    work->origin = g_strdup (origin);
-    ly_passwords_lookup (tab->passwords, origin, on_credentials_for_fill, work);
+    ly_passwords_lookup (tab->passwords, origin, on_credentials_for_fill,
+                         login_work_new (tab, origin, NULL));
     return;
   }
 
-  if (g_strcmp0 (type, "submit") == 0) {
-    if (ly_passwords_is_blocked (tab->passwords, origin))
-      return;
+  if (ly_passwords_is_blocked (tab->passwords, origin))
+    return;
 
+  if (g_strcmp0 (type, "submit") == 0) {
     g_autofree char *username = js_string_property (value, "username");
     g_autofree char *password = js_string_property (value, "password");
     if (password == NULL || *password == '\0')
       return;
 
-    LoginWork *work = g_new0 (LoginWork, 1);
-    g_weak_ref_init (&work->tab_ref, tab);
-    work->origin   = g_strdup (origin);
-    work->username = g_strdup (username ?: "");
+    LoginWork *work = login_work_new (tab, origin, username);
     work->password = g_strdup (password);
     ly_passwords_lookup (tab->passwords, origin, on_credentials_for_save, work);
+    return;
+  }
+
+  /* A sign-in the page could not be made to give up a password for. */
+  if (g_strcmp0 (type, "partial") == 0) {
+    g_autofree char *username = js_string_property (value, "username");
+    if (username == NULL || *username == '\0')
+      return;
+
+    remember_username (tab, origin, username);
+
+    /* Without a password box anywhere on the page this is the first screen of
+     * a two-step login: the password has not been asked for yet, so there is
+     * nothing to offer — only a name worth carrying to the next screen. */
+    if (!js_bool_property (value, "hasPassword"))
+      return;
+
+    ly_passwords_lookup (tab->passwords, origin, on_credentials_for_partial,
+                         login_work_new (tab, origin, username));
   }
 }
 
@@ -764,7 +997,12 @@ on_load_changed (WebKitWebView *view, WebKitLoadEvent event, gpointer data)
 
   if (event == WEBKIT_LOAD_STARTED) {
     dismiss_permission_bar (tab);
-    clear_pending_login (tab);
+    /* Signing in navigates, and dismissing the offer on that navigation would
+     * mean never seeing it at all. A load this long after the capture is the
+     * user moving on instead, and then it should go. */
+    if (tab->pending_at != 0 &&
+        g_get_monotonic_time () - tab->pending_at > 5 * G_USEC_PER_SEC)
+      clear_pending_login (tab);
   } else if (event == WEBKIT_LOAD_COMMITTED) {
     g_free (tab->host);
     tab->host = ly_uri_host (webkit_web_view_get_uri (view));
@@ -977,6 +1215,11 @@ ly_tab_dispose (GObject *object)
 
   g_clear_object (&tab->pending_permission);
   clear_pending_login (tab);
+  /* Dispose can run twice; the second pass must not reach into widgets the
+   * first one already took down with the overlay. */
+  tab->password_bar = NULL;
+  g_clear_pointer (&tab->seen_origin, g_free);
+  g_clear_pointer (&tab->seen_username, g_free);
   g_clear_pointer (&tab->selection, g_free);
   g_clear_pointer (&tab->host, g_free);
   g_clear_pointer (&tab->overlay, gtk_widget_unparent);

@@ -1,10 +1,15 @@
 /* passwords.h — form login capture, autofill and storage.
  *
  * Secrets go to the Secret Service (GNOME Keyring, KWallet, KeePassXC — any
- * org.freedesktop.secrets provider) via libsecret. Lyndon never invents its
- * own crypto and never writes a password to its own files: the keyring already
- * solves at-rest encryption and unlock-on-login, and it is the only store the
- * rest of the desktop can also manage.
+ * org.freedesktop.secrets provider) via libsecret, and on Windows to
+ * Credential Manager. Lyndon never invents its own crypto and never writes a
+ * password to its own files: both stores already solve at-rest encryption and
+ * unlock-on-login, and each is the only one the rest of that desktop can also
+ * manage.
+ *
+ * src/passwords.c and win32/passwords.c are the two implementations;
+ * src/credentials.c holds the parts that are neither — the struct and the
+ * origin rule — so that both builds match a saved login the same way.
  */
 #pragma once
 
@@ -20,7 +25,18 @@ typedef struct {
   char *password;   /* NULL when only the listing was requested */
 } LyCredential;
 
-void ly_credential_free (LyCredential *credential);
+LyCredential *ly_credential_new  (const char *origin, const char *username,
+                                  const char *password);
+void          ly_credential_free (LyCredential *credential);
+
+/* Free func for a GPtrArray of LyCredential*. */
+GPtrArray *ly_credentials_new (void);
+
+/* "example.com", "https://Example.com:443/login?x=1" and "HTTPS://example.com"
+ * all normalise to "https://example.com" — the same shape the page script
+ * reports, so hand-entered and imported rows match on autofill. NULL when
+ * there is no usable host in the text. */
+char *ly_passwords_normalise_origin (const char *text);
 
 LyPasswords *ly_passwords_new  (LyConfig *cfg);
 void         ly_passwords_free (LyPasswords *passwords);
@@ -45,6 +61,21 @@ void ly_passwords_save   (LyPasswords *passwords, const char *origin,
                           const char *username, const char *password);
 void ly_passwords_forget (LyPasswords *passwords, const char *origin,
                           const char *username);
+
+/* Blocking variants. Editing and importing both need to know whether the write
+ * landed before they report anything back, and importing needs the writes to
+ * stay in order, so those paths pay one D-Bus round trip per entry. */
+gboolean ly_passwords_save_sync (LyPasswords *passwords, const char *origin,
+                                 const char *username, const char *password,
+                                 GError **error);
+
+/* Changing the origin or the username changes the identity of the keyring
+ * item, so an edit is a store followed by a delete of the row it replaced —
+ * in that order, so a failure loses nothing. */
+gboolean ly_passwords_update (LyPasswords *passwords,
+                              const char *old_origin, const char *old_username,
+                              const char *origin, const char *username,
+                              const char *password, GError **error);
 
 /* Origins the user said "never" for. */
 gboolean ly_passwords_is_blocked (LyPasswords *passwords, const char *origin);

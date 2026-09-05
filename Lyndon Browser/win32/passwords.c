@@ -65,22 +65,6 @@ split_target (const char *target, char **origin, char **username)
   return TRUE;
 }
 
-void
-ly_credential_free (LyCredential *c)
-{
-  if (c == NULL)
-    return;
-  g_free (c->origin);
-  g_free (c->username);
-  if (c->password) {
-    /* Not merely freed: the plaintext should not outlive the struct in a
-     * page of heap that something else may later read. */
-    memset (c->password, 0, strlen (c->password));
-    g_free (c->password);
-  }
-  g_free (c);
-}
-
 /* ------------------------------------------------------------- lifecycle */
 
 LyPasswords *

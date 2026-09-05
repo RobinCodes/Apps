@@ -163,6 +163,9 @@ ly_config_new (void)
   cfg->restore_session  = TRUE;
   cfg->show_home_button = FALSE;
   cfg->per_site_zoom    = TRUE;
+  cfg->window_width     = 1180;
+  cfg->window_height    = 760;
+  cfg->window_maximized = FALSE;
 
   cfg->download_dir = g_strdup (g_get_user_special_dir (G_USER_DIRECTORY_DOWNLOAD)
                                   ?: g_get_home_dir ());
@@ -326,11 +329,18 @@ ly_config_load (LyConfig *cfg)
   GET_BOOL ("session", "show-home-button", show_home_button);
   GET_BOOL ("session", "per-site-zoom",    per_site_zoom);
   GET_STR  ("session", "homepage", homepage);
+  GET_INT  ("session", "window-width",     window_width);
+  GET_INT  ("session", "window-height",    window_height);
+  GET_BOOL ("session", "window-maximized", window_maximized);
 
   /* Clamp anything a hand-edited file could have put out of range. */
   cfg->ui_opacity   = CLAMP (cfg->ui_opacity, 0.35, 1.0);
   cfg->default_zoom = CLAMP (cfg->default_zoom, 0.3, 5.0);
   cfg->minimum_font_size = CLAMP (cfg->minimum_font_size, 0, 32);
+  /* A hand-edited or stale file must not hand back a window too small to
+   * drive, nor one larger than any plausible display. */
+  cfg->window_width  = CLAMP (cfg->window_width,  480, 32767);
+  cfg->window_height = CLAMP (cfg->window_height, 360, 32767);
 }
 
 /* ---------------------------------------------------------------- saving */
@@ -407,6 +417,9 @@ ly_config_save (LyConfig *cfg)
   g_key_file_set_boolean (kf, "session", "show-home-button", cfg->show_home_button);
   g_key_file_set_boolean (kf, "session", "per-site-zoom",    cfg->per_site_zoom);
   g_key_file_set_string  (kf, "session", "homepage", cfg->homepage ?: "");
+  g_key_file_set_integer (kf, "session", "window-width",     cfg->window_width);
+  g_key_file_set_integer (kf, "session", "window-height",    cfg->window_height);
+  g_key_file_set_boolean (kf, "session", "window-maximized", cfg->window_maximized);
 
   g_autofree char *dir = g_path_get_dirname (cfg->path);
   g_mkdir_with_parents (dir, 0700);

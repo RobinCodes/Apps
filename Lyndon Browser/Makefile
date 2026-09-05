@@ -9,7 +9,8 @@ PREFIX     ?= /usr/local
 BINDIR     ?= $(PREFIX)/bin
 DATADIR    ?= $(PREFIX)/share
 
-PKGS       := gtk4 libadwaita-1 webkitgtk-6.0 libsoup-3.0 sqlite3 libsecret-1 json-glib-1.0
+PKGS       := gtk4 libadwaita-1 webkitgtk-6.0 libsoup-3.0 sqlite3 libsecret-1 json-glib-1.0 \
+              zlib libcrypto
 CC         ?= cc
 
 # -- flags ---------------------------------------------------------------
@@ -32,9 +33,9 @@ ifeq (,$(filter clean help deps,$(MAKECMDGOALS)))
     $(info )
     $(info   Missing build dependencies: $(MISSING))
     $(info )
-    $(info   Arch:    sudo pacman -S gtk4 libadwaita webkitgtk-6.0 libsoup3 base-devel)
-    $(info   Fedora:  sudo dnf install gtk4-devel libadwaita-devel webkitgtk6.0-devel libsoup3-devel)
-    $(info   Debian:  sudo apt install libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsoup-3.0-dev)
+    $(info   Arch:    sudo pacman -S gtk4 libadwaita webkitgtk-6.0 libsoup3 libsecret json-glib zlib openssl base-devel)
+    $(info   Fedora:  sudo dnf install gtk4-devel libadwaita-devel webkitgtk6.0-devel libsoup3-devel libsecret-devel json-glib-devel zlib-devel openssl-devel)
+    $(info   Debian:  sudo apt install libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsoup-3.0-dev libsecret-1-dev libjson-glib-dev zlib1g-dev libssl-dev)
     $(info )
     $(info   Note webkitgtk-6.0, not webkit2gtk-4.1 — the latter is the GTK3 generation.)
     $(info )
@@ -44,6 +45,14 @@ endif
 
 CFLAGS     += $(shell pkg-config --cflags $(PKGS))
 LDFLAGS    += $(shell pkg-config --libs $(PKGS)) -lm
+
+# Optional: NSS is the only way to read Firefox's saved logins, and it is not
+# worth failing a build over for people who do not use Firefox. Without it the
+# import offers the CSV route instead.
+ifeq ($(shell pkg-config --exists nss 2>/dev/null && echo 1),1)
+  CFLAGS   += -DLYNDON_HAVE_NSS=1 $(shell pkg-config --cflags nss)
+  LDFLAGS  += $(shell pkg-config --libs nss)
+endif
 LDFLAGS    += -Wl,-O1 -Wl,--as-needed -Wl,-z,relro -Wl,-z,now
 
 ifeq ($(DEBUG),1)
@@ -98,6 +107,10 @@ deps:
 	@echo "  gtk4          $$(pkg-config --modversion gtk4)"
 	@echo "  libadwaita-1  $$(pkg-config --modversion libadwaita-1)"
 	@echo "  webkitgtk-6.0 $$(pkg-config --modversion webkitgtk-6.0)"
+	@echo "  libsecret-1   $$(pkg-config --modversion libsecret-1)"
+	@echo "  zlib          $$(pkg-config --modversion zlib)"
+	@echo "  libcrypto     $$(pkg-config --modversion libcrypto)"
+	@echo "  nss           $$(pkg-config --modversion nss 2>/dev/null || echo 'absent - no Firefox password import')"
 
 run: $(APP)
 	@./$(APP)
@@ -137,6 +150,8 @@ help:
 	@echo "make DEBUG=1    asan/ubsan build"
 	@echo "make LTO=1      link-time optimised build"
 	@echo "make deps       verify build dependencies"
+	@echo ""
+	@echo "nss is optional: present at build time it enables Firefox password import."
 	@echo "sudo make install"
 
 -include $(DEPS)

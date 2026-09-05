@@ -1,4 +1,4 @@
-/* import.h — pull bookmarks and history out of other browsers.
+/* import.h — pull bookmarks, history and saved logins out of other browsers.
  *
  * Read-only, and always from a copy: Chromium and Firefox both hold an
  * exclusive lock on their SQLite files while running, and the last thing an
@@ -7,6 +7,7 @@
 #pragma once
 
 #include "lyndon.h"
+#include "passwords.h"
 #include "store.h"
 
 G_BEGIN_DECLS
@@ -22,6 +23,11 @@ typedef struct {
   LyImportKind kind;
   gboolean     has_bookmarks;
   gboolean     has_history;
+  gboolean     has_passwords;
+  /* Which keyring item holds this browser's password-encryption key. Chromium
+   * forks each pick their own name for it, and guessing wrong is the whole
+   * difference between reading the logins and not. */
+  const char *const *secret_apps;
 } LyImportSource;
 
 void ly_import_source_free (LyImportSource *source);
@@ -42,5 +48,17 @@ gboolean ly_import_run (LyStore              *store,
                         gboolean              bookmarks,
                         gboolean              history,
                         LyImportResult       *result);
+
+/* Saved logins from another browser, decrypted, ready to be stored. Nothing is
+ * written to the keyring here — the caller decides that.
+ *
+ * skipped counts entries the browser held but would not give up: Chromium rows
+ * whose key is not in this session's keyring, and anything the decryption
+ * rejected. A non-zero count with a non-empty result is normal and worth
+ * telling the user about; it is not an error.
+ */
+GPtrArray *ly_import_passwords (const LyImportSource *source,
+                                guint                *skipped,
+                                GError              **error);
 
 G_END_DECLS

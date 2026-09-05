@@ -49,6 +49,19 @@ script injected into the **top frame only**: a third-party iframe that could
 read a filled password would defeat the entire point. Autofill requires an
 exact origin match, and never submits a form for you.
 
+Saved logins can be edited in place — site, username and password — or added by
+hand, from Preferences → Passwords. They come in from a CSV, a `.xlsx` or a
+`.ods` file, or straight out of another browser's own encrypted store, and they
+go back out as the CSV that Chrome, Firefox and Bitwarden all read.
+
+**A half-read login is still offered, with a box to fill in the rest.** When a
+form gives up a password but nothing that names the account, the save bar grows
+a username field; when a sign-in plainly happened but the password could not be
+read — a single-page app that wipes the field in its own submit handler — it
+grows a password field instead, and Save stays greyed out until there is
+something to save. Two-step logins that ask for the name on one screen and the
+password on the next are stitched back together without asking anything.
+
 **Privacy defaults are the defaults.** Third-party cookies off, WebGL off,
 WebRTC off, autoplay off, passwords not persisted, Intelligent Tracking
 Prevention on, Global Privacy Control on, referrers trimmed to the origin, and
@@ -58,7 +71,8 @@ masks the GPU model, and adds sub-perceptual noise to canvas readback.
 **The rest of what a browser is expected to do**, and not much that it is not.
 History with ranked address-bar completion, bookmarks with a star and an
 optional bookmarks bar, private windows on an ephemeral session, session
-restore, reopen-closed-tab, tab pinning, muting and a full tab context menu,
+restore, windows that reopen at the size they were closed,
+reopen-closed-tab, tab pinning, muting and a full tab context menu,
 a rich page context menu, view-source, save-page, printing, fullscreen,
 remembered per-site zoom, caret browsing, paste-and-go, desktop notifications,
 proxy and Accept-Language settings, search keywords, HTTPS-only mode, a site
@@ -80,23 +94,43 @@ beat the global defaults, and a "clear data for this site" that removes that
 one origin's cookies, storage, history and settings, leaving every other site
 alone.
 
-**Importing** reads Chrome, Chromium, Brave, Edge, Vivaldi and Firefox
-profiles. Both hold an exclusive SQLite lock while running, so the import
-always works from a private copy that is deleted afterwards, and it carries the
+**Importing** reads Chrome, Chromium, Brave, Edge, Vivaldi, Opera and Firefox
+profiles — bookmarks, history and saved logins, each switchable per profile.
+Both families hold an exclusive SQLite lock while running, so the import always
+works from a private copy that is deleted afterwards, and it carries the
 original visit counts and dates across so imported history ranks properly in
 the address bar instead of all looking equally fresh.
+
+Passwords are decrypted where they sit. Chromium keeps its key in the same
+keyring Lyndon uses, so its `Login Data` is read directly (AES-128-CBC under a
+PBKDF2 key, which is what Chromium's `os_crypt` does on Linux). Firefox keeps
+its key in an NSS database, so that import is handed to NSS itself; a profile
+sealed with a Primary Password is reported as such rather than half-read. If
+either refuses, exporting a CSV from the other browser always works.
+
+**Password files.** `Import from a file` reads CSV and TSV in any of the shapes
+the major managers export — Chrome, Firefox, Bitwarden, KeePassXC, 1Password,
+LastPass, Dashlane, Safari — matching columns by header name rather than by
+position, and sniffing comma, semicolon or tab. It also reads `.xlsx` and `.ods`
+directly, with no spreadsheet program installed: both are zip archives of XML,
+and Lyndon unpacks the sheet itself. Rows without a site or a password (secure
+notes, payment cards) are counted and skipped rather than stored empty.
+
+**Exporting** writes `name,url,username,password,note` at mode `0600`, after a
+dialog that says plainly that the file has no encryption of any kind.
 
 ---
 
 ## Building
 
-Needs GTK 4.10+, libadwaita 1.5+, WebKitGTK 6.0, libsoup 3, SQLite 3 and libsecret.
+Needs GTK 4.10+, libadwaita 1.5+, WebKitGTK 6.0, libsoup 3, SQLite 3, libsecret,
+zlib and OpenSSL. NSS is optional and only enables Firefox password import.
 
 | Distro | Command |
 |---|---|
-| Arch | `sudo pacman -S gtk4 libadwaita webkitgtk-6.0 libsoup3 sqlite libsecret base-devel` |
-| Fedora | `sudo dnf install gtk4-devel libadwaita-devel webkitgtk6.0-devel libsoup3-devel sqlite-devel libsecret-devel gcc make` |
-| Debian/Ubuntu | `sudo apt install libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsoup-3.0-dev libsqlite3-dev libsecret-1-dev build-essential` |
+| Arch | `sudo pacman -S gtk4 libadwaita webkitgtk-6.0 libsoup3 sqlite libsecret json-glib zlib openssl nss base-devel` |
+| Fedora | `sudo dnf install gtk4-devel libadwaita-devel webkitgtk6.0-devel libsoup3-devel sqlite-devel libsecret-devel json-glib-devel zlib-devel openssl-devel nss-devel gcc make` |
+| Debian/Ubuntu | `sudo apt install libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsoup-3.0-dev libsqlite3-dev libsecret-1-dev libjson-glib-dev zlib1g-dev libssl-dev libnss3-dev build-essential` |
 
 > **Note the `6.0`.** The older `webkit2gtk-4.1` is the GTK3 generation and will
 > not work. `make deps` checks for you.
@@ -170,6 +204,9 @@ restore          = true      ; reopen last session's tabs on launch
 show-home-button = false
 per-site-zoom    = true
 homepage         = lyndon:start
+window-width     = 1180      ; size the last window was closed at
+window-height    = 760
+window-maximized = false
 ```
 
 Your own rules go in `~/.config/lyndon/custom-rules.txt`, in Adblock Plus
@@ -219,8 +256,9 @@ tab.c       LyTab — one WebView plus its policy: permissions, navigation, erro
 engine.c    the single shared WebContext + NetworkSession; privacy user scripts
 blocker.c   rule gathering, compilation and per-tab attachment
 store.c     SQLite: history, bookmarks, per-site zoom and permissions, session
-import.c    bookmark and history import from other browsers
+import.c    bookmarks, history and logins from other browsers' own stores
 passwords.c form capture and fill; storage via libsecret
+pwfile.c    passwords in and out of CSV, TSV, .xlsx and .ods files
 abp.c       Adblock Plus syntax → WebKit content-blocker JSON  (unit tested)
 config.c    the GKeyFile model
 prefs.c     the preferences dialog
@@ -270,10 +308,18 @@ unsupported syntax, and JSON escaping.
   overwrites an existing file. There is no "where do you want this?" prompt:
   WebKit needs the destination synchronously, and a modal round trip there is
   the classic way to lose a download.
-- **Password capture is heuristic, as it is in every browser.** A login form
-  is found by locating a visible `input[type=password]` and pairing it with the
-  nearest text-ish input. Sites that build login flows out of non-standard
-  widgets will not be captured.
+- **Password capture is heuristic, as it is in every browser.** A login form is
+  found by locating a visible `input[type=password]` and pairing it with the
+  field that names itself, or failing that the nearest text-ish input. Shadow
+  roots are searched too, but only a bounded number of times per page. Sites
+  that build login flows out of non-standard widgets may still be missed, and
+  the offer to type the missing half by hand is the fallback for exactly that.
+- **A save offer survives the navigation the login caused**, and only that one:
+  a page load more than five seconds after the capture dismisses it, as does
+  ninety seconds with no answer.
+- **Firefox password import needs NSS at build time.** It is detected
+  automatically; without it that one import explains itself and points at the
+  CSV route. Everything else builds and runs the same.
 - **Autofill fills, it never submits.** By design.
 - **Session restore stores URLs, not scroll position or form state.**
 - **No extensions.** There is no WebExtensions runtime and no plan for one; it
