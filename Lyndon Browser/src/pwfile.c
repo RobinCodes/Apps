@@ -416,7 +416,7 @@ sheet_end (GMarkupParseContext *ctx, const char *element,
 
     if (parse->is_shared) {
       gint64 index = g_ascii_strtoll (text, NULL, 10);
-      resolved = (index >= 0 && index < parse->shared->len)
+      resolved = (index >= 0 && index < (gint64) parse->shared->len)
         ? g_strdup (g_ptr_array_index (parse->shared, index))
         : g_strdup ("");
     } else {

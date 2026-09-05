@@ -264,6 +264,12 @@ struct _LyTab {
   guint    blocked;
   RECT     bounds;
 
+  /* A username from a two-step login's first screen, to offer on the screen
+   * after it. Same window and same rules as src/tab.c. */
+  char    *seen_origin;
+  char    *seen_username;
+  gint64   seen_at;
+
   LyTabChangedFn    changed;
   LyTabNewWindowFn  new_window;
   LyTabAccelFn      accel;
@@ -789,6 +795,112 @@ autofill_found (GPtrArray *found, gpointer user_data)
     ly_tab_fill_login (tab, c->username, c->password);
 }
 
+/* Remembered from the first screen of a two-step login, where the name is
+ * asked for on one page and the password on the next. */
+static void
+remember_username (LyTab *tab, const char *origin, const char *username)
+{
+  g_clear_pointer (&tab->seen_origin, g_free);
+  g_clear_pointer (&tab->seen_username, g_free);
+  tab->seen_origin   = g_strdup (origin);
+  tab->seen_username = g_strdup (username);
+  tab->seen_at       = g_get_monotonic_time ();
+}
+
+static const char *
+remembered_username (LyTab *tab, const char *origin)
+{
+  if (tab->seen_username == NULL || g_strcmp0 (tab->seen_origin, origin) != 0)
+    return NULL;
+  if (g_get_monotonic_time () - tab->seen_at > 10 * 60 * G_USEC_PER_SEC)
+    return NULL;
+  return tab->seen_username;
+}
+
+/* What the store already holds for this origin. ly_passwords_lookup() is
+ * synchronous here — Credential Manager is a local call, where libsecret is a
+ * D-Bus round trip — so the answer is filled in before the call returns and
+ * the decision below reads exactly like src/tab.c's continuation. */
+typedef struct {
+  const char *username;    /* what the page said, possibly empty */
+  const char *password;
+  char       *resolved;    /* the name to actually offer, owned here */
+  gboolean    known;       /* this exact pair is already stored */
+  gboolean    is_update;   /* this account is stored under another password */
+  gboolean    has_account; /* this account is stored at all */
+} LoginLook;
+
+static void
+look_for_save (GPtrArray *found, gpointer user_data)
+{
+  LoginLook *look = user_data;
+  const char *username = look->username ?: "";
+
+  /* A form that never showed a name field, on a site with exactly one account
+   * already saved, is that account — and calling it so is what turns a second
+   * anonymous row into an ordinary password update. */
+  if (*username == '\0' && found->len == 1) {
+    const LyCredential *sole = g_ptr_array_index (found, 0);
+    if (sole->username != NULL && *sole->username != '\0')
+      username = sole->username;
+  }
+  look->resolved = g_strdup (username);
+
+  for (guint i = 0; i < found->len; i++) {
+    const LyCredential *c = g_ptr_array_index (found, i);
+    if (g_strcmp0 (c->username, look->resolved) != 0)
+      continue;
+    look->has_account = TRUE;
+    if (look->password != NULL && g_strcmp0 (c->password, look->password) == 0)
+      look->known = TRUE;
+    else
+      look->is_update = TRUE;
+  }
+}
+
+static void
+offer_login (LyTab *tab, const char *origin, const char *username,
+             const char *password)
+{
+  LoginLook look = { .username = username, .password = password };
+  ly_passwords_lookup (tab->passwords, origin, look_for_save, &look);
+
+  /* Nothing to ask about if this exact pair is already stored. */
+  if (look.known) {
+    g_free (look.resolved);
+    return;
+  }
+
+  const char *name = look.resolved ?: "";
+  if (*name == '\0')
+    name = remembered_username (tab, origin) ?: "";
+
+  if (tab->login)
+    tab->login (tab, *name != '\0' ? LY_LOGIN_COMPLETE : LY_LOGIN_NO_USERNAME,
+                origin, name, password, look.is_update, tab->cb_data);
+
+  g_free (look.resolved);
+}
+
+/* A sign-in the page could not be made to give up a password for. This
+ * account being stored already is precisely the case where there is nothing
+ * worth asking: what changed is what could not be read. */
+static void
+offer_partial (LyTab *tab, const char *origin, const char *username)
+{
+  LoginLook look = { .username = username };
+  ly_passwords_lookup (tab->passwords, origin, look_for_save, &look);
+
+  gboolean known_account = look.has_account;
+  g_free (look.resolved);
+  if (known_account)
+    return;
+
+  if (tab->login)
+    tab->login (tab, LY_LOGIN_NO_PASSWORD, origin, username, NULL, FALSE,
+                tab->cb_data);
+}
+
 #define HANDLER_ARGS_WebMsg ICoreWebView2 *sender, ICoreWebView2WebMessageReceivedEventArgs *args
 HANDLER_HEAD (WebMsg, ICoreWebView2WebMessageReceivedEventHandler)
 
@@ -831,22 +943,43 @@ WebMsg_Invoke (ICoreWebView2WebMessageReceivedEventHandler *self,
   const char *type = json_object_get_string_member_with_default (body, "type", "");
   const char *origin = json_object_get_string_member_with_default (body, "origin", "");
 
-  if (g_strcmp0 (type, "submit") == 0) {
-    if (tab->cfg && !tab->cfg->save_passwords)
-      return S_OK;
-    const char *user = json_object_get_string_member_with_default (body, "username", "");
-    const char *pass = json_object_get_string_member_with_default (body, "password", "");
-    if (*pass && tab->login)
-      tab->login (tab, origin, user, pass, tab->cb_data);
-    return S_OK;
-  }
-
   if (g_strcmp0 (type, "forms") == 0) {
     if (tab->passwords == NULL || tab->cfg == NULL || !tab->cfg->password_autofill)
       return S_OK;
     if (json_object_get_int_member_with_default (body, "count", 0) < 1)
       return S_OK;
     ly_passwords_lookup (tab->passwords, origin, autofill_found, tab);
+    return S_OK;
+  }
+
+  if (tab->passwords == NULL || (tab->cfg && !tab->cfg->save_passwords))
+    return S_OK;
+  if (ly_passwords_is_blocked (tab->passwords, origin))
+    return S_OK;
+
+  if (g_strcmp0 (type, "submit") == 0) {
+    const char *user = json_object_get_string_member_with_default (body, "username", "");
+    const char *pass = json_object_get_string_member_with_default (body, "password", "");
+    if (*pass)
+      offer_login (tab, origin, user, pass);
+    return S_OK;
+  }
+
+  /* A sign-in the page could not be made to give up a password for. */
+  if (g_strcmp0 (type, "partial") == 0) {
+    const char *user = json_object_get_string_member_with_default (body, "username", "");
+    if (*user == '\0')
+      return S_OK;
+
+    remember_username (tab, origin, user);
+
+    /* Without a password box anywhere on the page this is the first screen of
+     * a two-step login: the password has not been asked for yet, so there is
+     * nothing to offer — only a name worth carrying to the next screen. */
+    if (!json_object_get_boolean_member_with_default (body, "hasPassword", FALSE))
+      return S_OK;
+
+    offer_partial (tab, origin, user);
   }
   return S_OK;
 }
@@ -1035,6 +1168,8 @@ ly_tab_free (LyTab *tab)
   g_free (tab->title);
   g_free (tab->url);
   g_free (tab->pending);
+  g_free (tab->seen_origin);
+  g_free (tab->seen_username);
   g_free (tab);
 }
 

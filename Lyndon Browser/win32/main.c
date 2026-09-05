@@ -8,6 +8,7 @@
  */
 
 #include "chrome.h"
+#include "login.h"
 #include "panel.h"
 #include "prefs.h"
 
@@ -75,7 +76,7 @@ wWinMain (HINSTANCE instance, HINSTANCE prev, PWSTR cmdline, int show)
   LyPasswords *passwords = ly_passwords_new (cfg);
 
   if (!ly_window_register (instance) || !ly_panel_register (instance) ||
-      !ly_prefs_register (instance)) {
+      !ly_prefs_register (instance) || !ly_login_register (instance)) {
     MessageBoxW (NULL, L"Could not register the window classes.", L"Lyndon",
                  MB_OK | MB_ICONERROR);
     return 1;
@@ -102,13 +103,38 @@ wWinMain (HINSTANCE instance, HINSTANCE prev, PWSTR cmdline, int show)
   g_mkdir_with_parents (profile, 0700);
   ly_webview_init (profile, data_dir, cfg, on_environment, NULL);
 
-  MSG msg;
-  while (GetMessageW (&msg, NULL, 0, 0) > 0) {
-    LyWindow *target = ly_window_from_message (&msg);
-    if (target && ly_window_handle_key (target, &msg))
-      continue;
-    TranslateMessage (&msg);
-    DispatchMessageW (&msg);
+  MSG msg = { 0 };
+  gboolean running = TRUE;
+
+  while (running) {
+    /* Everything under the toolkit is written against GLib, and the debounced
+     * config save is a g_timeout_add_seconds on the default context. Nothing
+     * would ever iterate that context here, so a plain GetMessageW loop means
+     * settings are only written when ly_config_free() flushes them on the way
+     * out — a crash would lose the lot, where the Linux build loses at most
+     * two seconds. Draining the context each turn makes the shared code
+     * behave the same on both. */
+    while (g_main_context_iteration (NULL, FALSE))
+      ;
+
+    /* Wait for a Windows message, and wake anyway once a second so a GLib
+     * timer with no message behind it still fires. Asking GLib how long it is
+     * willing to wait means driving prepare/query/check by hand, which cannot
+     * be mixed with the iteration above; one idle wake per second is the
+     * cheaper mistake. */
+    MsgWaitForMultipleObjectsEx (0, NULL, 1000, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+
+    while (PeekMessageW (&msg, NULL, 0, 0, PM_REMOVE)) {
+      if (msg.message == WM_QUIT) {
+        running = FALSE;
+        break;
+      }
+      LyWindow *target = ly_window_from_message (&msg);
+      if (target && ly_window_handle_key (target, &msg))
+        continue;
+      TranslateMessage (&msg);
+      DispatchMessageW (&msg);
+    }
   }
 
   ly_webview_shutdown ();

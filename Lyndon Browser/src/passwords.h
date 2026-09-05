@@ -22,7 +22,7 @@ typedef struct _LyPasswords LyPasswords;
 typedef struct {
   char *origin;     /* scheme://host[:port] — the autofill matching key */
   char *username;
-  char *password;   /* NULL when only the listing was requested */
+  char *password;   /* NULL only when the store could not give it up */
 } LyCredential;
 
 LyCredential *ly_credential_new  (const char *origin, const char *username,
@@ -54,6 +54,8 @@ typedef void (*LyCredentialsFn) (GPtrArray *credentials, gpointer user_data);
 /* Every credential stored for this exact origin. */
 void ly_passwords_lookup (LyPasswords *passwords, const char *origin,
                           LyCredentialsFn callback, gpointer user_data);
+/* Every credential stored, secrets included: exporting needs them, and the
+ * settings page simply does not copy what it does not draw. */
 void ly_passwords_list   (LyPasswords *passwords,
                           LyCredentialsFn callback, gpointer user_data);
 

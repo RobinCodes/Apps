@@ -41,11 +41,26 @@ typedef void (*LyTabNewWindowFn) (LyTab *source, const char *url, gpointer user_
  * can work while a page is focused. */
 typedef gboolean (*LyTabAccelFn) (LyTab *tab, guint vkey, gpointer user_data);
 
+/* What the page managed to tell us about the login it just saw. Anything
+ * short of both halves is still worth offering: the missing half is one entry
+ * box away, and a login quietly dropped is worse than one extra question.
+ * The same three cases as src/tab.c, decided the same way. */
+typedef enum {
+  LY_LOGIN_COMPLETE,      /* a username and a password were both captured */
+  LY_LOGIN_NO_USERNAME,   /* a password, but nothing that named the account */
+  LY_LOGIN_NO_PASSWORD,   /* a sign-in happened; the password could not be read */
+} LyLoginKind;
+
 /* A login the page just submitted, for the window to offer to remember. The
  * tab does not save it itself: whether to ask, and what the answer was, is a
- * question for the window that has somewhere to put the question. */
-typedef void (*LyTabLoginFn) (LyTab *tab, const char *origin, const char *username,
-                              const char *password, gpointer user_data);
+ * question for the window that has somewhere to put the question.
+ *
+ * `password` is NULL for LY_LOGIN_NO_PASSWORD, and `is_update` says whether
+ * this account is already stored with a different password — the tab has
+ * looked, so the window does not have to. */
+typedef void (*LyTabLoginFn) (LyTab *tab, LyLoginKind kind, const char *origin,
+                              const char *username, const char *password,
+                              gboolean is_update, gpointer user_data);
 
 /* A site asking for the camera, the microphone, a location. Return an
  * LyPolicy; LY_POLICY_ASK leaves the decision to WebView2's own prompt. */

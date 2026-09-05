@@ -43,8 +43,9 @@ translucent.
 
 **Passwords live in your keyring, not in a file Lyndon invented.** Logins are
 stored through the Secret Service API via libsecret — GNOME Keyring, KWallet,
-KeePassXC, whatever your desktop already runs. Lyndon rolls no crypto of its
-own and writes no password to its own files. Capture and fill are done by a
+KeePassXC, whatever your desktop already runs, and Windows Credential Manager
+on the Windows build. Lyndon rolls no crypto of its own and writes no password
+to its own files. Capture and fill are done by a
 script injected into the **top frame only**: a third-party iframe that could
 read a filled password would defeat the entire point. Autofill requires an
 exact origin match, and never submits a form for you.
@@ -258,6 +259,7 @@ blocker.c   rule gathering, compilation and per-tab attachment
 store.c     SQLite: history, bookmarks, per-site zoom and permissions, session
 import.c    bookmarks, history and logins from other browsers' own stores
 passwords.c form capture and fill; storage via libsecret
+credentials.c the credential struct and the origin rule, shared with Windows
 pwfile.c    passwords in and out of CSV, TSV, .xlsx and .ods files
 abp.c       Adblock Plus syntax → WebKit content-blocker JSON  (unit tested)
 config.c    the GKeyFile model
@@ -355,19 +357,26 @@ make -f win32/Makefile dist     # a folder that runs without MSYS2
 ```
 
 in an **MSYS2 MINGW64** shell, with `mingw-w64-x86_64-gcc`,
-`mingw-w64-x86_64-glib2` and `mingw-w64-x86_64-sqlite3` installed. The result
-is about 380 KB of executable and five GLib DLLs; `dist` gathers them, the
-`data/` directory and the WebView2 loader into one folder that needs no MSYS2
-on the machine it runs on.
+`mingw-w64-x86_64-glib2`, `mingw-w64-x86_64-json-glib`,
+`mingw-w64-x86_64-sqlite3` and `mingw-w64-x86_64-zlib` installed.
+`mingw-w64-x86_64-nss` is optional and enables Firefox password import, the
+same way it does on Linux. The result is about 380 KB of executable and a
+handful of GLib DLLs; `dist` gathers them, the `data/` directory and the
+WebView2 loader into one folder that needs no MSYS2 on the machine it runs on.
+
+Nothing else is needed for the passwords: DPAPI and CNG are part of Windows,
+so the Chromium import and the AES-GCM under it cost two more `-l` flags and
+no dependency.
 
 ### What is shared and what is new
 
 `src/lyndon.h` drops the toolkit includes under `_WIN32`, and that is the
-whole of what porting the shared half took — **`abp.c`, `config.c`, `store.c`
-and `util.c` compile from `src/` unchanged** and are the same code the Linux
-build runs. The filter translator, the config file, the SQLite history store
-and the URL helpers are therefore not forked, and a change to any of them
-lands on both.
+whole of what porting the shared half took — **`abp.c`, `config.c`, `store.c`,
+`util.c`, `import.c`, `credentials.c` and `pwfile.c` compile from `src/`
+unchanged** and are the same code the Linux build runs. The filter translator,
+the config file, the SQLite history store, the URL helpers, the browser
+importer, the rule that decides what an origin is and the CSV and spreadsheet
+readers are therefore not forked, and a change to any of them lands on both.
 
 | | Linux | Windows |
 |---|---|---|
@@ -376,6 +385,9 @@ lands on both.
 | Request matching | WebKit's own DFA | `win32/block.c` |
 | Filter translation | `src/abp.c` | `src/abp.c` |
 | Config, history, URLs | `src/config.c`, `store.c`, `util.c` | the same files |
+| Browser import | `src/import.c` | the same file |
+| Password files | `src/pwfile.c` | the same file |
+| Origin matching | `src/credentials.c` | the same file |
 
 ### The blocker
 
@@ -402,7 +414,16 @@ a blocked host.
 Tabs, navigation and the address bar with the same keyword and search
 handling as the Linux build. Blocking with a per-tab count and a switch in
 the toolbar, element hiding, history and bookmarks in the same SQLite file,
-dark chrome that follows the system, per-monitor DPI.
+dark chrome that follows the system, per-monitor DPI, and windows that reopen
+at the size they were left — written to the same `window-width`,
+`window-height` and `window-maximized` keys, as a page area at 96 dpi, so the
+same numbers describe the same browser on either platform.
+
+Passwords are at parity too: capture through shadow roots, the two-step
+logins that ask for a name on one page and the password on the next, saved
+logins edited or added by hand, imported from another browser or from a CSV
+or spreadsheet, and exported after the same warning about what a plaintext
+file means.
 
 On top of that, the parts that were GTK-bound and had to be built again:
 
@@ -412,7 +433,9 @@ On top of that, the parts that were GTK-bound and had to be built again:
 | **Bookmarks, history, downloads** | `win32/panel.c` | One drop-down with three sections and a filter box, rather than three dialogs. |
 | **Downloads** | `win32/downloads.c` | Lyndon's own list and its own file naming, not the Edge bubble. |
 | **Saved logins** | `win32/passwords.c` | Windows Credential Manager. |
-| **Importing** | `src/import.c` | The Linux file, compiled here; only the profile locations differ. |
+| **The save-login card** | `win32/login.c` | A popup over the page, because WebView2 owns the whole page area and nothing can be placed inside it. Same three answers, same ninety seconds, same entry box for whichever half the page would not give up. |
+| **Importing** | `src/import.c` | The Linux file, compiled here; the profile locations and the way the key is unwrapped differ, nothing else. |
+| **Password files** | `src/pwfile.c` | The Linux file, unchanged: the same CSV, TSV, `.xlsx` and `.ods` reader and the same CSV writer. |
 | **Session restore** | `win32/chrome.c` | The store's own session table, so both builds read the same rows. |
 | **The look** | `win32/ui.c` | `data/css/lyndon.css`, followed measurement for measurement. |
 | **`lyndon:start`** | `win32/scheme.c` | The same start page, on the same URL, from the same file. |
@@ -457,13 +480,32 @@ machine whose Edge is older and environment creation fails with `E_INVALIDARG`
 and no explanation. Lyndon asks the loader what is actually installed and
 targets that.
 
-Two of those reuse rather than reimplement. `src/import.c` compiles unchanged
-apart from a `#ifdef` over where Chrome, Edge, Brave, Vivaldi, Opera and
-Firefox keep their profiles. And the script that finds, fills and captures
-login forms lives in `src/password-script.h` and is shared verbatim: only the
-line that posts a message back differs, because WebKit gives each handler its
-own object and WebView2 gives one `postMessage` for everything. It is
-security-relevant code, and two copies of it would be two behaviours.
+Several of those reuse rather than reimplement. `src/import.c` compiles
+unchanged apart from two `#ifdef`s: one over where Chrome, Edge, Brave,
+Vivaldi, Opera and Firefox keep their profiles, and one over how the key that
+opens their saved logins is found. On Linux that key is a passphrase in the
+Secret Service and the values are AES-128-CBC; on Windows it is a random
+AES-256 key in the profile's `Local State`, wrapped with DPAPI so that only
+the account that saved it can unwrap it, and the values are AES-256-GCM
+through CNG. The walk over the profile's SQLite table is written once and is
+the same on both — which is the point of splitting it that way rather than
+writing the whole import twice. Rows wrapped with Chrome 127's app-bound
+`v20` scheme are counted as unreadable rather than guessed at: that key is
+held by an elevated service that hands it back only to Chrome.
+
+Firefox is the one import that has to hand the work to the library that owns
+the format, and it does so identically on both: NSS is detected with
+`pkg-config` at build time and, when it is absent, that one import explains
+itself and points at the CSV route.
+
+And the script that finds, fills and captures login forms lives in
+`src/password-script.h` and is shared verbatim: only the line that posts a
+message back differs, because WebKit gives each handler its own object and
+WebView2 gives one `postMessage` for everything. It is security-relevant code,
+and two copies of it would be two behaviours. The rule that turns a URL into
+the origin autofill matches on lives in `src/credentials.c` for the same
+reason — two implementations of it would eventually be two rules, and a saved
+login that no longer matches the site it came from.
 
 Passwords go to Credential Manager for the same reason the Linux build uses
 libsecret: the browser should not invent its own crypto, and should not write
@@ -486,6 +528,10 @@ never heard of Lyndon.
   says so, because they are real settings that the Linux build reads from the
   same file — hiding them would make the two look like different products.
 * **Per-tab process control.** WebView2 decides that; Lyndon does not.
+* **File associations.** The Linux build ships a `.desktop` file that claims
+  `http`, `https` and `application/pdf`; `windows/install.ps1` only makes Start
+  Menu shortcuts, so Lyndon cannot yet be made the default browser from inside
+  the installer. Windows' own Default Apps page is the way to do it.
 
 ### The vendored header
 
