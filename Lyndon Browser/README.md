@@ -43,11 +43,25 @@ translucent.
 
 **Passwords live in your keyring, not in a file Lyndon invented.** Logins are
 stored through the Secret Service API via libsecret — GNOME Keyring, KWallet,
-KeePassXC, whatever your desktop already runs. Lyndon rolls no crypto of its
-own and writes no password to its own files. Capture and fill are done by a
+KeePassXC, whatever your desktop already runs, and Windows Credential Manager
+on the Windows build. Lyndon rolls no crypto of its own and writes no password
+to its own files. Capture and fill are done by a
 script injected into the **top frame only**: a third-party iframe that could
 read a filled password would defeat the entire point. Autofill requires an
 exact origin match, and never submits a form for you.
+
+Saved logins can be edited in place — site, username and password — or added by
+hand, from Preferences → Passwords. They come in from a CSV, a `.xlsx` or a
+`.ods` file, or straight out of another browser's own encrypted store, and they
+go back out as the CSV that Chrome, Firefox and Bitwarden all read.
+
+**A half-read login is still offered, with a box to fill in the rest.** When a
+form gives up a password but nothing that names the account, the save bar grows
+a username field; when a sign-in plainly happened but the password could not be
+read — a single-page app that wipes the field in its own submit handler — it
+grows a password field instead, and Save stays greyed out until there is
+something to save. Two-step logins that ask for the name on one screen and the
+password on the next are stitched back together without asking anything.
 
 **Privacy defaults are the defaults.** Third-party cookies off, WebGL off,
 WebRTC off, autoplay off, passwords not persisted, Intelligent Tracking
@@ -58,7 +72,8 @@ masks the GPU model, and adds sub-perceptual noise to canvas readback.
 **The rest of what a browser is expected to do**, and not much that it is not.
 History with ranked address-bar completion, bookmarks with a star and an
 optional bookmarks bar, private windows on an ephemeral session, session
-restore, reopen-closed-tab, tab pinning, muting and a full tab context menu,
+restore, windows that reopen at the size they were closed,
+reopen-closed-tab, tab pinning, muting and a full tab context menu,
 a rich page context menu, view-source, save-page, printing, fullscreen,
 remembered per-site zoom, caret browsing, paste-and-go, desktop notifications,
 proxy and Accept-Language settings, search keywords, HTTPS-only mode, a site
@@ -80,23 +95,43 @@ beat the global defaults, and a "clear data for this site" that removes that
 one origin's cookies, storage, history and settings, leaving every other site
 alone.
 
-**Importing** reads Chrome, Chromium, Brave, Edge, Vivaldi and Firefox
-profiles. Both hold an exclusive SQLite lock while running, so the import
-always works from a private copy that is deleted afterwards, and it carries the
+**Importing** reads Chrome, Chromium, Brave, Edge, Vivaldi, Opera and Firefox
+profiles — bookmarks, history and saved logins, each switchable per profile.
+Both families hold an exclusive SQLite lock while running, so the import always
+works from a private copy that is deleted afterwards, and it carries the
 original visit counts and dates across so imported history ranks properly in
 the address bar instead of all looking equally fresh.
+
+Passwords are decrypted where they sit. Chromium keeps its key in the same
+keyring Lyndon uses, so its `Login Data` is read directly (AES-128-CBC under a
+PBKDF2 key, which is what Chromium's `os_crypt` does on Linux). Firefox keeps
+its key in an NSS database, so that import is handed to NSS itself; a profile
+sealed with a Primary Password is reported as such rather than half-read. If
+either refuses, exporting a CSV from the other browser always works.
+
+**Password files.** `Import from a file` reads CSV and TSV in any of the shapes
+the major managers export — Chrome, Firefox, Bitwarden, KeePassXC, 1Password,
+LastPass, Dashlane, Safari — matching columns by header name rather than by
+position, and sniffing comma, semicolon or tab. It also reads `.xlsx` and `.ods`
+directly, with no spreadsheet program installed: both are zip archives of XML,
+and Lyndon unpacks the sheet itself. Rows without a site or a password (secure
+notes, payment cards) are counted and skipped rather than stored empty.
+
+**Exporting** writes `name,url,username,password,note` at mode `0600`, after a
+dialog that says plainly that the file has no encryption of any kind.
 
 ---
 
 ## Building
 
-Needs GTK 4.10+, libadwaita 1.5+, WebKitGTK 6.0, libsoup 3, SQLite 3 and libsecret.
+Needs GTK 4.10+, libadwaita 1.5+, WebKitGTK 6.0, libsoup 3, SQLite 3, libsecret,
+zlib and OpenSSL. NSS is optional and only enables Firefox password import.
 
 | Distro | Command |
 |---|---|
-| Arch | `sudo pacman -S gtk4 libadwaita webkitgtk-6.0 libsoup3 sqlite libsecret base-devel` |
-| Fedora | `sudo dnf install gtk4-devel libadwaita-devel webkitgtk6.0-devel libsoup3-devel sqlite-devel libsecret-devel gcc make` |
-| Debian/Ubuntu | `sudo apt install libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsoup-3.0-dev libsqlite3-dev libsecret-1-dev build-essential` |
+| Arch | `sudo pacman -S gtk4 libadwaita webkitgtk-6.0 libsoup3 sqlite libsecret json-glib zlib openssl nss base-devel` |
+| Fedora | `sudo dnf install gtk4-devel libadwaita-devel webkitgtk6.0-devel libsoup3-devel sqlite-devel libsecret-devel json-glib-devel zlib-devel openssl-devel nss-devel gcc make` |
+| Debian/Ubuntu | `sudo apt install libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsoup-3.0-dev libsqlite3-dev libsecret-1-dev libjson-glib-dev zlib1g-dev libssl-dev libnss3-dev build-essential` |
 
 > **Note the `6.0`.** The older `webkit2gtk-4.1` is the GTK3 generation and will
 > not work. `make deps` checks for you.
@@ -170,6 +205,9 @@ restore          = true      ; reopen last session's tabs on launch
 show-home-button = false
 per-site-zoom    = true
 homepage         = lyndon:start
+window-width     = 1180      ; size the last window was closed at
+window-height    = 760
+window-maximized = false
 ```
 
 Your own rules go in `~/.config/lyndon/custom-rules.txt`, in Adblock Plus
@@ -219,8 +257,10 @@ tab.c       LyTab — one WebView plus its policy: permissions, navigation, erro
 engine.c    the single shared WebContext + NetworkSession; privacy user scripts
 blocker.c   rule gathering, compilation and per-tab attachment
 store.c     SQLite: history, bookmarks, per-site zoom and permissions, session
-import.c    bookmark and history import from other browsers
+import.c    bookmarks, history and logins from other browsers' own stores
 passwords.c form capture and fill; storage via libsecret
+credentials.c the credential struct and the origin rule, shared with Windows
+pwfile.c    passwords in and out of CSV, TSV, .xlsx and .ods files
 abp.c       Adblock Plus syntax → WebKit content-blocker JSON  (unit tested)
 config.c    the GKeyFile model
 prefs.c     the preferences dialog
@@ -270,10 +310,18 @@ unsupported syntax, and JSON escaping.
   overwrites an existing file. There is no "where do you want this?" prompt:
   WebKit needs the destination synchronously, and a modal round trip there is
   the classic way to lose a download.
-- **Password capture is heuristic, as it is in every browser.** A login form
-  is found by locating a visible `input[type=password]` and pairing it with the
-  nearest text-ish input. Sites that build login flows out of non-standard
-  widgets will not be captured.
+- **Password capture is heuristic, as it is in every browser.** A login form is
+  found by locating a visible `input[type=password]` and pairing it with the
+  field that names itself, or failing that the nearest text-ish input. Shadow
+  roots are searched too, but only a bounded number of times per page. Sites
+  that build login flows out of non-standard widgets may still be missed, and
+  the offer to type the missing half by hand is the fallback for exactly that.
+- **A save offer survives the navigation the login caused**, and only that one:
+  a page load more than five seconds after the capture dismisses it, as does
+  ninety seconds with no answer.
+- **Firefox password import needs NSS at build time.** It is detected
+  automatically; without it that one import explains itself and points at the
+  CSV route. Everything else builds and runs the same.
 - **Autofill fills, it never submits.** By design.
 - **Session restore stores URLs, not scroll position or form state.**
 - **No extensions.** There is no WebExtensions runtime and no plan for one; it
@@ -309,19 +357,26 @@ make -f win32/Makefile dist     # a folder that runs without MSYS2
 ```
 
 in an **MSYS2 MINGW64** shell, with `mingw-w64-x86_64-gcc`,
-`mingw-w64-x86_64-glib2` and `mingw-w64-x86_64-sqlite3` installed. The result
-is about 380 KB of executable and five GLib DLLs; `dist` gathers them, the
-`data/` directory and the WebView2 loader into one folder that needs no MSYS2
-on the machine it runs on.
+`mingw-w64-x86_64-glib2`, `mingw-w64-x86_64-json-glib`,
+`mingw-w64-x86_64-sqlite3` and `mingw-w64-x86_64-zlib` installed.
+`mingw-w64-x86_64-nss` is optional and enables Firefox password import, the
+same way it does on Linux. The result is about 380 KB of executable and a
+handful of GLib DLLs; `dist` gathers them, the `data/` directory and the
+WebView2 loader into one folder that needs no MSYS2 on the machine it runs on.
+
+Nothing else is needed for the passwords: DPAPI and CNG are part of Windows,
+so the Chromium import and the AES-GCM under it cost two more `-l` flags and
+no dependency.
 
 ### What is shared and what is new
 
 `src/lyndon.h` drops the toolkit includes under `_WIN32`, and that is the
-whole of what porting the shared half took — **`abp.c`, `config.c`, `store.c`
-and `util.c` compile from `src/` unchanged** and are the same code the Linux
-build runs. The filter translator, the config file, the SQLite history store
-and the URL helpers are therefore not forked, and a change to any of them
-lands on both.
+whole of what porting the shared half took — **`abp.c`, `config.c`, `store.c`,
+`util.c`, `import.c`, `credentials.c` and `pwfile.c` compile from `src/`
+unchanged** and are the same code the Linux build runs. The filter translator,
+the config file, the SQLite history store, the URL helpers, the browser
+importer, the rule that decides what an origin is and the CSV and spreadsheet
+readers are therefore not forked, and a change to any of them lands on both.
 
 | | Linux | Windows |
 |---|---|---|
@@ -330,6 +385,9 @@ lands on both.
 | Request matching | WebKit's own DFA | `win32/block.c` |
 | Filter translation | `src/abp.c` | `src/abp.c` |
 | Config, history, URLs | `src/config.c`, `store.c`, `util.c` | the same files |
+| Browser import | `src/import.c` | the same file |
+| Password files | `src/pwfile.c` | the same file |
+| Origin matching | `src/credentials.c` | the same file |
 
 ### The blocker
 
@@ -356,7 +414,16 @@ a blocked host.
 Tabs, navigation and the address bar with the same keyword and search
 handling as the Linux build. Blocking with a per-tab count and a switch in
 the toolbar, element hiding, history and bookmarks in the same SQLite file,
-dark chrome that follows the system, per-monitor DPI.
+dark chrome that follows the system, per-monitor DPI, and windows that reopen
+at the size they were left — written to the same `window-width`,
+`window-height` and `window-maximized` keys, as a page area at 96 dpi, so the
+same numbers describe the same browser on either platform.
+
+Passwords are at parity too: capture through shadow roots, the two-step
+logins that ask for a name on one page and the password on the next, saved
+logins edited or added by hand, imported from another browser or from a CSV
+or spreadsheet, and exported after the same warning about what a plaintext
+file means.
 
 On top of that, the parts that were GTK-bound and had to be built again:
 
@@ -366,7 +433,9 @@ On top of that, the parts that were GTK-bound and had to be built again:
 | **Bookmarks, history, downloads** | `win32/panel.c` | One drop-down with three sections and a filter box, rather than three dialogs. |
 | **Downloads** | `win32/downloads.c` | Lyndon's own list and its own file naming, not the Edge bubble. |
 | **Saved logins** | `win32/passwords.c` | Windows Credential Manager. |
-| **Importing** | `src/import.c` | The Linux file, compiled here; only the profile locations differ. |
+| **The save-login card** | `win32/login.c` | A popup over the page, because WebView2 owns the whole page area and nothing can be placed inside it. Same three answers, same ninety seconds, same entry box for whichever half the page would not give up. |
+| **Importing** | `src/import.c` | The Linux file, compiled here; the profile locations and the way the key is unwrapped differ, nothing else. |
+| **Password files** | `src/pwfile.c` | The Linux file, unchanged: the same CSV, TSV, `.xlsx` and `.ods` reader and the same CSV writer. |
 | **Session restore** | `win32/chrome.c` | The store's own session table, so both builds read the same rows. |
 | **The look** | `win32/ui.c` | `data/css/lyndon.css`, followed measurement for measurement. |
 | **`lyndon:start`** | `win32/scheme.c` | The same start page, on the same URL, from the same file. |
@@ -411,13 +480,32 @@ machine whose Edge is older and environment creation fails with `E_INVALIDARG`
 and no explanation. Lyndon asks the loader what is actually installed and
 targets that.
 
-Two of those reuse rather than reimplement. `src/import.c` compiles unchanged
-apart from a `#ifdef` over where Chrome, Edge, Brave, Vivaldi, Opera and
-Firefox keep their profiles. And the script that finds, fills and captures
-login forms lives in `src/password-script.h` and is shared verbatim: only the
-line that posts a message back differs, because WebKit gives each handler its
-own object and WebView2 gives one `postMessage` for everything. It is
-security-relevant code, and two copies of it would be two behaviours.
+Several of those reuse rather than reimplement. `src/import.c` compiles
+unchanged apart from two `#ifdef`s: one over where Chrome, Edge, Brave,
+Vivaldi, Opera and Firefox keep their profiles, and one over how the key that
+opens their saved logins is found. On Linux that key is a passphrase in the
+Secret Service and the values are AES-128-CBC; on Windows it is a random
+AES-256 key in the profile's `Local State`, wrapped with DPAPI so that only
+the account that saved it can unwrap it, and the values are AES-256-GCM
+through CNG. The walk over the profile's SQLite table is written once and is
+the same on both — which is the point of splitting it that way rather than
+writing the whole import twice. Rows wrapped with Chrome 127's app-bound
+`v20` scheme are counted as unreadable rather than guessed at: that key is
+held by an elevated service that hands it back only to Chrome.
+
+Firefox is the one import that has to hand the work to the library that owns
+the format, and it does so identically on both: NSS is detected with
+`pkg-config` at build time and, when it is absent, that one import explains
+itself and points at the CSV route.
+
+And the script that finds, fills and captures login forms lives in
+`src/password-script.h` and is shared verbatim: only the line that posts a
+message back differs, because WebKit gives each handler its own object and
+WebView2 gives one `postMessage` for everything. It is security-relevant code,
+and two copies of it would be two behaviours. The rule that turns a URL into
+the origin autofill matches on lives in `src/credentials.c` for the same
+reason — two implementations of it would eventually be two rules, and a saved
+login that no longer matches the site it came from.
 
 Passwords go to Credential Manager for the same reason the Linux build uses
 libsecret: the browser should not invent its own crypto, and should not write
@@ -440,6 +528,10 @@ never heard of Lyndon.
   says so, because they are real settings that the Linux build reads from the
   same file — hiding them would make the two look like different products.
 * **Per-tab process control.** WebView2 decides that; Lyndon does not.
+* **File associations.** The Linux build ships a `.desktop` file that claims
+  `http`, `https` and `application/pdf`; `windows/install.ps1` only makes Start
+  Menu shortcuts, so Lyndon cannot yet be made the default browser from inside
+  the installer. Windows' own Default Apps page is the way to do it.
 
 ### The vendored header
 

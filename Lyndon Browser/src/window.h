@@ -25,4 +25,8 @@ void ly_window_toast (LyWindow *self, const char *text);
 /* Re-read configuration: effect classes, tab policies, chrome density. */
 void ly_window_refresh (LyWindow *self);
 
+/* Record this window's size and maximised state in the configuration, so the
+ * next window opens the shape this one was left in. */
+void ly_window_save_geometry (LyWindow *self);
+
 G_END_DECLS

@@ -65,22 +65,6 @@ split_target (const char *target, char **origin, char **username)
   return TRUE;
 }
 
-void
-ly_credential_free (LyCredential *c)
-{
-  if (c == NULL)
-    return;
-  g_free (c->origin);
-  g_free (c->username);
-  if (c->password) {
-    /* Not merely freed: the plaintext should not outlive the struct in a
-     * page of heap that something else may later read. */
-    memset (c->password, 0, strlen (c->password));
-    g_free (c->password);
-  }
-  g_free (c);
-}
-
 /* ------------------------------------------------------------- lifecycle */
 
 LyPasswords *
@@ -120,7 +104,7 @@ ly_passwords_user_script (void)
 /* ------------------------------------------------------------- retrieval */
 
 static LyCredential *
-credential_from (const CREDENTIALW *cred, gboolean with_password)
+credential_from (const CREDENTIALW *cred)
 {
   g_autofree char *target = from_w (cred->TargetName);
   if (target == NULL)
@@ -134,7 +118,7 @@ credential_from (const CREDENTIALW *cred, gboolean with_password)
   out->origin = origin;
   out->username = username;
 
-  if (with_password && cred->CredentialBlob && cred->CredentialBlobSize > 0) {
+  if (cred->CredentialBlob && cred->CredentialBlobSize > 0) {
     /* The blob is UTF-16 with no terminator, so it is length-delimited. */
     gsize chars = cred->CredentialBlobSize / sizeof (wchar_t);
     out->password = g_utf16_to_utf8 ((const gunichar2 *) cred->CredentialBlob,
@@ -144,7 +128,7 @@ credential_from (const CREDENTIALW *cred, gboolean with_password)
 }
 
 static GPtrArray *
-enumerate (const char *only_origin, gboolean with_password)
+enumerate (const char *only_origin)
 {
   GPtrArray *found =
     g_ptr_array_new_with_free_func ((GDestroyNotify) ly_credential_free);
@@ -156,7 +140,7 @@ enumerate (const char *only_origin, gboolean with_password)
     return found;   /* nothing stored yet is not an error */
 
   for (DWORD i = 0; i < count; i++) {
-    LyCredential *c = credential_from (creds[i], with_password);
+    LyCredential *c = credential_from (creds[i]);
     if (c == NULL)
       continue;
     if (only_origin && g_strcmp0 (c->origin, only_origin) != 0) {
@@ -173,7 +157,7 @@ void
 ly_passwords_lookup (LyPasswords *p, const char *origin,
                      LyCredentialsFn callback, gpointer user_data)
 {
-  GPtrArray *found = enumerate (origin, TRUE);
+  GPtrArray *found = enumerate (origin);
   callback (found, user_data);
   g_ptr_array_unref (found);
 }
@@ -181,32 +165,35 @@ ly_passwords_lookup (LyPasswords *p, const char *origin,
 void
 ly_passwords_list (LyPasswords *p, LyCredentialsFn callback, gpointer user_data)
 {
-  /* The listing is for a settings page, which shows origins and usernames and
-   * has no business holding every password in memory to do it. */
-  GPtrArray *found = enumerate (NULL, FALSE);
+  /* Secrets included, as libsecret's SECRET_SEARCH_LOAD_SECRETS gives the
+   * Linux build: this is how an export gets at every password. It costs
+   * nothing extra to read them — CredEnumerateW hands back the blobs either
+   * way — and the settings page still copies only what it draws. */
+  GPtrArray *found = enumerate (NULL);
   callback (found, user_data);
   g_ptr_array_unref (found);
 }
 
 /* --------------------------------------------------------------- writing */
 
-void
-ly_passwords_save (LyPasswords *p, const char *origin,
-                   const char *username, const char *password)
+/* The one place a credential is actually written. Both entry points below go
+ * through it; the only difference is whether the caller wants to be told what
+ * happened, which is why this reports through a GError rather than a bool. */
+static gboolean
+write_credential (const char *origin, const char *username,
+                  const char *password, GError **error)
 {
-  if (origin == NULL || password == NULL || *password == '\0')
-    return;
-  if (ly_passwords_is_blocked (p, origin))
-    return;
-
   g_autofree char *target = target_for (origin, username);
   g_autofree wchar_t *wtarget = to_w (target);
   g_autofree wchar_t *wuser = to_w (username ? username : "");
   glong pw_chars = 0;
   wchar_t *wpass = (wchar_t *) g_utf8_to_utf16 (password, -1, NULL, &pw_chars, NULL);
+
   if (wtarget == NULL || wpass == NULL) {
     g_free (wpass);
-    return;
+    g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                         "That site or password could not be encoded.");
+    return FALSE;
   }
 
   CREDENTIALW cred = { 0 };
@@ -218,12 +205,74 @@ ly_passwords_save (LyPasswords *p, const char *origin,
   cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
   cred.Comment = L"Saved by the Lyndon browser";
 
-  if (!CredWriteW (&cred, 0))
-    g_debug ("passwords: CredWrite failed (%lu)", GetLastError ());
+  /* The target name is the identity of the entry, so this replaces a row with
+   * the same origin and username rather than adding a second one. */
+  gboolean ok = CredWriteW (&cred, 0);
+  DWORD failure = ok ? 0 : GetLastError ();
 
   /* Wipe the plaintext copy rather than leaving it in freed heap. */
   memset (wpass, 0, (size_t) pw_chars * sizeof (wchar_t));
   g_free (wpass);
+
+  if (!ok) {
+    g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                 "Windows Credential Manager refused the entry (error %lu).",
+                 failure);
+    g_debug ("passwords: CredWrite failed (%lu)", failure);
+  }
+  return ok;
+}
+
+void
+ly_passwords_save (LyPasswords *p, const char *origin,
+                   const char *username, const char *password)
+{
+  if (origin == NULL || password == NULL || *password == '\0')
+    return;
+  if (ly_passwords_is_blocked (p, origin))
+    return;
+
+  write_credential (origin, username, password, NULL);
+}
+
+/* -------------------------------------------------------- edit and import */
+
+gboolean
+ly_passwords_save_sync (LyPasswords *p, const char *origin,
+                        const char *username, const char *password,
+                        GError **error)
+{
+  if (origin == NULL || *origin == '\0' || password == NULL) {
+    g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                         "A site and a password are both required");
+    return FALSE;
+  }
+  return write_credential (origin, username, password, error);
+}
+
+gboolean
+ly_passwords_update (LyPasswords *p,
+                     const char *old_origin, const char *old_username,
+                     const char *origin, const char *username,
+                     const char *password, GError **error)
+{
+  if (!ly_passwords_save_sync (p, origin, username, password, error))
+    return FALSE;
+
+  gboolean same = g_strcmp0 (old_origin, origin) == 0 &&
+                  g_strcmp0 (old_username ?: "", username ?: "") == 0;
+  if (same || old_origin == NULL)
+    return TRUE;
+
+  /* The replacement is safely stored, so losing this delete costs a duplicate
+   * row rather than the login itself. */
+  g_autofree char *old_target = target_for (old_origin, old_username);
+  g_autofree wchar_t *w = to_w (old_target);
+  if (w != NULL && !CredDeleteW (w, CRED_TYPE_GENERIC, 0))
+    g_warning ("passwords: could not remove the row it replaced (%lu)",
+               GetLastError ());
+
+  return TRUE;
 }
 
 void

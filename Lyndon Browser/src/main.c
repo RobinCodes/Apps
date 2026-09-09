@@ -24,6 +24,23 @@ main (int argc, char **argv)
     }
   }
 
+  /* WebKitGTK 2.52 aborts the web process from inside its own accessibility
+   * code when a selection is extended across the last rendered line of a
+   * virtualised editor. Any editor that recycles line elements as you scroll
+   * hits that shape: in Overleaf, Ctrl+A in the LaTeX pane kills the tab every
+   * single time and the document comes back as a blank "page crashed" screen.
+   * The library exposes no setting for this, so the only lever is to point the
+   * web process at an accessibility bus that is not there, which stops it
+   * building the tree the crash walks.
+   *
+   * The cost is real: screen readers see no page content while this is in
+   * force. Set LYNDON_ACCESSIBILITY=1 to keep the tree and take the crash, and
+   * drop this whole block once WebKit stops aborting.
+   */
+  if (g_getenv ("LYNDON_ACCESSIBILITY") == NULL &&
+      g_getenv ("WEBKIT_A11Y_BUS_ADDRESS") == NULL)
+    g_setenv ("WEBKIT_A11Y_BUS_ADDRESS", "unix:path=/nonexistent", TRUE);
+
   g_set_application_name ("Lyndon");
 
   g_autoptr (LyApp) app = ly_app_new ();

@@ -17,7 +17,7 @@ VERSION    := 0.1.0
 APP_ID     := org.lyndon.Browser
 
 CC         ?= gcc
-PKGS       := glib-2.0 gio-2.0 sqlite3 json-glib-1.0
+PKGS       := glib-2.0 gio-2.0 sqlite3 json-glib-1.0 zlib
 
 WARN       := -Wall -Wextra -Wno-unused-parameter -Wshadow -Wpointer-arith \
               -Wformat=2 -Wno-missing-field-initializers -Wno-cast-function-type
@@ -34,9 +34,22 @@ DEFS       := -DLYNDON_VERSION=\"$(VERSION)\" -DLYNDON_APP_ID=\"$(APP_ID)\" \
 CFLAGS     += $(STD) $(WARN) $(OPT) $(DEFS) -Isrc -Iwin32 -isystem win32/webview2
 CFLAGS     += $(shell pkg-config --cflags $(PKGS))
 
+# crypt32 and bcrypt are for the password import: DPAPI unwraps the key
+# Chromium leaves in Local State, and CNG does the AES-GCM underneath it.
 LDLIBS     := $(shell pkg-config --libs $(PKGS)) \
               -lole32 -loleaut32 -luuid -lcomctl32 -lshlwapi -lshell32 \
-              -luser32 -lgdi32 -ladvapi32 -ldwmapi
+              -luser32 -lgdi32 -ladvapi32 -ldwmapi -lcrypt32 -lbcrypt
+
+# Optional, and exactly as on Linux: NSS is the only way to read Firefox's
+# saved logins, and it is not worth failing a build over for people who do not
+# use Firefox. Without it the import offers the CSV route instead.
+# Install with: pacman -S mingw-w64-x86_64-nss
+ifeq ($(shell pkg-config --exists nss 2>/dev/null && echo 1),1)
+  DEFS     += -DLYNDON_HAVE_NSS=1
+  CFLAGS   += $(shell pkg-config --cflags nss)
+  LDLIBS   += $(shell pkg-config --libs nss)
+endif
+
 # -mwindows: no console behind the window. Dropped by DEBUG=1 so that
 # g_debug output has somewhere to go.
 # -municode: the entry point is wWinMain, so argv arrives as UTF-16 and a
@@ -52,10 +65,11 @@ endif
 
 # -- sources ---------------------------------------------------------------
 # From src/, unchanged: everything that never names a GTK or WebKit type.
-SHARED     := src/abp.c src/config.c src/store.c src/util.c src/import.c
+SHARED     := src/abp.c src/config.c src/store.c src/util.c src/import.c \
+              src/credentials.c src/pwfile.c
 WINSRC     := win32/block.c win32/tab.c win32/chrome.c win32/main.c \
               win32/ui.c win32/downloads.c win32/panel.c win32/prefs.c \
-              win32/passwords.c win32/scheme.c
+              win32/passwords.c win32/scheme.c win32/login.c
 
 OBJDIR     := build-win
 OBJS       := $(patsubst %.c,$(OBJDIR)/%.o,$(SHARED) $(WINSRC))
@@ -108,9 +122,12 @@ deps:
 	@echo "Checking build dependencies…"
 	@pkg-config --exists glib-2.0 || { echo "  MISSING: glib-2.0"; exit 1; }
 	@pkg-config --exists sqlite3  || { echo "  MISSING: sqlite3";  exit 1; }
+	@pkg-config --exists zlib     || { echo "  MISSING: zlib";     exit 1; }
 	@test -f win32/webview2/WebView2.h || { echo "  MISSING: win32/webview2/WebView2.h"; exit 1; }
 	@echo "  glib-2.0  $$(pkg-config --modversion glib-2.0)"
 	@echo "  sqlite3   $$(pkg-config --modversion sqlite3)"
+	@echo "  zlib      $$(pkg-config --modversion zlib)"
+	@echo "  nss       $$(pkg-config --modversion nss 2>/dev/null || echo 'absent - no Firefox password import')"
 	@echo "  WebView2  header present"
 	@echo
 	@echo "  The WebView2 *runtime* also has to be installed; it ships with"
@@ -148,5 +165,7 @@ help:
 	@echo "make -f win32/Makefile dist     self-contained folder in dist/"
 	@echo "make -f win32/Makefile DEBUG=1   console build with g_debug output"
 	@echo "make -f win32/Makefile deps      verify dependencies"
+	@echo ""
+	@echo "nss is optional: present at build time it enables Firefox password import."
 
 -include $(DEPS)

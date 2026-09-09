@@ -256,6 +256,16 @@ popover.lyndon-panel > contents {
   border-radius: 14px;
 }
 
+/* The capture bar floats over live page content, and an entry box with the
+   theme's transparent background lets the page read straight through whatever
+   is being typed into it. */
+.lyndon-permission entry,
+.lyndon-permission entry > text,
+.lyndon-permission entry.password {
+  background-color: @view_bg_color;
+  color: @view_fg_color;
+}
+
 .lyndon-download-row {
   padding: 4px 2px;
 }

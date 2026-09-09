@@ -176,6 +176,11 @@ struct _LyConfig {
   gboolean  show_home_button;
   gboolean  per_site_zoom;
   char     *homepage;
+  /* Shape of the last window to be closed, so the next one comes back the
+   * same size instead of the built-in default. */
+  int       window_width;
+  int       window_height;
+  gboolean  window_maximized;
 
   /* -- runtime only -------------------------------------------------- */
   char     *path;

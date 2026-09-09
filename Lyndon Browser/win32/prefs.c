@@ -3,11 +3,14 @@
 #include "prefs.h"
 #include "ui.h"
 #include "import.h"
+#include "pwfile.h"
 
 #include <windowsx.h>
 #include <shlobj.h>
 #include <shellapi.h>   /* ShellExecuteW */
+#include <commdlg.h>    /* GetOpenFileNameW, GetSaveFileNameW */
 #include <string.h>
+#include <wchar.h>
 
 #define PREFS_CLASS  L"LyndonPrefs"
 #define ID_EDIT      3001
@@ -28,6 +31,7 @@ typedef enum {
   ROW_TEXT,       /* char*             */
   ROW_NUMBER,     /* double or int     */
   ROW_ACTION,     /* a button          */
+  ROW_PAIR,       /* two buttons; the Linux rows with an edit and a bin */
   ROW_NOTE,       /* explanatory text  */
   ROW_GROUP,      /* a heading         */
 } RowKind;
@@ -50,6 +54,16 @@ typedef struct {
   /* Not every setting can be honoured by WebView2; those say so rather than
    * pretending, and are drawn dimmed. */
   gboolean     linux_only;
+  /* Most rows are a field of LyConfig, named by `offset`. A few are not — the
+   * import switches and the login editor are the page's own state rather than
+   * a setting — and those point straight at their own storage instead, and
+   * are not written back to the config file. */
+  void        *bind;
+  gboolean     secret;        /* ROW_TEXT: shown and edited as dots */
+  /* ROW_PAIR only: the second button, drawn to the left of the first. */
+  const char  *second_label;
+  RowAction    second;
+  const char  *first_label;   /* ROW_ACTION and ROW_PAIR; "Go" when NULL */
 } Row;
 
 /* ------------------------------------------------------------ the choices */
@@ -74,6 +88,14 @@ static void action_import (LyPrefs *p, int index);
 static void action_forget_password (LyPrefs *p, int index);
 static void action_unblock_origin (LyPrefs *p, int index);
 static void action_open_rules (LyPrefs *p, int index);
+static void action_add_login (LyPrefs *p, int index);
+static void action_edit_login (LyPrefs *p, int index);
+static void action_editor_save (LyPrefs *p, int index);
+static void action_editor_copy (LyPrefs *p, int index);
+static void action_editor_cancel (LyPrefs *p, int index);
+static void action_import_file (LyPrefs *p, int index);
+static void action_export_file (LyPrefs *p, int index);
+static void action_show_import (LyPrefs *p, int index);
 
 static const Row APPEARANCE[] = {
   { ROW_GROUP,  "Window", NULL },
@@ -191,6 +213,27 @@ static const Row PASSWORDS_TOP[] = {
     "Windows account and can be reviewed in Control Panel." },
 };
 
+/* Reads the CSV every other password manager exports, and .xlsx or .ods
+ * spreadsheets directly — the same wording, and the same code, as the Linux
+ * build's Import and export group. */
+static const Row PASSWORDS_TRANSFER[] = {
+  { ROW_GROUP,  "Import and export", NULL },
+  { ROW_ACTION, "Import from a file", "CSV, TSV, Excel or OpenDocument.",
+    0, NULL, 0, 0, 0, FALSE, action_import_file, 0, FALSE, NULL, FALSE,
+    NULL, NULL, "Choose\u2026" },
+  { ROW_ACTION, "Import from another browser",
+    "Saved logins from Chrome, Firefox and friends, decrypted in place.",
+    0, NULL, 0, 0, 0, FALSE, action_show_import, 0, FALSE, NULL, FALSE,
+    NULL, NULL, "Browsers\u2026" },
+  { ROW_ACTION, "Export saved logins",
+    "Writes every password to an unencrypted CSV file.",
+    0, NULL, 0, 0, 0, FALSE, action_export_file, 0, FALSE, NULL, FALSE,
+    NULL, NULL, "Export\u2026" },
+  { ROW_NOTE,   "A column naming the site and one naming the password",
+    "Everything else is worked out from the header row, so an export from "
+    "Chrome, Firefox, Bitwarden, KeePassXC or 1Password reads as it stands." },
+};
+
 /* ------------------------------------------------------------ the window */
 
 typedef struct {
@@ -229,6 +272,21 @@ struct _LyPrefs {
   GPtrArray  *credentials;     /* LyCredential* for the passwords page */
   GPtrArray  *sources;         /* LyImportSource* for the import page */
 
+  /* Which of bookmarks, history and saved logins each source should bring
+   * over: three flags per source, in that order. Page state rather than a
+   * setting, so the switches bind straight to it. */
+  gboolean   *import_want;
+
+  /* While this is set the passwords page shows one login being edited
+   * instead of the list — the Linux build's editor dialog, which has nowhere
+   * to be here but does not need one. */
+  gboolean    editing_login;
+  char       *edit_old_origin;    /* NULL when adding rather than editing */
+  char       *edit_old_username;
+  char       *edit_origin;
+  char       *edit_username;
+  char       *edit_password;
+
   LyTheme     theme;
   LyFonts     fonts;
   int         dpi;
@@ -238,6 +296,7 @@ static LyPrefs *the_prefs;     /* one window, like the Linux build */
 
 static void rebuild_rows (LyPrefs *p);
 static void layout_edit (LyPrefs *p);
+static void close_editor (LyPrefs *p);
 
 static int
 sc (LyPrefs *p, int v)
@@ -255,28 +314,42 @@ own (LyPrefs *p, char *s)
 
 /* --------------------------------------------------------- config access */
 
+static void *
+slot_at (LyPrefs *p, const Row *row)
+{
+  return row->bind != NULL ? row->bind : (void *) ((char *) p->cfg + row->offset);
+}
+
 static gboolean *
 bool_at (LyPrefs *p, const Row *row)
 {
-  return (gboolean *) ((char *) p->cfg + row->offset);
+  return (gboolean *) slot_at (p, row);
 }
 
 static int *
 int_at (LyPrefs *p, const Row *row)
 {
-  return (int *) ((char *) p->cfg + row->offset);
+  return (int *) slot_at (p, row);
 }
 
 static double *
 double_at (LyPrefs *p, const Row *row)
 {
-  return (double *) ((char *) p->cfg + row->offset);
+  return (double *) slot_at (p, row);
 }
 
 static char **
 string_at (LyPrefs *p, const Row *row)
 {
-  return (char **) ((char *) p->cfg + row->offset);
+  return (char **) slot_at (p, row);
+}
+
+/* A row that is not a setting has nothing to save and no watcher to tell. */
+static void
+touched (LyPrefs *p, const Row *row)
+{
+  if (row->bind == NULL)
+    ly_config_touch (p->cfg);
 }
 
 /* ------------------------------------------------------- page construction */
@@ -338,9 +411,67 @@ collect_credentials (GPtrArray *found, gpointer user_data)
   }
 }
 
+/* The editor takes the whole page while it is open, the way the Linux build's
+ * editor takes its own dialog. Three fields, and the same rule about what
+ * autofill will match afterwards. */
+static void
+build_login_editor (LyPrefs *p)
+{
+  Row group = { ROW_GROUP,
+                p->edit_old_origin ? "Edit login" : "Add a login", NULL };
+  push (p, group);
+
+  Row note = { ROW_NOTE, "Autofill matches the site exactly as written here",
+               "Scheme and host, and a port only if the site uses one. A bare "
+               "domain is filled in for you." };
+  push (p, note);
+
+  Row site = { 0 };
+  site.kind = ROW_TEXT;
+  site.title = "Site";
+  site.bind = &p->edit_origin;
+  push (p, site);
+
+  Row user = { 0 };
+  user.kind = ROW_TEXT;
+  user.title = "Username";
+  user.bind = &p->edit_username;
+  push (p, user);
+
+  Row pass = { 0 };
+  pass.kind = ROW_TEXT;
+  pass.title = "Password";
+  pass.bind = &p->edit_password;
+  pass.secret = TRUE;
+  push (p, pass);
+
+  Row copy = { 0 };
+  copy.kind = ROW_ACTION;
+  copy.title = "Copy the password";
+  copy.subtitle = "Puts it on the clipboard, as it is written above.";
+  copy.first_label = "Copy";
+  copy.action = action_editor_copy;
+  push (p, copy);
+
+  Row save = { 0 };
+  save.kind = ROW_PAIR;
+  save.title = "Save this login";
+  save.subtitle = "Stored in Windows Credential Manager.";
+  save.first_label = "Save";
+  save.action = action_editor_save;
+  save.second_label = "Cancel";
+  save.second = action_editor_cancel;
+  push (p, save);
+}
+
 static void
 build_passwords_page (LyPrefs *p)
 {
+  if (p->editing_login) {
+    build_login_editor (p);
+    return;
+  }
+
   push_table (p, PASSWORDS_TOP, G_N_ELEMENTS (PASSWORDS_TOP));
 
   g_ptr_array_set_size (p->credentials, 0);
@@ -348,6 +479,14 @@ build_passwords_page (LyPrefs *p)
 
   Row group = { ROW_GROUP, "Saved logins", NULL };
   push (p, group);
+
+  Row add = { 0 };
+  add.kind = ROW_ACTION;
+  add.title = "Add a login by hand";
+  add.subtitle = "For a site Lyndon has not seen you sign in to.";
+  add.first_label = "Add\u2026";
+  add.action = action_add_login;
+  push (p, add);
 
   if (p->credentials->len == 0) {
     Row none = { ROW_NOTE, "Nothing saved yet",
@@ -357,15 +496,19 @@ build_passwords_page (LyPrefs *p)
   for (guint i = 0; i < p->credentials->len; i++) {
     LyCredential *c = g_ptr_array_index (p->credentials, i);
     Row row = { 0 };
-    row.kind = ROW_ACTION;
+    row.kind = ROW_PAIR;
     row.title = own (p, g_strdup (c->origin));
-    row.subtitle = own (p, g_strdup_printf ("%s — remove",
-                                            (c->username && *c->username)
-                                              ? c->username : "(no username)"));
-    row.action = action_forget_password;
+    row.subtitle = own (p, g_strdup ((c->username && *c->username)
+                                       ? c->username : "(no username)"));
+    row.first_label = "Edit\u2026";
+    row.action = action_edit_login;
+    row.second_label = "Forget";
+    row.second = action_forget_password;
     row.tag = (int) i;
     push (p, row);
   }
+
+  push_table (p, PASSWORDS_TRANSFER, G_N_ELEMENTS (PASSWORDS_TRANSFER));
 
   if (p->cfg->password_never->len) {
     Row never = { ROW_GROUP, "Never asked on", NULL };
@@ -397,15 +540,48 @@ build_permissions_page (LyPrefs *p)
   }
 }
 
+/* Three flags per source, in the order bookmarks, history, saved logins. */
+#define WANT_BOOKMARKS 0
+#define WANT_HISTORY   1
+#define WANT_PASSWORDS 2
+
+static gboolean *
+want_slot (LyPrefs *p, guint source, int which)
+{
+  return &p->import_want[source * 3 + (guint) which];
+}
+
+static void
+push_import_switch (LyPrefs *p, guint source, int which,
+                    const char *title, const char *subtitle)
+{
+  Row row = { 0 };
+  row.kind = ROW_TOGGLE;
+  row.title = title;
+  row.subtitle = subtitle;
+  row.bind = want_slot (p, source, which);
+  push (p, row);
+}
+
 static void
 build_import_page (LyPrefs *p)
 {
-  Row group = { ROW_GROUP, "Bring things over", NULL };
+  Row group = { ROW_GROUP, "Browsers found on this computer", NULL };
   push (p, group);
+
+  Row about = { ROW_NOTE, "Nothing is changed in the other browser",
+                "Bookmarks and history are copied in with their original visit "
+                "counts and dates, and saved logins are decrypted straight out "
+                "of the other browser's own store. Every file is read from a "
+                "temporary copy." };
+  push (p, about);
 
   if (p->sources)
     g_ptr_array_unref (p->sources);
   p->sources = ly_import_sources ();
+
+  g_clear_pointer (&p->import_want, g_free);
+  p->import_want = g_new0 (gboolean, (p->sources->len ?: 1) * 3);
 
   if (p->sources->len == 0) {
     Row none = { ROW_NOTE, "No other browsers found",
@@ -417,22 +593,36 @@ build_import_page (LyPrefs *p)
 
   for (guint i = 0; i < p->sources->len; i++) {
     LyImportSource *s = g_ptr_array_index (p->sources, i);
-    Row row = { 0 };
-    row.kind = ROW_ACTION;
-    row.title = s->label;
-    row.subtitle = own (p, g_strdup_printf ("Import %s%s%s",
-                        s->has_bookmarks ? "bookmarks" : "",
-                        (s->has_bookmarks && s->has_history) ? " and " : "",
-                        s->has_history ? "history" : ""));
-    row.action = action_import;
-    row.tag = (int) i;
-    push (p, row);
-  }
 
-  Row note = { ROW_NOTE, "Nothing is changed in the other browser",
-               "Both keep their files locked while running, so Lyndon reads "
-               "from a private copy and deletes it afterwards." };
-  push (p, note);
+    Row heading = { ROW_GROUP, s->label, NULL };
+    push (p, heading);
+
+    /* Everything the profile has, on by default, exactly as the expander
+     * rows on the Linux side start switched on. */
+    if (s->has_bookmarks) {
+      *want_slot (p, i, WANT_BOOKMARKS) = TRUE;
+      push_import_switch (p, i, WANT_BOOKMARKS, "Bookmarks", NULL);
+    }
+    if (s->has_history) {
+      *want_slot (p, i, WANT_HISTORY) = TRUE;
+      push_import_switch (p, i, WANT_HISTORY, "History", NULL);
+    }
+    if (s->has_passwords) {
+      *want_slot (p, i, WANT_PASSWORDS) = TRUE;
+      push_import_switch (p, i, WANT_PASSWORDS, "Saved logins",
+        s->kind == LY_IMPORT_FIREFOX
+          ? "Needs the profile to have no Primary Password set."
+          : "Needs the key this browser left for your Windows account.");
+    }
+
+    Row go = { 0 };
+    go.kind = ROW_ACTION;
+    go.title = "Bring the selected items over";
+    go.first_label = "Import";
+    go.action = action_import;
+    go.tag = (int) i;
+    push (p, go);
+  }
 }
 
 static void
@@ -533,10 +723,26 @@ max_scroll (LyPrefs *p)
 static RECT
 control_rect (LyPrefs *p, RECT row, const Row *spec)
 {
-  int w = sc (p, spec->kind == ROW_TOGGLE ? SWITCH_W : 150);
+  /* Two buttons and the gap between them, when there are two. */
+  int w = sc (p, spec->kind == ROW_TOGGLE ? SWITCH_W
+                 : spec->kind == ROW_PAIR ? 186 : 150);
   int h = sc (p, spec->kind == ROW_TOGGLE ? SWITCH_H : 28);
   int cy = (row.top + row.bottom) / 2;
   RECT r = { row.right - sc (p, 12) - w, cy - h / 2, row.right - sc (p, 12), cy + h / 2 };
+  return r;
+}
+
+/* The buttons inside a ROW_ACTION or ROW_PAIR control area, right to left.
+ * `which` is 0 for the leading (rightmost) button, 1 for the second. */
+static RECT
+button_rect (LyPrefs *p, RECT ctl, int which)
+{
+  int w = sc (p, 90);
+  RECT r = { ctl.right - w, ctl.top, ctl.right, ctl.bottom };
+  if (which > 0) {
+    r.right = r.left - sc (p, 6);
+    r.left = r.right - w;
+  }
   return r;
 }
 
@@ -598,6 +804,8 @@ paint (LyPrefs *p, LyCanvas *cv)
                    r.right - sc (p, 180), r.top + sc (p, 29) };
     if (spec->kind == ROW_NOTE || spec->kind == ROW_ACTION)
       title.right = r.right - sc (p, 14);
+    else if (spec->kind == ROW_PAIR)
+      title.right = r.right - sc (p, 210);
     ly_text (cv, title, spec->title, ink, p->fonts.normal,
              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
@@ -656,22 +864,46 @@ paint (LyPrefs *p, LyCanvas *cv)
         if ((int) i == p->editing)
           break;   /* the EDIT control is over it */
         char **value = string_at (p, spec);
+        gboolean filled = value && *value && **value;
         ly_round (cv, ctl, sc (p, 6), p->theme.field, 1.0);
         RECT t = ctl;
         t.left += sc (p, 8);
         t.right -= sc (p, 8);
-        const char *shown = (value && *value && **value) ? *value : "—";
-        ly_text (cv, t, shown, (value && *value && **value) ? ink : p->theme.text_dim,
+
+        /* A saved password is never printed into the window; the row says it
+         * is there and the editor is the only place it is legible. */
+        g_autofree char *dots = NULL;
+        if (spec->secret && filled) {
+          gsize n = MIN (g_utf8_strlen (*value, -1), 24);
+          dots = g_strnfill (n * 3, ' ');
+          for (gsize k = 0; k < n; k++)
+            memcpy (dots + k * 3, "\u2022", 3);
+        }
+        const char *shown = dots != NULL ? dots : (filled ? *value : "—");
+        ly_text (cv, t, shown, filled ? ink : p->theme.text_dim,
                  p->fonts.small_,
                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         break;
       }
 
       case ROW_ACTION: {
-        RECT b = ctl;
-        b.left = ctl.right - sc (p, 90);
+        RECT b = button_rect (p, ctl, 0);
         ly_round (cv, b, sc (p, 6), hot ? p->theme.accent : p->theme.field, 1.0);
-        ly_text (cv, b, "Go", hot ? p->theme.accent_text : p->theme.text,
+        ly_text (cv, b, spec->first_label ?: "Go",
+                 hot ? p->theme.accent_text : p->theme.text,
+                 p->fonts.small_, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+        break;
+      }
+
+      case ROW_PAIR: {
+        RECT first  = button_rect (p, ctl, 0);
+        RECT second = button_rect (p, ctl, 1);
+        ly_round (cv, first, sc (p, 6), hot ? p->theme.accent : p->theme.field, 1.0);
+        ly_text (cv, first, spec->first_label ?: "Go",
+                 hot ? p->theme.accent_text : p->theme.text, p->fonts.small_,
+                 DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+        ly_round (cv, second, sc (p, 6), p->theme.field, 1.0);
+        ly_text (cv, second, spec->second_label ?: "", p->theme.text,
                  p->fonts.small_, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
         break;
       }
@@ -708,7 +940,7 @@ commit_edit (LyPrefs *p)
   char **slot = string_at (p, spec);
   g_free (*slot);
   *slot = g_strdup (text ? text : "");
-  ly_config_touch (p->cfg);
+  touched (p, spec);
 
   ShowWindow (p->edit, SW_HIDE);
   p->editing = -1;
@@ -751,6 +983,8 @@ begin_edit (LyPrefs *p, guint index)
   SetWindowTextW (p->edit, w ? w : L"");
 
   p->editing = (int) index;
+  SendMessageW (p->edit, EM_SETPASSWORDCHAR,
+                spec->secret ? (WPARAM) L'\u2022' : 0, 0);
   MoveWindow (p->edit, ctl.left + sc (p, 4), ctl.top + sc (p, 3),
               (ctl.right - ctl.left) - sc (p, 8), (ctl.bottom - ctl.top) - sc (p, 6), TRUE);
   ShowWindow (p->edit, SW_SHOW);
@@ -860,29 +1094,397 @@ action_unblock_origin (LyPrefs *p, int index)
 }
 
 static void
+report (LyPrefs *p, const char *text, gboolean ok)
+{
+  g_autofree wchar_t *w = (wchar_t *) g_utf8_to_utf16 (text, -1, NULL, NULL, NULL);
+  MessageBoxW (p->hwnd, w ? w : L"", L"Lyndon",
+               MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONERROR));
+}
+
+/* Writes a batch into Credential Manager, one call each. An import is an
+ * explicit, one-off action, and getting the count right in the message
+ * afterwards matters more here than staying responsive for a second. */
+static guint
+store_credentials (LyPrefs *p, GPtrArray *credentials, GError **error)
+{
+  guint stored = 0;
+  for (guint i = 0; i < credentials->len; i++) {
+    LyCredential *c = g_ptr_array_index (credentials, i);
+    if (!ly_passwords_save_sync (p->passwords, c->origin, c->username,
+                                 c->password, error))
+      break;      /* a store that refused one row will refuse the rest */
+    stored++;
+  }
+  return stored;
+}
+
+static void
 action_import (LyPrefs *p, int index)
 {
   if (p->sources == NULL || index < 0 || (guint) index >= p->sources->len)
     return;
   const LyImportSource *source = g_ptr_array_index (p->sources, (guint) index);
 
-  LyImportResult result = { 0 };
+  gboolean want_bookmarks = *want_slot (p, (guint) index, WANT_BOOKMARKS);
+  gboolean want_history   = *want_slot (p, (guint) index, WANT_HISTORY);
+  gboolean want_passwords = *want_slot (p, (guint) index, WANT_PASSWORDS);
+
+  if (!want_bookmarks && !want_history && !want_passwords)
+    return;
+
+  GString *message = g_string_new (NULL);
+  g_autofree char *problem = NULL;
+  gboolean ok = TRUE;
+
   SetCursor (LoadCursorW (NULL, IDC_WAIT));
-  gboolean ok = ly_import_run (p->store, source, source->has_bookmarks,
-                               source->has_history, &result);
+
+  if (want_bookmarks || want_history) {
+    LyImportResult result = { 0 };
+    ok = ly_import_run (p->store, source, want_bookmarks, want_history, &result);
+    if (!ok) {
+      problem = g_strdup (result.error ? result.error : "Unknown error.");
+    } else {
+      if (want_bookmarks)
+        g_string_append_printf (message, "%s%u bookmark%s", message->len ? ", " : "",
+                                result.bookmarks, result.bookmarks == 1 ? "" : "s");
+      if (want_history)
+        g_string_append_printf (message, "%s%u page%s of history",
+                                message->len ? ", " : "",
+                                result.history, result.history == 1 ? "" : "s");
+    }
+    ly_import_result_clear (&result);
+  }
+
+  if (want_passwords && ok) {
+    guint skipped = 0;
+    g_autoptr (GError) error = NULL;
+    g_autoptr (GPtrArray) credentials =
+      ly_import_passwords (source, &skipped, &error);
+
+    if (credentials == NULL) {
+      problem = g_strdup (error->message);
+      ok = FALSE;
+    } else {
+      guint stored = store_credentials (p, credentials, &error);
+      g_string_append_printf (message, "%s%u login%s", message->len ? ", " : "",
+                              stored, stored == 1 ? "" : "s");
+      if (skipped > 0)
+        g_string_append_printf (message, " (%u could not be read)", skipped);
+      if (stored < credentials->len && error != NULL) {
+        problem = g_strdup (error->message);
+        ok = FALSE;
+      }
+    }
+  }
+
   SetCursor (LoadCursorW (NULL, IDC_ARROW));
 
-  g_autofree char *message = ok
-    ? g_strdup_printf ("Imported %u bookmark%s and %u page%s of history from %s.",
-                       result.bookmarks, result.bookmarks == 1 ? "" : "s",
-                       result.history, result.history == 1 ? "" : "s",
-                       source->label)
-    : g_strdup_printf ("Could not import from %s.\n\n%s", source->label,
-                       result.error ? result.error : "Unknown error.");
-  g_autofree wchar_t *w = (wchar_t *) g_utf8_to_utf16 (message, -1, NULL, NULL, NULL);
-  MessageBoxW (p->hwnd, w, L"Lyndon",
-               MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONERROR));
-  ly_import_result_clear (&result);
+  g_autofree char *text = ok
+    ? g_strdup_printf ("Imported %s from %s.", message->str, source->label)
+    : g_strdup_printf ("%s from %s.\n\n%s",
+                       message->len > 0 ? "Only partly imported"
+                                        : "Nothing could be imported",
+                       source->label, problem ? problem : "Unknown error.");
+  g_string_free (message, TRUE);
+
+  report (p, text, ok);
+  /* The page is not rebuilt: it holds the switches the user just set, and
+   * losing them to a failed import would mean setting them again. The saved
+   * logins list is rebuilt whenever the Passwords page is opened. */
+}
+
+/* ------------------------------------------------- password files */
+
+/* GetOpenFileName wants the filter as double-NUL-terminated pairs, which no
+ * string literal can carry, so it is assembled rather than written out. */
+static wchar_t *
+build_filter (gboolean csv_only)
+{
+  static const wchar_t *const WIDE[] = {
+    L"Password exports and spreadsheets", L"*.csv;*.tsv;*.txt;*.xlsx;*.ods",
+    L"All files", L"*.*", NULL
+  };
+  static const wchar_t *const NARROW[] = {
+    L"CSV", L"*.csv", L"All files", L"*.*", NULL
+  };
+  const wchar_t *const *parts = csv_only ? NARROW : WIDE;
+
+  gsize total = 1;   /* the final terminating NUL */
+  for (gsize i = 0; parts[i] != NULL; i++)
+    total += wcslen (parts[i]) + 1;
+
+  wchar_t *filter = g_new0 (wchar_t, total);
+  gsize at = 0;
+  for (gsize i = 0; parts[i] != NULL; i++) {
+    gsize n = wcslen (parts[i]);
+    wmemcpy (filter + at, parts[i], n);
+    at += n + 1;     /* g_new0 already left the NUL between them */
+  }
+  return filter;
+}
+
+static void
+action_import_file (LyPrefs *p, int index)
+{
+  wchar_t path[MAX_PATH] = { 0 };
+  g_autofree wchar_t *filter = build_filter (FALSE);
+
+  OPENFILENAMEW ofn = { 0 };
+  ofn.lStructSize = sizeof ofn;
+  ofn.hwndOwner = p->hwnd;
+  ofn.lpstrFilter = filter;
+  ofn.lpstrFile = path;
+  ofn.nMaxFile = G_N_ELEMENTS (path);
+  ofn.lpstrTitle = L"Import passwords";
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+  if (!GetOpenFileNameW (&ofn))
+    return;
+
+  g_autofree char *utf8 = g_utf16_to_utf8 ((const gunichar2 *) path, -1, NULL, NULL, NULL);
+  if (utf8 == NULL)
+    return;
+
+  guint skipped = 0;
+  g_autoptr (GError) error = NULL;
+  SetCursor (LoadCursorW (NULL, IDC_WAIT));
+  g_autoptr (GPtrArray) credentials = ly_pwfile_read (utf8, &skipped, &error);
+
+  if (credentials == NULL) {
+    SetCursor (LoadCursorW (NULL, IDC_ARROW));
+    g_autofree char *text =
+      g_strdup_printf ("Nothing could be imported.\n\n%s", error->message);
+    report (p, text, FALSE);
+    return;
+  }
+
+  guint stored = store_credentials (p, credentials, &error);
+  SetCursor (LoadCursorW (NULL, IDC_ARROW));
+
+  GString *message = g_string_new (NULL);
+  g_string_append_printf (message, "Imported %u login%s", stored,
+                          stored == 1 ? "" : "s");
+  if (skipped > 0)
+    g_string_append_printf (message, "; %u row%s had no site or password",
+                            skipped, skipped == 1 ? "" : "s");
+  g_string_append_c (message, '.');
+
+  gboolean ok = !(stored < credentials->len && error != NULL);
+  if (!ok)
+    g_string_append_printf (message, "\n\n%s", error->message);
+
+  report (p, message->str, ok);
+  g_string_free (message, TRUE);
+  rebuild_rows (p);
+}
+
+/* The listing deliberately never holds a password, so the export asks for
+ * every secret at the moment it is about to write them out. */
+static void
+collect_for_export (GPtrArray *found, gpointer user_data)
+{
+  GPtrArray *out = user_data;
+  for (guint i = 0; i < found->len; i++) {
+    LyCredential *c = g_ptr_array_index (found, i);
+    g_ptr_array_add (out, ly_credential_new (c->origin, c->username, c->password));
+  }
+}
+
+static void
+action_export_file (LyPrefs *p, int index)
+{
+  if (MessageBoxW (p->hwnd,
+        L"Every password is written out as readable text, with no encryption "
+        L"of any kind.\n\nAnything that can read the file can read your "
+        L"logins \u2014 delete it once whatever needed it has finished.\n\n"
+        L"Export saved passwords?",
+        L"Lyndon", MB_OKCANCEL | MB_ICONWARNING) != IDOK)
+    return;
+
+  wchar_t path[MAX_PATH];
+  wcscpy (path, L"lyndon-passwords.csv");
+  g_autofree wchar_t *filter = build_filter (TRUE);
+
+  OPENFILENAMEW ofn = { 0 };
+  ofn.lStructSize = sizeof ofn;
+  ofn.hwndOwner = p->hwnd;
+  ofn.lpstrFilter = filter;
+  ofn.lpstrFile = path;
+  ofn.nMaxFile = G_N_ELEMENTS (path);
+  ofn.lpstrTitle = L"Export passwords";
+  ofn.lpstrDefExt = L"csv";
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+  if (!GetSaveFileNameW (&ofn))
+    return;
+
+  g_autofree char *utf8 = g_utf16_to_utf8 ((const gunichar2 *) path, -1, NULL, NULL, NULL);
+  if (utf8 == NULL)
+    return;
+
+  g_autoptr (GPtrArray) credentials = ly_credentials_new ();
+  ly_passwords_list (p->passwords, collect_for_export, credentials);
+
+  g_autoptr (GError) error = NULL;
+  if (!ly_pwfile_write_csv (utf8, credentials, &error)) {
+    g_autofree char *text =
+      g_strdup_printf ("The file could not be written.\n\n%s", error->message);
+    report (p, text, FALSE);
+    return;
+  }
+
+  g_autofree char *text =
+    g_strdup_printf ("Exported %u login%s in plain text.",
+                     credentials->len, credentials->len == 1 ? "" : "s");
+  report (p, text, TRUE);
+}
+
+/* The Linux build offers the browser import from the passwords page as well
+ * as from its own; here that page is a category, so this goes to it. */
+static void
+action_show_import (LyPrefs *p, int index)
+{
+  p->category = CATEGORY_N - 1;   /* Import, the last one */
+  rebuild_rows (p);
+}
+
+/* -------------------------------------------------------- the login editor */
+
+static void
+open_editor (LyPrefs *p, const char *origin, const char *username,
+             const char *password)
+{
+  close_editor (p);   /* wipes and frees whatever it was holding before */
+
+  p->edit_old_origin   = g_strdup (origin);
+  p->edit_old_username = g_strdup (username);
+  p->edit_origin       = g_strdup (origin ?: "");
+  p->edit_username     = g_strdup (username ?: "");
+  p->edit_password     = g_strdup (password ?: "");
+  p->editing_login     = TRUE;
+
+  rebuild_rows (p);
+}
+
+static void
+close_editor (LyPrefs *p)
+{
+  /* The password was legible on this page; it should not stay in the heap
+   * once the page is gone. */
+  if (p->edit_password != NULL)
+    memset (p->edit_password, 0, strlen (p->edit_password));
+
+  g_clear_pointer (&p->edit_old_origin, g_free);
+  g_clear_pointer (&p->edit_old_username, g_free);
+  g_clear_pointer (&p->edit_origin, g_free);
+  g_clear_pointer (&p->edit_username, g_free);
+  g_clear_pointer (&p->edit_password, g_free);
+  p->editing_login = FALSE;
+}
+
+static void
+action_add_login (LyPrefs *p, int index)
+{
+  open_editor (p, NULL, NULL, NULL);
+}
+
+/* The page keeps only what it draws — an origin and a username — so opening
+ * the editor asks the store for that one row's secret at the moment it is
+ * needed, rather than holding every password for as long as the window is
+ * open. */
+static void
+action_edit_login (LyPrefs *p, int index)
+{
+  if (index < 0 || (guint) index >= p->credentials->len)
+    return;
+  LyCredential *row = g_ptr_array_index (p->credentials, (guint) index);
+
+  g_autoptr (GPtrArray) found = ly_credentials_new ();
+  ly_passwords_lookup (p->passwords, row->origin, collect_for_export, found);
+
+  const char *password = NULL;
+  for (guint i = 0; i < found->len; i++) {
+    LyCredential *c = g_ptr_array_index (found, i);
+    if (g_strcmp0 (c->username, row->username) == 0) {
+      password = c->password;
+      break;
+    }
+  }
+  open_editor (p, row->origin, row->username, password);
+}
+
+/* The clipboard is the one place a saved password legitimately leaves the
+ * store, and it is what the Linux editor's copy button does too. */
+static void
+action_editor_copy (LyPrefs *p, int index)
+{
+  commit_edit (p);
+  if (p->edit_password == NULL || *p->edit_password == '\0')
+    return;
+
+  glong chars = 0;
+  wchar_t *w = (wchar_t *) g_utf8_to_utf16 (p->edit_password, -1, NULL, &chars, NULL);
+  if (w == NULL)
+    return;
+
+  gsize bytes = (gsize) (chars + 1) * sizeof (wchar_t);
+  HGLOBAL handle = GlobalAlloc (GMEM_MOVEABLE, bytes);
+  if (handle != NULL && OpenClipboard (p->hwnd)) {
+    void *slot = GlobalLock (handle);
+    if (slot != NULL) {
+      memcpy (slot, w, bytes);
+      GlobalUnlock (handle);
+      EmptyClipboard ();
+      /* The clipboard owns it from here; nothing is freed on this side. */
+      if (SetClipboardData (CF_UNICODETEXT, handle) != NULL)
+        handle = NULL;
+    }
+    CloseClipboard ();
+  }
+  if (handle != NULL)
+    GlobalFree (handle);
+
+  memset (w, 0, bytes);
+  g_free (w);
+}
+
+static void
+action_editor_cancel (LyPrefs *p, int index)
+{
+  close_editor (p);
+  rebuild_rows (p);
+}
+
+static void
+action_editor_save (LyPrefs *p, int index)
+{
+  commit_edit (p);   /* a field still being typed into counts */
+
+  g_autofree char *origin = ly_passwords_normalise_origin (p->edit_origin);
+  if (origin == NULL) {
+    report (p, "That site is not a web address Lyndon can match a page "
+               "against. A domain such as example.com is enough.", FALSE);
+    return;
+  }
+  if (p->edit_password == NULL || *p->edit_password == '\0') {
+    report (p, "A password is required.", FALSE);
+    return;
+  }
+
+  g_autoptr (GError) error = NULL;
+  gboolean ok = ly_passwords_update (p->passwords,
+                                     p->edit_old_origin, p->edit_old_username,
+                                     origin, p->edit_username,
+                                     p->edit_password, &error);
+  if (!ok) {
+    g_autofree char *text =
+      g_strdup_printf ("Could not save.\n\n%s", error->message);
+    report (p, text, FALSE);
+    return;
+  }
+
+  close_editor (p);
+  rebuild_rows (p);
 }
 
 /* ---------------------------------------------------------------- input */
@@ -911,7 +1513,7 @@ cycle_choice (LyPrefs *p, const Row *spec, gboolean backwards)
   while (spec->choices[n]) n++;
   int *slot = int_at (p, spec);
   *slot = (*slot + (backwards ? n - 1 : 1)) % n;
-  ly_config_touch (p->cfg);
+  touched (p, spec);
 }
 
 static void
@@ -925,7 +1527,7 @@ click_row (LyPrefs *p, guint index, POINT pt)
     case ROW_TOGGLE: {
       gboolean *slot = bool_at (p, spec);
       *slot = !*slot;
-      ly_config_touch (p->cfg);
+      touched (p, spec);
       break;
     }
     case ROW_CHOICE:
@@ -959,6 +1561,14 @@ click_row (LyPrefs *p, guint index, POINT pt)
       if (spec->action)
         spec->action (p, spec->tag);
       return;
+
+    case ROW_PAIR: {
+      RECT second = button_rect (p, ctl, 1);
+      RowAction chosen = PtInRect (&second, pt) ? spec->second : spec->action;
+      if (chosen)
+        chosen (p, spec->tag);
+      return;
+    }
 
     default:
       return;
@@ -1110,11 +1720,13 @@ prefs_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       return 0;
 
     case WM_DESTROY:
+      close_editor (p);       /* wipes the password it was showing */
       g_array_free (p->rows, TRUE);
       g_ptr_array_free (p->owned, TRUE);
       g_ptr_array_free (p->credentials, TRUE);
       if (p->sources)
         g_ptr_array_unref (p->sources);
+      g_free (p->import_want);
       ly_fonts_free (&p->fonts);
       if (the_prefs == p)
         the_prefs = NULL;

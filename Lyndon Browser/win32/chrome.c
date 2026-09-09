@@ -1,6 +1,7 @@
 /* chrome.c — see chrome.h. */
 
 #include "chrome.h"
+#include "login.h"
 #include "panel.h"
 #include "prefs.h"
 
@@ -118,6 +119,55 @@ static int
 sc (LyWindow *win, int v)
 {
   return ly_scale (win->dpi, v);
+}
+
+/* -------------------------------------------------------------- geometry */
+
+/* Record the shape for the next window to open in, exactly as the Linux build
+ * does on notify::default-width and friends.
+ *
+ * GetWindowPlacement reports rcNormalPosition, which is the size the window
+ * had when it was last neither maximised nor minimised — the same thing GTK
+ * keeps in default-width, and the size worth coming back to. Reading the
+ * client rect instead would remember a maximised window as its maximised
+ * size and never restore. */
+static void
+save_geometry (LyWindow *win)
+{
+  if (win->hwnd == NULL || IsIconic (win->hwnd))
+    return;
+
+  WINDOWPLACEMENT placement = { sizeof placement };
+  if (!GetWindowPlacement (win->hwnd, &placement))
+    return;
+
+  int dpi = win->dpi > 0 ? win->dpi : 96;
+
+  /* rcNormalPosition is the whole window; the key in config.ini is the page
+   * area, because that is what GTK's default-width means and both builds
+   * write the same key. Subtracting the frame is what makes the same two
+   * numbers describe the same visible browser on either platform. */
+  RECT frame = { 0, 0, 0, 0 };
+  AdjustWindowRectExForDpi (&frame, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
+
+  int width  = placement.rcNormalPosition.right - placement.rcNormalPosition.left
+               - (frame.right - frame.left);
+  int height = placement.rcNormalPosition.bottom - placement.rcNormalPosition.top
+               - (frame.bottom - frame.top);
+
+  /* Stored at 96 dpi, so a window left on a 150% display comes back the same
+   * apparent size on a 100% one. */
+  width  = MulDiv (width,  96, dpi);
+  height = MulDiv (height, 96, dpi);
+
+  if (win->cfg == NULL || width <= 0 || height <= 0)
+    return;
+
+  win->cfg->window_width  = width;
+  win->cfg->window_height = height;
+  win->cfg->window_maximized = IsZoomed (win->hwnd) ? TRUE : FALSE;
+
+  ly_config_queue_save (win->cfg);
 }
 
 static LyTab *
@@ -668,6 +718,8 @@ on_tab_changed (LyTab *tab, gpointer data)
   if (tab == active_tab (win)) {
     sync_address (win);
     update_title (win);
+    if (ly_tab_loading (tab))
+      ly_login_navigated ();
   }
   /* A background tab still redraws: its title and spinner are in the strip. */
   redraw_chrome (win);
@@ -842,29 +894,50 @@ on_download_done (const LyDownloadItem *item, gpointer data)
 
 /* -------------------------------------------------------------- passwords */
 
+/* Where the offer card goes: over the page, in screen coordinates. */
+static RECT
+page_screen_rect (LyWindow *win)
+{
+  RECT page = page_rect (win);
+  POINT origin = { page.left, page.top };
+  POINT far_corner = { page.right, page.bottom };
+  ClientToScreen (win->hwnd, &origin);
+  ClientToScreen (win->hwnd, &far_corner);
+  RECT r = { origin.x, origin.y, far_corner.x, far_corner.y };
+  return r;
+}
+
 static void
-on_tab_login (LyTab *tab, const char *origin, const char *username,
-              const char *password, gpointer data)
+on_login_answer (LyLoginAnswer decision, const char *origin,
+                 const char *username, const char *password, gpointer data)
+{
+  LyWindow *win = data;
+  if (win->passwords == NULL)
+    return;
+
+  if (decision == LY_LOGIN_ANSWER_NEVER)
+    ly_passwords_block (win->passwords, origin);
+  else if (decision == LY_LOGIN_ANSWER_SAVE && password != NULL && *password != '\0')
+    ly_passwords_save (win->passwords, origin, username, password);
+}
+
+static void
+on_tab_login (LyTab *tab, LyLoginKind kind, const char *origin,
+              const char *username, const char *password,
+              gboolean is_update, gpointer data)
 {
   LyWindow *win = data;
   if (win->passwords == NULL || origin == NULL)
     return;
-  if (ly_passwords_is_blocked (win->passwords, origin))
+
+  /* Only the tab the user is looking at may put a card on screen; a
+   * background tab finishing a sign-in is not a question about this page. */
+  if (tab != active_tab (win))
     return;
 
-  g_autofree char *text = g_strdup_printf (
-      "Save the login for %s?\n\nUser: %s\n\n"
-      "It goes into Windows Credential Manager, not into a file of Lyndon's.\n\n"
-      "Choose No to skip it this time, or Cancel to never ask for this site.",
-      origin, (username && *username) ? username : "(none)");
-  g_autofree wchar_t *w = (wchar_t *) g_utf8_to_utf16 (text, -1, NULL, NULL, NULL);
-
-  int answer = MessageBoxW (win->hwnd, w, L"Lyndon",
-                            MB_YESNOCANCEL | MB_ICONQUESTION);
-  if (answer == IDYES)
-    ly_passwords_save (win->passwords, origin, username, password);
-  else if (answer == IDCANCEL)
-    ly_passwords_block (win->passwords, origin);
+  ly_login_offer (win->hwnd, win->instance, page_screen_rect (win), win->dpi,
+                  win->theme.dark, kind, origin, username, password, is_update,
+                  username, on_login_answer, win);
 }
 
 static LyPolicy
@@ -944,6 +1017,7 @@ select_tab (LyWindow *win, int index)
     ly_tab_set_visible (g_ptr_array_index (win->tabs, i), (int) i == index);
   win->active = index;
   win->address_dirty = FALSE;
+  ly_login_dismiss ();
   end_url_edit (win);
   sync_address (win);
   update_title (win);
@@ -1161,6 +1235,15 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_SIZE:
       layout (win);
+      ly_login_reanchor (hwnd, page_screen_rect (win));
+      /* Tracked as it changes rather than only on close: the process can be
+       * ended without any window being asked to close. The config save is
+       * debounced, so a drag-resize costs one write once it settles. */
+      save_geometry (win);
+      return 0;
+
+    case WM_MOVE:
+      ly_login_reanchor (hwnd, page_screen_rect (win));
       return 0;
 
     case WM_DPICHANGED: {
@@ -1294,6 +1377,8 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_DESTROY: {
       KillTimer (hwnd, TIMER_PROGRESS);
+      ly_login_dismiss ();
+      save_geometry (win);
       save_session (win);
       if (win->panel)
         ly_panel_close (win->panel);
@@ -1437,10 +1522,26 @@ ly_window_new (HINSTANCE instance, LyConfig *cfg, LyStore *store,
   win->hot_tab = -1;
   win->dpi = 96;
 
-  int w = 1200, h = 820;
+  /* The shape the last window was left in. ly_config_load() has already
+   * clamped these to something drivable, so a hand-edited file cannot open a
+   * window too small to use. */
+  int w = cfg ? cfg->window_width : 1180;
+  int h = cfg ? cfg->window_height : 760;
   HWND hwnd = CreateWindowExW (
       0, CLASS_NAME, L"Lyndon", WS_OVERLAPPEDWINDOW,
       CW_USEDEFAULT, CW_USEDEFAULT, w, h, NULL, NULL, instance, win);
+  if (hwnd != NULL) {
+    /* Which display it landed on is only knowable once it exists, and the
+     * stored size is a page area at 96 dpi — so the real size is set here
+     * rather than guessed above. */
+    int dpi = (int) GetDpiForWindow (hwnd);
+    if (dpi <= 0)
+      dpi = 96;
+    RECT want = { 0, 0, ly_scale (dpi, w), ly_scale (dpi, h) };
+    AdjustWindowRectExForDpi (&want, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
+    SetWindowPos (hwnd, NULL, 0, 0, want.right - want.left, want.bottom - want.top,
+                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  }
   if (hwnd == NULL) {
     g_ptr_array_free (win->tabs, TRUE);
     g_ptr_array_free (win->pending, TRUE);
@@ -1457,7 +1558,8 @@ ly_window_new (HINSTANCE instance, LyConfig *cfg, LyStore *store,
     ly_downloads_set_callbacks (downloads, on_downloads_changed,
                                 on_download_done, win);
 
-  ShowWindow (hwnd, SW_SHOWDEFAULT);
+  ShowWindow (hwnd, (cfg && cfg->window_maximized) ? SW_SHOWMAXIMIZED
+                                                   : SW_SHOWDEFAULT);
   UpdateWindow (hwnd);
 
   if (env_settled && !env_ok) {
