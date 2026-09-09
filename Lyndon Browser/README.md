@@ -105,7 +105,7 @@ Needs GTK 4.10+, libadwaita 1.5+, WebKitGTK 6.0, libsoup 3, SQLite 3 and libsecr
 make deps      # verify dependencies and print versions
 make           # build
 make run       # build and launch
-make check     # unit tests for the filter compiler
+make check     # unit tests: the filter compiler, and the shared URL handling
 make LTO=1     # link-time optimised
 make DEBUG=1   # asan + ubsan
 sudo make install

@@ -1,0 +1,33 @@
+# Line endings, decided here rather than by whatever core.autocrlf each
+# machine happens to have. Without this the repository's contents depend on
+# the contributor's local setting, and the files that must be LF are the ones
+# that break most quietly when they are not.
+
+* text=auto
+
+# Run by Linux. A shebang line ending in CR makes the kernel look for an
+# interpreter called "python3\r", and the error says the file does not exist.
+*.py            text eol=lf
+*.sh            text eol=lf
+*.desktop       text eol=lf
+*.c             text eol=lf
+*.h             text eol=lf
+Makefile        text eol=lf
+*/Makefile      text eol=lf
+claude-desk     text eol=lf
+git-manager     text eol=lf
+
+# Read by Windows. cmd.exe copes with LF on current builds, but CRLF is what
+# these have always been and costs nothing to keep.
+*.bat           text eol=crlf
+*.ps1           text eol=crlf
+*.rc            text eol=crlf
+*.manifest      text eol=crlf
+
+# Never touched, never diffed as text.
+*.ico           binary
+*.dll           binary
+*.png           binary
+*.pdf           binary
+*.gz            binary
+*.pyc           binary

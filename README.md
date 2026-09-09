@@ -84,6 +84,37 @@ against GTK4 and WebKitGTK. The one shared file that both platforms compile,
 `Lyndon Browser/src/lyndon.h`, selects its toolkit on `_WIN32` and is
 otherwise the same header it was.
 
+## Tests
+
+Each app has its own suite and each can be run on its own; `run-tests.py`
+runs all four and is the quickest way to know the repository is sound.
+
+```bash
+python3 run-tests.py            # everything this machine can run
+python3 run-tests.py --list     # what it would run, and what it would skip
+```
+
+A suite that needs something the machine hasn't got — a TeX distribution for
+LaRenderer's compile half, a C compiler for Lyndon — is reported as skipped
+rather than failed, because "not installed here" and "broken" are different
+answers and only one of them is worth acting on.
+
+On Windows, run it with MSYS2's Python, which is the one that has the GTK
+bindings:
+
+```powershell
+C:\msys64\mingw64\bin\python.exe run-tests.py
+```
+
+What each suite covers:
+
+| | Checks |
+|---|---|
+| Claude Desk | The protocol — slash commands, question parsing, the answer frame — the session state machine, and the widgets in a real window. `CLAUDE_DESK_LIVE=1` also drives a real child, which spends tokens. |
+| Git Manager | The porcelain parsers against throwaway repositories built for the purpose: status, renames, conflicts, log, branches, stashes, diffs. Then paths, settings and the ignore rules. No network. |
+| LaRenderer | The engine-log parser against captured text, which needs nothing installed, and a real compile where there is an engine to do it. |
+| Lyndon Browser | The filter-list compiler on Linux, the request matcher on Windows, and on both the shared URL handling — address-or-search, first-party grouping, and the JavaScript escaping the password manager fills through. |
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).

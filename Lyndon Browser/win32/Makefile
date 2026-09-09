@@ -3,7 +3,7 @@
 # Run from the project root, in an MSYS2 MINGW64 shell:
 #
 #     make -f win32/Makefile          build
-#     make -f win32/Makefile check    run the blocker tests
+#     make -f win32/Makefile check    run the blocker and URL tests
 #     make -f win32/Makefile run      build and launch
 #
 # There is no WebKitGTK for Windows, so the GTK front end in src/ cannot be
@@ -85,9 +85,10 @@ $(RES): win32/lyndon.rc win32/lyndon.manifest
 	@windres -Iwin32 $< -O coff -o $@
 
 # -- the blocker on its own ------------------------------------------------
-check: $(OBJDIR)/test-block.exe
+check: $(OBJDIR)/test-block.exe $(OBJDIR)/test-util.exe
 	@echo
 	@./$(OBJDIR)/test-block.exe data
+	@./$(OBJDIR)/test-util.exe
 
 $(OBJDIR)/test-block.exe: win32/test-block.c win32/block.c src/abp.c src/util.c src/config.c
 	@mkdir -p $(OBJDIR)
@@ -95,6 +96,13 @@ $(OBJDIR)/test-block.exe: win32/test-block.c win32/block.c src/abp.c src/util.c 
 	@$(CC) $(STD) $(WARN) -O1 -g $(DEFS) -Isrc -Iwin32 -isystem win32/webview2 \
 	  $(shell pkg-config --cflags $(PKGS)) -o $@ $^ \
 	  $(shell pkg-config --libs $(PKGS)) -lshlwapi -lole32
+
+# The shared URL handling, checked here as well as on Linux: it is compiled
+# into both builds and decides address-or-search for both.
+$(OBJDIR)/test-util.exe: tests/test-util.c src/util.c
+	@mkdir -p $(OBJDIR)
+	@echo "  CC    $@"
+	@$(CC) $(STD) $(WARN) -O1 -g $(DEFS) -Isrc -Iwin32 -isystem win32/webview2 	  $(shell pkg-config --cflags $(PKGS)) -o $@ $^ 	  $(shell pkg-config --libs $(PKGS)) -lshlwapi -lole32
 
 deps:
 	@echo "Checking build dependencies…"

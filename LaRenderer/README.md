@@ -82,6 +82,7 @@ distribution, all already present.
 | `larenderer/widgets.py` | Problems list, dialogs, the stylesheet. |
 | `larenderer/jobs.py` | Thread helpers — the only route from a worker back to the main loop. |
 | `larenderer/config.py` | Settings, in `~/.config/larenderer/config.json`. |
+| `tests/test_larenderer.py` | `python3 tests/test_larenderer.py` — the log parser against captured text, which needs nothing installed, and a real compile where there is an engine to do it. |
 
 ## Your .tex folder stays clean
 

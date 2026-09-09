@@ -85,10 +85,15 @@ class Serial:
                 return
             current = self._generation
 
+        # The pump has to run even when the callback raises: without the
+        # finally, one exception in a completion handler leaves _running True
+        # with a queue behind it, and no page ever renders again.
         def done(result):
-            if on_done and current == self._generation:
-                on_done(result)
-            self._pump()
+            try:
+                if on_done and current == self._generation:
+                    on_done(result)
+            finally:
+                self._pump()
 
         def failed(_exc):
             self._pump()

@@ -102,10 +102,17 @@ deps:
 run: $(APP)
 	@./$(APP)
 
-check: tests/test-abp
+check: tests/test-abp tests/test-util
 	@./tests/test-abp
+	@./tests/test-util
 
 tests/test-abp: tests/test-abp.c src/abp.c
+	@echo "  CC    $@"
+	@$(CC) $(STD) $(WARN) -O1 -g -Isrc -o $@ $^ $(shell pkg-config --cflags --libs glib-2.0 gio-2.0)
+
+# util.c names no toolkit type, so this builds against plain glib on either
+# platform -- the same binary's worth of checks runs from win32/Makefile too.
+tests/test-util: tests/test-util.c src/util.c
 	@echo "  CC    $@"
 	@$(CC) $(STD) $(WARN) -O1 -g -Isrc -o $@ $^ $(shell pkg-config --cflags --libs glib-2.0 gio-2.0)
 
@@ -128,12 +135,12 @@ uninstall:
 	      $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
 
 clean:
-	rm -rf build $(APP) tests/test-abp
+	rm -rf build $(APP) tests/test-abp tests/test-util
 
 help:
 	@echo "make            build"
 	@echo "make run        build and launch"
-	@echo "make check      run unit tests (filter-list converter)"
+	@echo "make check      run unit tests (filter lists, URL handling)"
 	@echo "make DEBUG=1    asan/ubsan build"
 	@echo "make LTO=1      link-time optimised build"
 	@echo "make deps       verify build dependencies"

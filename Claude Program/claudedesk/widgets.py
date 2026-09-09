@@ -277,7 +277,12 @@ def focus_soon(widget):
     rename could never be more than one character long.
     """
     def grab():
-        widget.grab_focus()
+        # And not at all if the dialog has gone in the meantime -- an Escape
+        # before the idle runs, or a card replaced underneath it. Focusing a
+        # widget that is no longer in a window logs a GTK critical and
+        # focuses nothing, so ask whether it still has one.
+        if widget.get_root() is not None:
+            widget.grab_focus()
         return GLib.SOURCE_REMOVE
 
     GLib.idle_add(grab)

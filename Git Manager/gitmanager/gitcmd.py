@@ -52,7 +52,16 @@ def git(repo, *args, check=True, stdin=None, timeout=120):
             env=_ENV,
             input=stdin,
             capture_output=True,
-            text=True,
+            # Not text=True: git speaks UTF-8 on both platforms, but text=True
+            # decodes in the locale's encoding -- cp1252 on a Western Windows
+            # install -- so every commit message, branch name and path with a
+            # character outside it comes back as mojibake. It goes the other
+            # way too: `input=` carries the patch text for hunk staging, and
+            # cp1252 cannot encode a hunk of a file with an emoji in it at all.
+            #
+            # tests/test_gitmanager.py::test_unicode_survives_the_pipe.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             creationflags=winenv.NO_WINDOW,
         )
@@ -157,7 +166,7 @@ def _in_progress(repo):
     # Worktrees and submodules use a .git *file* pointing elsewhere.
     if os.path.isfile(gd):
         try:
-            with open(gd) as fh:
+            with open(gd, encoding="utf-8", errors="replace") as fh:
                 line = fh.read().strip()
             if line.startswith("gitdir:"):
                 gd = os.path.join(repo, line[7:].strip())
@@ -480,8 +489,9 @@ def ls_remote(url, timeout=90):
     Runs outside any repository, so no cwd is passed.
     """
     proc = subprocess.run(
-        ["git", "ls-remote", "--symref", url],
-        env=_ENV, capture_output=True, text=True, timeout=timeout,
+        [GIT, "ls-remote", "--symref", url],
+        env=_ENV, capture_output=True, encoding="utf-8", errors="replace",
+        timeout=timeout, creationflags=winenv.NO_WINDOW,
     )
     if proc.returncode != 0:
         raise GitError(["ls-remote", url], proc.returncode, proc.stderr)
@@ -672,7 +682,11 @@ class Stash:
 
 
 def stash_list(repo):
-    out = git(repo, "stash", "list", "--format=%gd%00%s%00%cr")
+    # %x00, not %00: this is git log's format language, where %00 is not a
+    # placeholder at all and comes back as those two characters. The list then
+    # has one field where three were expected and every stash is dropped.
+    # for-each-ref, used by branches() above, is the one that spells it %00.
+    out = git(repo, "stash", "list", "--format=%gd%x00%s%x00%cr")
     result = []
     for line in out.splitlines():
         f = line.split("\0")

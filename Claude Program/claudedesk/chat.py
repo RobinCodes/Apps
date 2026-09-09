@@ -699,7 +699,12 @@ class _QuestionGroup(Gtk.Box):
     def _focus_entry(self):
         # Without-selecting, or the first keystroke after the click would
         # select what it just typed and the second would replace it.
-        self.entry.grab_focus_without_selecting()
+        #
+        # This runs from an idle, and a card can be answered or dismissed
+        # before the idle comes round. Focusing a widget that is no longer in
+        # a window focuses nothing and logs a GTK critical, so ask first.
+        if self.entry.get_root() is not None:
+            self.entry.grab_focus_without_selecting()
         return GLib.SOURCE_REMOVE
 
     def answer(self):
@@ -1099,7 +1104,10 @@ class Composer(Gtk.Box):
         )
 
     def focus(self):
-        self.view.grab_focus()
+        # Called from the composer's own handlers and from an idle after a
+        # completion, by which time the view may have been taken off screen.
+        if self.view.get_root() is not None:
+            self.view.grab_focus()
 
 
 class ChatView(Gtk.Box):

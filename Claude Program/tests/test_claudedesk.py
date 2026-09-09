@@ -12,6 +12,7 @@ does spend tokens, so it is off by default.
 import os
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -104,6 +105,48 @@ def test_answer_frame():
     child.answer_question("r2", QUESTION["input"], {}, None, "Neither, actually.")
     sent = written[-1]["response"]["response"]["updatedInput"]
     assert sent["answers"] == {} and sent["response"] == "Neither, actually."
+
+
+def test_unicode_survives_the_pipe():
+    """The child is Node, and Node writes real UTF-8 rather than \\u escapes.
+
+    Decoded in the locale's encoding — cp1252 on a Western Windows install —
+    an em dash arrives as three wrong characters, and the first byte cp1252
+    has no character for raises inside the reader thread, which dies without
+    a word and takes the conversation with it. This drives a stand-in child
+    that answers exactly the way the real one does.
+
+    The stand-in's source is kept pure ASCII, so what is under test is the
+    pipe and nothing else.
+    """
+    text = "Hi — 你好 😀 Привет"
+    source = (
+        "import sys, json\n"
+        "sys.stdout.reconfigure(encoding='utf-8')\n"
+        "text = " + ascii(text) + "\n"
+        "frame = {'type': 'assistant',\n"
+        "         'message': {'content': [{'type': 'text', 'text': text}]}}\n"
+        "sys.stdout.write(json.dumps(frame, ensure_ascii=False) + '\\n')\n"
+        "sys.stdout.flush()\n"
+    )
+
+    seen = []
+
+    class StandIn(backend.Backend):
+        def _argv(self):
+            return [sys.executable, "-c", source]
+
+    child = StandIn(cwd=os.getcwd(), model="default", permission_mode="manual",
+                    on_event=seen.append)
+    child.start()
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and not any(e.kind == "exit" for e in seen):
+        time.sleep(0.02)
+    child.stop()
+
+    blocks = [e for e in seen if e.kind == "block" and e.data.get("block") == "text"]
+    assert blocks, [(e.kind, e.data) for e in seen]
+    assert blocks[0].data["text"] == text, repr(blocks[0].data["text"])
 
 
 def test_command_matching():
@@ -338,6 +381,7 @@ def main():
     check("slash commands are read the way the terminal reads them", test_split_command)
     check("questions are parsed, and malformed ones are not", test_questions_parsed)
     check("an answer goes back inside updatedInput", test_answer_frame)
+    check("unicode survives the pipe, both directions", test_unicode_survives_the_pipe)
     check("the menu matches on name, alias and substring", test_command_matching)
 
     print("sessions")

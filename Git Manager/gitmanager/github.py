@@ -39,7 +39,8 @@ def _gh(*args, timeout=NET_TIMEOUT, check=True):
     if not GH:
         raise GhError(_GH_MISSING)
     proc = subprocess.run(
-        [GH, *args], capture_output=True, text=True, timeout=timeout,
+        [GH, *args], capture_output=True, encoding="utf-8", errors="replace",
+        timeout=timeout,
         env={**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"},
         creationflags=winenv.NO_WINDOW,
     )
@@ -376,7 +377,8 @@ def create_pr(repo_path, title, body="", base=None, draft=False):
     if draft:
         args.append("--draft")
     proc = subprocess.run(
-        args, cwd=repo_path, capture_output=True, text=True, timeout=120,
+        args, cwd=repo_path, capture_output=True, encoding="utf-8",
+        errors="replace", timeout=120,
         creationflags=winenv.NO_WINDOW,
     )
     if proc.returncode != 0:

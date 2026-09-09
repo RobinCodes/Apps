@@ -37,7 +37,7 @@ class Config(dict):
 
     def load(self):
         try:
-            with open(PATH) as fh:
+            with open(PATH, encoding="utf-8") as fh:
                 data = json.load(fh)
             if isinstance(data, dict):
                 for key, value in data.items():
@@ -51,7 +51,7 @@ class Config(dict):
         try:
             os.makedirs(DIR, exist_ok=True)
             tmp = PATH + ".tmp"
-            with open(tmp, "w") as fh:
+            with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(dict(self), fh, indent=2)
             os.replace(tmp, PATH)
         except OSError:
