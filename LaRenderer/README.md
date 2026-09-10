@@ -73,7 +73,8 @@ distribution, all already present.
 | `larenderer.svg` | The icon — a sheet with an integral on it, drawn as paths so it needs no font. |
 | `larenderer.desktop` | The entry copied to the menu, the desktop and the dock. |
 | `larenderer/app.py` | `Adw.Application` subclass, `--help`/`--version`, entry point. |
-| `larenderer/window.py` | The window, and the compile cycle that drives everything. |
+| `larenderer/window.py` | The window, the tabs, and the compile cycle that drives everything. |
+| `larenderer/document.py` | One open document: its editor, its preview, its build. One per tab. |
 | `larenderer/editor.py` | The source editor: highlighting, gutter, editing courtesies. |
 | `larenderer/preview.py` | The page column: lazy rasterisation, zoom, SyncTeX flash. |
 | `larenderer/compiler.py` | Every TeX invocation, and the log parser. Knows no GTK. |
@@ -83,6 +84,37 @@ distribution, all already present.
 | `larenderer/jobs.py` | Thread helpers — the only route from a worker back to the main loop. |
 | `larenderer/config.py` | Settings, in `~/.config/larenderer/config.json`. |
 | `tests/test_larenderer.py` | `python3 tests/test_larenderer.py` — the log parser against captured text, which needs nothing installed, and a real compile where there is an engine to do it. |
+
+## Tabs
+
+Several documents at once, the way a text editor does it. Open a second file
+and it arrives in a tab beside the first rather than replacing it.
+
+| | |
+|---|---|
+| `Ctrl+T` / `Ctrl+N` | A new empty document |
+| `Ctrl+W` | Close this one |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | The next tab, or the previous one |
+
+`Ctrl+Page Up` and `Ctrl+Page Down` stay what they were — the previous and
+next *page* of the preview — so the tabs take `Ctrl+Tab` alone rather than
+fighting them for a key that would then mean two things.
+
+Each tab is a whole document, not just a buffer: its own text, its own
+rendered pages at their own scroll position, its own problems list, and its
+own compile. A document being rebuilt in a background tab writes its result
+into that tab, so switching away mid-compile does not land someone else's
+errors on the document in front of you.
+
+Opening a file that is already open selects the tab it is in rather than
+making a second one — two tabs over one path would be two buffers racing each
+other to save. The tab bar hides itself when only one document is open, so a
+single document looks exactly as it did before.
+
+The tabs that were open when the window closed come back when it opens, in
+the same order; a file deleted in between is skipped rather than opening a tab
+named after something that isn't there. Closing a window with unsaved work in
+any tab — not only the one in front — asks first.
 
 ## Your .tex folder stays clean
 

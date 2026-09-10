@@ -287,6 +287,85 @@ def test_the_problems_list_takes_what_the_log_gave_it():
     problems.set_messages([])  # and it empties again without complaint
 
 
+# -------------------------------------------------------------------- tabs --
+
+def test_tabs_in_a_real_window(app):
+    """Several documents at once, in the window itself.
+
+    Each tab is a whole document — its own buffer, its own rendered pages, its
+    own build — so the things worth checking are that they stay separate and
+    that the window's idea of "the" document follows whichever is in front.
+    """
+    from larenderer.window import MainWindow
+
+    files = []
+    for name, body in (("alpha", "First."), ("beta", "Second.")):
+        path = os.path.join(scratch, name + ".tex")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\\documentclass{article}\n\\begin{document}\n"
+                     f"{body}\n\\end{{document}}\n")
+        files.append(path)
+
+    window = MainWindow(app)
+    names = lambda: [d.name for d in window.documents]
+
+    # A window with nothing open still has somewhere to type.
+    assert len(window.documents) == 1 and window.active is not None
+    assert window.path is None
+
+    # Opening the first file takes over that untouched tab rather than
+    # leaving an empty one behind it.
+    window.load_file(files[0])
+    assert names() == ["alpha.tex"], names()
+
+    window.load_file(files[1])
+    assert names() == ["alpha.tex", "beta.tex"], names()
+    assert window.active.name == "beta.tex"
+
+    # The same file twice is one tab: two buffers over one path would race
+    # each other to save.
+    window.load_file(files[0])
+    assert names() == ["alpha.tex", "beta.tex"], names()
+    assert window.active.name == "alpha.tex", "and it selects the one already open"
+
+    # The window's "current document" is whichever tab is in front.
+    assert os.path.basename(window.path) == "alpha.tex"
+    assert window.editor is window.active.editor
+    assert window.preview is window.active.preview
+
+    # Separate buffers, not one shared between tabs.
+    first, second = window.documents[0], window.documents[1]
+    assert "First." in first.editor.get_text()
+    assert "Second." in second.editor.get_text()
+    first.editor.set_text("changed\n")
+    assert "Second." in second.editor.get_text(), "editing one must not touch the other"
+
+    window.next_tab()
+    assert window.active is second, window.active.name
+    window.previous_tab()
+    assert window.active is first
+    # And it wraps, rather than stopping at the end.
+    window.previous_tab()
+    assert window.active is second
+
+    window.new_document()
+    assert len(window.documents) == 3 and window.active.path is None
+
+    # Closing an unmodified tab needs no dialog and moves off it.
+    window.active.editor.mark_saved()
+    window.close_current()
+    assert len(window.documents) == 2, names()
+    assert window.active is not None and window.active.name in names()
+
+    # Every document is remembered for next time, in tab order.
+    window._remember_open_files()
+    assert window.config["open_files"] == [d.path for d in window.documents]
+
+    for document in window.documents:
+        document.editor.mark_saved()   # so closing asks nothing
+    window.close()
+
+
 def main():
     print("reading a log")
     check("an error is found with its line", test_an_error_is_found_with_its_line)
@@ -328,6 +407,34 @@ def main():
     check("widgets build without a document", test_widgets_build_without_a_document)
     check("the problems list takes what the log gave it",
           test_the_problems_list_takes_what_the_log_gave_it)
+
+    print("tabs")
+    from gi.repository import Gio, GLib
+    app = Adw.Application(application_id="org.larenderer.Tests",
+                          flags=Gio.ApplicationFlags.NON_UNIQUE)
+    failure = []
+
+    def run_window():
+        try:
+            test_tabs_in_a_real_window(app)
+            print("  ok  several documents, each in a tab of its own")
+        except BaseException as exc:  # noqa: BLE001 - re-raised after the loop
+            failure.append(exc)
+        finally:
+            app.release()
+            app.quit()
+        return GLib.SOURCE_REMOVE
+
+    def activate(a):
+        # Without the hold there is no window yet and run() returns before the
+        # timeout below has had a chance to make one.
+        a.hold()
+        GLib.timeout_add(400, run_window)
+
+    app.connect("activate", activate)
+    app.run([])
+    if failure:
+        raise failure[0]
 
     if skipped:
         print("\nskipped for want of a tool:")

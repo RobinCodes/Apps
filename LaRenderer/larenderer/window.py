@@ -19,26 +19,19 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from . import compiler, jobs, packages, templates, widgets  # noqa: E402
 from .config import Config  # noqa: E402
-from .editor import Editor  # noqa: E402
-from .preview import FIT_PAGE, FIT_WIDTH, THEME_LABEL, THEMES, Preview  # noqa: E402
-
-UNTITLED = "Untitled.tex"
+from .document import UNTITLED, Document  # noqa: E402
+from .preview import FIT_PAGE, FIT_WIDTH, THEME_LABEL, THEMES  # noqa: E402
 
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="LaRenderer")
         self.config = Config()
-        self.path: str | None = None
-        self._job: compiler.Job | None = None
-        self._compile_timer = 0
-        self._result: compiler.Result | None = None
-        self._compiling = False
-        self._pending = False
         self._package_status: dict[str, bool] = {}
-        # Following the cursor is right while you type and wrong on open —
-        # nobody wants a freshly opened document scrolled to its last line.
-        self._edited_since_load = False
+        # Set once the tab view exists; until then there is no active document
+        # and the properties below have to answer for one that isn't there.
+        self.active: Document | None = None
+        self._by_page: dict = {}
 
         self.set_default_size(self.config["window_width"], self.config["window_height"])
         if self.config["window_maximized"]:
@@ -53,38 +46,123 @@ class MainWindow(Adw.ApplicationWindow):
 
         GLib.idle_add(self._start_up)
 
+    # ------------------------------------------------- the active document --
+    #
+    # Everything below the tab bar belongs to one document at a time, and the
+    # rest of this class is written as though there were only ever one. These
+    # forward to whichever is in front, so that stays true: `self.editor` is
+    # the editor you can see, `self.path` is the file it came from.
+
+    @property
+    def editor(self):
+        return self.active.editor
+
+    @property
+    def preview(self):
+        return self.active.preview
+
+    @property
+    def problems(self):
+        return self.active.problems
+
+    @property
+    def problems_revealer(self):
+        return self.active.problems_revealer
+
+    @property
+    def paned(self):
+        return self.active.paned
+
+    @property
+    def path(self) -> str | None:
+        return self.active.path if self.active else None
+
+    @path.setter
+    def path(self, value):
+        self.active.path = value
+
+    @property
+    def _result(self):
+        return self.active.result
+
+    @_result.setter
+    def _result(self, value):
+        self.active.result = value
+
+    @property
+    def _job(self):
+        return self.active.job
+
+    @_job.setter
+    def _job(self, value):
+        self.active.job = value
+
+    @property
+    def _compiling(self) -> bool:
+        return self.active.compiling
+
+    @_compiling.setter
+    def _compiling(self, value):
+        self.active.compiling = value
+
+    @property
+    def _pending(self) -> bool:
+        return self.active.pending
+
+    @_pending.setter
+    def _pending(self, value):
+        self.active.pending = value
+
+    @property
+    def _compile_timer(self) -> int:
+        return self.active.compile_timer
+
+    @_compile_timer.setter
+    def _compile_timer(self, value):
+        self.active.compile_timer = value
+
+    @property
+    def _edited_since_load(self) -> bool:
+        return self.active.edited_since_load
+
+    @_edited_since_load.setter
+    def _edited_since_load(self, value):
+        self.active.edited_since_load = value
+
+    @property
+    def documents(self) -> list:
+        """Every open document, in tab order."""
+        return [self._by_page[self.tabs.get_nth_page(i)]
+                for i in range(self.tabs.get_n_pages())
+                if self.tabs.get_nth_page(i) in self._by_page]
+
     # ----------------------------------------------------------------- UI
 
     def _build_ui(self):
-        self.editor = Editor(on_changed=self._on_edited, on_cursor=self._on_cursor)
-        self.editor.set_font_size(self.config["editor_font_size"])
-        self.preview = Preview(on_page_changed=self._on_page_changed)
-        self.preview.zoom = self._zoom_from_config()
-        self.preview.set_page_theme(str(self.config["pdf_theme"]))
+        # One page per open document; the editor and preview live in there
+        # rather than here. See document.py.
+        self.tabs = Adw.TabView(vexpand=True)
+        self.tabs.connect("notify::selected-page", self._on_tab_selected)
+        # Returning True says the close is being handled: every close goes
+        # through _confirm_close, which may have to ask about unsaved changes
+        # before the page can actually go.
+        self.tabs.connect("close-page", self._on_close_page)
+        # Closing the last tab closes the window, the way a tabbed editor
+        # does. Without this the window would stay up with no document in it
+        # and nothing for the properties above to answer with.
+        self.tabs.connect("notify::n-pages", self._on_pages_changed)
 
-        # -- left: editor over the problems panel --------------------------
-        self.problems = widgets.ProblemsList(on_activate=self.editor.goto_line)
-        self.problems_revealer = Gtk.Revealer(
-            child=self.problems,
-            transition_type=Gtk.RevealerTransitionType.SLIDE_UP,
-            reveal_child=False,
-        )
-        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        left.append(self.editor)
-        left.append(Gtk.Separator())
-        left.append(self.problems_revealer)
+        self.tab_bar = Adw.TabBar(view=self.tabs, autohide=True)
 
-        self.paned = Gtk.Paned(
-            orientation=Gtk.Orientation.HORIZONTAL,
-            position=self.config["split_position"],
-            resize_start_child=True, resize_end_child=True,
-            shrink_start_child=False, shrink_end_child=False,
-        )
-        self.paned.set_start_child(left)
-        self.paned.set_end_child(self.preview)
+        # One document before the chrome, because the header and the status
+        # strip are built from it — the zoom label asks the preview what it
+        # currently says, and there has to be a preview to ask. _start_up
+        # either fills this tab or replaces it with the remembered ones.
+        self.open_document()
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        content.append(self.paned)
+        content.append(self.tab_bar)
+        content.append(self.tabs)
         content.append(self._build_status_strip())
 
         view = Adw.ToolbarView()
@@ -93,6 +171,169 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.toasts = Adw.ToastOverlay(child=view)
         self.set_content(self.toasts)
+
+    # --------------------------------------------------------------- tabs --
+
+    def open_document(self, path: str | None = None, text: str | None = None,
+                      focus: bool = True):
+        """Put a document in a new tab and return it.
+
+        Opening a file that is already open selects the tab it is in rather
+        than making a second one — two tabs over the same file would be two
+        buffers over one path, and whichever was saved last would win.
+        """
+        if path:
+            for existing in self.documents:
+                if existing.is_at(path):
+                    if focus:
+                        self.tabs.set_selected_page(self._page_for(existing))
+                    return existing
+
+        document = Document(self, path=path)
+        page = self.tabs.append(document.root)
+        self._by_page[page] = document
+        page.set_title(document.name)
+        if path:
+            page.set_tooltip(path)
+        if text is not None:
+            document.editor.set_text(text)
+            document.edited_since_load = False
+        if focus:
+            self.tabs.set_selected_page(page)
+            # append() selects the first page itself, so for that one the
+            # notify fired before this document was in _by_page and nothing
+            # adopted it. Adopting again is free when it already happened.
+            self._on_tab_selected()
+        return document
+
+    def _page_for(self, document):
+        for page, candidate in self._by_page.items():
+            if candidate is document:
+                return page
+        return None
+
+    def _on_tab_selected(self, *_):
+        page = self.tabs.get_selected_page()
+        document = self._by_page.get(page) if page else None
+        if document is None or document is self.active:
+            return
+        self.active = document
+        # The first document is made while the chrome is still being built,
+        # and there is nothing to point at it yet.
+        if hasattr(self, "status_label"):
+            self._adopt_active()
+
+    def _adopt_active(self):
+        """Point the shared chrome at whichever document is now in front.
+
+        The header, the status strip and the problems toggle are one set of
+        widgets shared by every tab, so switching tabs has to re-read all of
+        them from the document rather than leaving the last one's numbers up.
+        """
+        document = self.active
+        self._update_title()
+        self.status_label.set_label(document.status_text)
+        strip = self.status_label.get_parent()
+        for name in ("ok", "bad", "compiling"):
+            strip.remove_css_class(name)
+        if document.status_css:
+            strip.add_css_class(document.status_css)
+        self.problems_button.set_label(document.problems_label)
+        self.compile_button.set_sensitive(not document.compiling)
+        self.problems_revealer.set_reveal_child(self.problems_button.get_active())
+        self.page_label.set_label(document.page_text)
+        self._on_cursor()
+
+    def new_document(self):
+        document = self.open_document()
+        document.editor.set_text(templates.ARTICLE.replace(templates.CURSOR, ""))
+        document.edited_since_load = False
+        self._update_title()
+        self.compile_now()
+
+    def close_current(self):
+        page = self.tabs.get_selected_page()
+        if page is not None:
+            self.tabs.close_page(page)
+
+    def _on_close_page(self, view, page):
+        """Adw asks before removing a page; unsaved work is why we might say no."""
+        document = self._by_page.get(page)
+        if document is None:
+            view.close_page_finish(page, True)
+            return True
+        if not document.modified:
+            self._forget(page, document)
+            view.close_page_finish(page, True)
+            return True
+
+        dialog = Adw.AlertDialog(
+            heading="Save before closing?",
+            body=f"{document.name} has changes that have not been written to disk.",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("discard", "Discard")
+        dialog.add_response("save", "Save")
+        dialog.set_response_appearance("discard", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("save")
+        dialog.set_close_response("cancel")
+
+        def answered(dlg, result):
+            answer = dlg.choose_finish(result)
+            if answer == "discard":
+                self._forget(page, document)
+                view.close_page_finish(page, True)
+            elif answer == "save" and document.path:
+                if self._write_document(document, document.path):
+                    self._forget(page, document)
+                    view.close_page_finish(page, True)
+                else:
+                    view.close_page_finish(page, False)
+            else:
+                # Cancel, or a save that still needs somewhere to go: keep the
+                # tab, so Save As has a document to act on.
+                view.close_page_finish(page, False)
+                if answer == "save":
+                    self.save_as()
+
+        dialog.choose(self, None, answered)
+        return True
+
+    def _forget(self, page, document):
+        """Let go of a document that is on its way out."""
+        document.cancel_compile()
+        self._by_page.pop(page, None)
+        if self.active is document:
+            self.active = None
+
+    def _on_pages_changed(self, *_):
+        """The last tab closing takes the window with it.
+
+        Every tab has already been asked about its unsaved changes by the time
+        it goes, so there is nothing left to confirm here.
+        """
+        if self.tabs.get_n_pages() == 0:
+            self._remember_geometry()
+            # And with nothing open, that is what gets restored: closing every
+            # tab by hand should not be undone on the next start.
+            self._remember_open_files()
+            self.destroy()
+            return
+        # A tab going takes its neighbour's place at the front; adopt it.
+        self._on_tab_selected()
+
+    def next_tab(self):
+        if not self.tabs.select_next_page():
+            first = self.tabs.get_nth_page(0)
+            if first is not None:
+                self.tabs.set_selected_page(first)
+
+    def previous_tab(self):
+        if not self.tabs.select_previous_page():
+            last = self.tabs.get_nth_page(self.tabs.get_n_pages() - 1)
+            if last is not None:
+                self.tabs.set_selected_page(last)
 
     def _build_header(self) -> Adw.HeaderBar:
         header = Adw.HeaderBar()
@@ -300,6 +541,13 @@ class MainWindow(Adw.ApplicationWindow):
     def _main_menu(self) -> Gio.Menu:
         menu = Gio.Menu()
 
+        tabs = Gio.Menu()
+        tabs.append("New tab", "win.new-tab")
+        tabs.append("Close tab", "win.close-tab")
+        tabs.append("Next tab", "win.next-tab")
+        tabs.append("Previous tab", "win.previous-tab")
+        menu.append_section(None, tabs)
+
         files = Gio.Menu()
         files.append("Save as…", "win.save-as")
         files.append("Export PDF…", "win.export")
@@ -347,6 +595,10 @@ class MainWindow(Adw.ApplicationWindow):
             return action
 
         simple("open", self.open_dialog)
+        simple("new-tab", self.new_document)
+        simple("close-tab", self.close_current)
+        simple("next-tab", self.next_tab)
+        simple("previous-tab", self.previous_tab)
         simple("save", self.save)
         simple("save-as", self.save_as)
         simple("export", self.export_pdf)
@@ -433,6 +685,13 @@ class MainWindow(Adw.ApplicationWindow):
         app = self.get_application()
         for action, keys in {
             "win.open": ["<Control>o"],
+            # Ctrl+Page Up/Down are already the preview's page keys and stay
+            # that way, so the tabs take Ctrl+Tab alone rather than fighting
+            # them for a binding that would then do two things.
+            "win.new-tab": ["<Control>t", "<Control>n"],
+            "win.close-tab": ["<Control>w"],
+            "win.next-tab": ["<Control>Tab"],
+            "win.previous-tab": ["<Control><Shift>Tab"],
             "win.save": ["<Control>s"],
             "win.save-as": ["<Control><Shift>s"],
             "win.export": ["<Control>e"],
@@ -468,7 +727,7 @@ class MainWindow(Adw.ApplicationWindow):
             GLib.Variant.new_string(str(self.config["zoom"]))
         )
 
-    def _zoom_from_config(self):
+    def zoom_from_config(self):
         raw = str(self.config["zoom"])
         if raw in (FIT_WIDTH, FIT_PAGE):
             return raw
@@ -480,14 +739,35 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------- startup
 
     def _start_up(self):
-        last = self.config["last_file"]
-        if last and os.path.exists(last):
-            self.load_file(last)
-        else:
-            self.editor.set_text(templates.ARTICLE.replace(templates.CURSOR, ""))
-            self._edited_since_load = False
-            self._update_title()
-            self.compile_now()
+        # The tabs that were open last time, in the order they were in. A file
+        # deleted since is skipped rather than opening a tab named after a
+        # document that is not there any more.
+        remembered = [p for p in self.config["open_files"]
+                      if isinstance(p, str) and p and os.path.exists(p)]
+        if not remembered:
+            last = self.config["last_file"]
+            if last and os.path.exists(last):
+                remembered = [last]
+
+        for path in remembered:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue  # unreadable now: not worth a dialog at start-up
+            document = self.open_document(path=path, text=text, focus=False)
+            self._update_title(document)
+
+        if not self.documents:
+            document = self.open_document()
+            document.editor.set_text(templates.ARTICLE.replace(templates.CURSOR, ""))
+            document.edited_since_load = False
+
+        first = self.tabs.get_nth_page(0)
+        self.tabs.set_selected_page(first)
+        self._on_tab_selected()
+        self._update_title()
+        self.compile_now()
 
         jobs.run(packages.catalogue_status, self._on_package_status)
         return GLib.SOURCE_REMOVE
@@ -501,28 +781,56 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ---------------------------------------------------------- file state
 
-    def _update_title(self):
-        name = os.path.basename(self.path) if self.path else UNTITLED
-        modified = "•  " if self.editor.modified else ""
-        self.title_widget.set_title(modified + name)
-        folder = os.path.dirname(self.path) if self.path else ""
-        self.title_widget.set_subtitle(folder.replace(os.path.expanduser("~"), "~"))
-        self.save_button.set_sensitive(self.editor.modified or self.path is None)
+    def _update_title(self, document=None):
+        document = document or self.active
+        if document is None:
+            return
+        page = self._page_for(document)
+        if page is not None:
+            # The bullet is the tab's unsaved marker as well as the title's.
+            page.set_title(("• " if document.modified else "") + document.name)
+            page.set_tooltip(document.path or document.name)
+        if document is not self.active:
+            return
+        self.title_widget.set_title(("•  " if document.modified else "") + document.name)
+        self.title_widget.set_subtitle(
+            document.folder.replace(os.path.expanduser("~"), "~"))
+        self.save_button.set_sensitive(document.modified or document.path is None)
 
     def load_file(self, path: str):
+        """Open a file in a tab of its own, and bring it to the front."""
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
         except OSError as exc:
             widgets.error_toast(self, exc)
             return
-        self.path = path
-        self.editor.set_text(text)
-        self._edited_since_load = False
-        self.config["last_file"] = path
+        already = next((d for d in self.documents if d.is_at(path)), None)
+        if already is not None:
+            self.tabs.set_selected_page(self._page_for(already))
+            return
+
+        # An untouched, never-saved first tab is scaffolding, not a document:
+        # opening a file replaces it rather than leaving an empty tab behind.
+        spare = self.active
+        if (spare is not None and spare.path is None and not spare.modified
+                and len(self.documents) == 1):
+            document = spare
+            document.path = path
+            document.editor.set_text(text)
+        else:
+            document = self.open_document(path=path, text=text)
+        document.edited_since_load = False
+        self._remember_open_files()
+        self._update_title(document)
+        self.compile_now(document)
+
+    def _remember_open_files(self):
+        """The tabs to put back next time, in the order they are in now."""
+        paths = [d.path for d in self.documents if d.path]
+        self.config["open_files"] = paths
+        self.config["last_file"] = self.active.path if self.active and self.active.path else ""
         self.config.save()
-        self._update_title()
-        self.compile_now()
 
     def open_dialog(self):
         dialog = Gtk.FileDialog(title="Open a LaTeX document")
@@ -578,16 +886,19 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.save(self, None, done)
 
     def _write(self, path: str) -> bool:
+        return self._write_document(self.active, path)
+
+    def _write_document(self, document, path: str) -> bool:
         try:
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
-                fh.write(self.editor.get_text())
+                fh.write(document.editor.get_text())
             os.replace(tmp, path)
         except OSError as exc:
             widgets.error_toast(self, exc)
             return False
-        self.editor.mark_saved()
-        self._update_title()
+        document.editor.mark_saved()
+        self._update_title(document)
         widgets.toast(self, f"Saved {os.path.basename(path)}")
         return True
 
@@ -649,59 +960,77 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------ compiling
 
-    def _on_edited(self):
-        self._edited_since_load = True
+    def document_edited(self, document):
+        document.edited_since_load = True
+        if document is not self.active:
+            return
         self._update_title()
         if self.config["auto_compile"]:
             self._schedule_compile()
+
+    def document_cursor_moved(self, document):
+        if document is self.active:
+            self._on_cursor()
+
+    def document_page_changed(self, document, page, total):
+        document.page_text = f"Page {page} of {total}"
+        if document is self.active:
+            self.page_label.set_label(document.page_text)
 
     def _on_cursor(self):
         line, column = self.editor.cursor_position()
         self.cursor_label.set_label(f"Ln {line}, Col {column}")
 
-    def _on_page_changed(self, page, total):
-        self.page_label.set_label(f"Page {page} of {total}")
-
-    def _schedule_compile(self):
-        if self._compile_timer:
-            GLib.source_remove(self._compile_timer)
+    def _schedule_compile(self, document=None):
+        document = document or self.active
+        if document.compile_timer:
+            GLib.source_remove(document.compile_timer)
         delay = max(120, int(self.config["compile_delay_ms"]))
-        self._compile_timer = GLib.timeout_add(delay, self._compile_timer_fired)
+        document.compile_timer = GLib.timeout_add(
+            delay, self._compile_timer_fired, document)
 
-    def _compile_timer_fired(self):
-        self._compile_timer = 0
-        self.compile_now()
+    def _compile_timer_fired(self, document):
+        document.compile_timer = 0
+        self.compile_now(document)
         return GLib.SOURCE_REMOVE
 
-    def compile_now(self):
-        if self._compile_timer:
-            GLib.source_remove(self._compile_timer)
-            self._compile_timer = 0
+    # Every one of these takes the document it is working on rather than
+    # reading self.active. A compile takes seconds and the user is free to
+    # change tabs while it runs; read the active document when the result
+    # lands and it is written into whichever tab happens to be in front.
+    def compile_now(self, document=None):
+        document = document or self.active
+        if document is None:
+            return
+        if document.compile_timer:
+            GLib.source_remove(document.compile_timer)
+            document.compile_timer = 0
 
-        if self._compiling:
+        if document.compiling:
             # Kill the one in flight; its results are already out of date.
-            if self._job:
-                self._job.cancel()
-            self._pending = True
+            if document.job:
+                document.job.cancel()
+            document.pending = True
             return
 
-        text = self.editor.get_text()
+        text = document.editor.get_text()
         if not text.strip():
-            self.preview.clear()
-            self._set_status("Nothing to compile", "")
+            document.preview.clear()
+            self._set_status("Nothing to compile", "", document)
             return
 
-        self._compiling = True
-        self._job = compiler.Job()
-        job = self._job
-        self._set_status("Compiling…", "compiling")
-        self.compile_button.set_sensitive(False)
+        document.compiling = True
+        document.job = compiler.Job()
+        job = document.job
+        self._set_status("Compiling…", "compiling", document)
+        if document is self.active:
+            self.compile_button.set_sensitive(False)
 
         engine = self.config["engine"]
         if engine not in compiler.available_engines():
             engine = (compiler.available_engines() or ["pdflatex"])[0]
 
-        path = self.path
+        path = document.path
         options = dict(
             engine=engine,
             shell_escape=bool(self.config["shell_escape"]),
@@ -711,54 +1040,64 @@ class MainWindow(Adw.ApplicationWindow):
 
         jobs.run(
             lambda: compiler.compile_document(text, path, job=job, **options),
-            self._on_compiled,
-            self._on_compile_failed,
+            lambda result: self._on_compiled(result, document),
+            lambda exc: self._on_compile_failed(exc, document),
         )
 
-    def _on_compile_failed(self, exc):
-        self._compiling = False
-        self.compile_button.set_sensitive(True)
-        self._set_status(str(exc).splitlines()[0] if str(exc) else "Compile failed", "bad")
-        if self._pending:
-            self._pending = False
-            self.compile_now()
+    def _on_compile_failed(self, exc, document):
+        document.compiling = False
+        if document is self.active:
+            self.compile_button.set_sensitive(True)
+        self._set_status(
+            str(exc).splitlines()[0] if str(exc) else "Compile failed", "bad", document)
+        if document.pending:
+            document.pending = False
+            self.compile_now(document)
 
-    def _on_compiled(self, result: compiler.Result):
-        self._compiling = False
-        self.compile_button.set_sensitive(True)
+    def _on_compiled(self, result: compiler.Result, document):
+        document.compiling = False
+        if document is self.active:
+            self.compile_button.set_sensitive(True)
 
-        if self._pending:
-            self._pending = False
-            self.compile_now()
+        # The tab may have been closed while this was running, in which case
+        # there is nowhere for the result to go.
+        if self._page_for(document) is None:
+            return
+
+        if document.pending:
+            document.pending = False
+            self.compile_now(document)
             return
         if result.cancelled:
             return
 
-        self._result = result
+        document.result = result
 
         if result.failure:
-            self._set_status(result.failure, "bad")
-            self.problems.set_messages([], "")
-            self._show_problems(True)
+            self._set_status(result.failure, "bad", document)
+            document.problems.set_messages([], "")
+            self._show_problems(True, document)
             return
 
         if result.pdf:
-            self.preview.show_result(result)
+            document.preview.show_result(result)
         else:
-            self.preview.clear()
+            document.preview.clear()
 
         hint = ""
         if result.missing_packages:
             hint = packages.install_hint([n + ".sty" for n in result.missing_packages])
-        self.problems.set_messages(result.messages, hint)
-        self.editor.set_problem_lines(
+        document.problems.set_messages(result.messages, hint)
+        document.editor.set_problem_lines(
             [m.line for m in result.errors if m.is_current_file],
             [m.line for m in result.warnings if m.is_current_file],
         )
 
         errors = len(result.errors)
         warnings = len(result.warnings)
-        self.problems_button.set_label(self._problems_label(errors, warnings))
+        document.problems_label = self._problems_label(errors, warnings)
+        if document is self.active:
+            self.problems_button.set_label(document.problems_label)
 
         if errors:
             noun = "error" if errors == 1 else "errors"
@@ -766,18 +1105,19 @@ class MainWindow(Adw.ApplicationWindow):
             # Say so when the pane is showing an older render rather than this
             # compile's output, so a stale page is never mistaken for current.
             stale = " · preview is the last good render" if result.stale_pdf else ""
-            self._set_status(f"{errors} {noun}{extra}{stale}", "bad")
-            self._show_problems(True)
+            self._set_status(f"{errors} {noun}{extra}{stale}", "bad", document)
+            self._show_problems(True, document)
         else:
             pages = f"{result.pages} page{'s' if result.pages != 1 else ''}"
             passes = f", {result.passes} passes" if result.passes > 1 else ""
             warned = f" · {warnings} warning{'s' if warnings != 1 else ''}" if warnings else ""
             self._set_status(
-                f"Compiled {pages} in {result.seconds:.2f}s{passes}{warned}", "ok"
+                f"Compiled {pages} in {result.seconds:.2f}s{passes}{warned}", "ok", document
             )
 
-        if self.config["sync_preview"] and self._edited_since_load:
-            self.sync_to_cursor(quiet=True)
+        if self.config["sync_preview"] and document.edited_since_load:
+            if document is self.active:
+                self.sync_to_cursor(quiet=True)
 
     def _problems_label(self, errors, warnings) -> str:
         if errors and warnings:
@@ -788,7 +1128,19 @@ class MainWindow(Adw.ApplicationWindow):
             return f"Problems  {warnings} ⚠"
         return "Problems"
 
-    def _set_status(self, text, css):
+    def _set_status(self, text, css, document=None):
+        """Say something in the status strip, and remember it for that tab.
+
+        The strip is one widget shared by every document, so what it says has
+        to be kept on the document too — otherwise coming back to a tab shows
+        whatever the last compile in another tab happened to leave there.
+        """
+        document = document or self.active
+        if document is not None:
+            document.status_text = text
+            document.status_css = css
+            if document is not self.active:
+                return
         self.status_label.set_label(text)
         strip = self.status_label.get_parent()
         for name in ("ok", "bad", "compiling"):
@@ -796,7 +1148,11 @@ class MainWindow(Adw.ApplicationWindow):
         if css:
             strip.add_css_class(css)
 
-    def _show_problems(self, visible: bool):
+    def _show_problems(self, visible: bool, document=None):
+        # A background tab finding errors should not throw the panel open over
+        # the document being read in front of it.
+        if document is not None and document is not self.active:
+            return
         if visible and not self.problems_button.get_active():
             self.problems_button.set_active(True)
         elif not visible and self.problems_button.get_active():
@@ -971,6 +1327,9 @@ class MainWindow(Adw.ApplicationWindow):
     def show_shortcuts(self):
         rows = [
             ("Ctrl+O", "Open a document"),
+            ("Ctrl+T  /  Ctrl+N", "New tab"),
+            ("Ctrl+W", "Close the tab"),
+            ("Ctrl+Tab  /  Ctrl+Shift+Tab", "Next or previous tab"),
             ("Ctrl+S", "Save"),
             ("Ctrl+Shift+S", "Save as"),
             ("Ctrl+E", "Export the PDF"),
@@ -1060,13 +1419,41 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_close(self, *_):
         self._remember_geometry()
-        if not self.editor.modified:
-            return False
+        self._remember_open_files()
 
-        name = os.path.basename(self.path) if self.path else UNTITLED
+        # Any tab with unsaved work, not just the one in front — the others
+        # are out of sight and are exactly the ones worth asking about.
+        unsaved = [d for d in self.documents if d.modified]
+        if not unsaved:
+            return False
+        if len(unsaved) > 1:
+            names = ", ".join(d.name for d in unsaved)
+            dialog = Adw.AlertDialog(
+                heading="Save before closing?",
+                body=f"{len(unsaved)} documents have unwritten changes: {names}.",
+            )
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("discard", "Discard all")
+            dialog.set_response_appearance("discard", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_default_response("cancel")
+            dialog.set_close_response("cancel")
+
+            def answered_many(dlg, result):
+                if dlg.choose_finish(result) == "discard":
+                    for document in unsaved:
+                        document.editor.mark_saved()
+                    self.close()
+
+            dialog.choose(self, None, answered_many)
+            return True
+
+        # Exactly one, and it may not be the tab in front.
+        document = unsaved[0]
+        if document is not self.active:
+            self.tabs.set_selected_page(self._page_for(document))
         dialog = Adw.AlertDialog(
             heading="Save before closing?",
-            body=f"{name} has changes that have not been written to disk.",
+            body=f"{document.name} has changes that have not been written to disk.",
         )
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("discard", "Discard")
@@ -1079,11 +1466,11 @@ class MainWindow(Adw.ApplicationWindow):
         def answered(dlg, result):
             answer = dlg.choose_finish(result)
             if answer == "discard":
-                self.editor.mark_saved()
+                document.editor.mark_saved()
                 self.close()
             elif answer == "save":
-                if self.path:
-                    if self._write(self.path):
+                if document.path:
+                    if self._write_document(document, document.path):
                         self.close()
                 else:
                     self.save_as()
@@ -1096,6 +1483,9 @@ class MainWindow(Adw.ApplicationWindow):
         if not self.is_maximized():
             self.config["window_width"] = self.get_width()
             self.config["window_height"] = self.get_height()
-        self.config["split_position"] = self.paned.get_position()
-        self.config["editor_font_size"] = self.editor.get_font_size()
+        # Every tab has a paned and an editor of its own; the one in front is
+        # the one whose layout the user just chose.
+        if self.active is not None:
+            self.config["split_position"] = self.paned.get_position()
+            self.config["editor_font_size"] = self.editor.get_font_size()
         self.config.save()
