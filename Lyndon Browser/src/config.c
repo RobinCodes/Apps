@@ -94,6 +94,13 @@ static const char *const HW_IDS[]     = { "auto", "always", "never" };
 static const char *const UA_IDS[]     = { "default", "minimal", "custom" };
 static const char *const PROXY_IDS[]  = { "system", "none", "custom" };
 static const char *const FX_IDS[]     = { "full", "reduced", "off" };
+static const char *const START_IDS[]  = { "full", "minimal", "blank" };
+static const char *const ART_IDS[]    = { "none", "aurora", "meridian", "dune",
+                                          "lattice", "ember", "monolith" };
+G_STATIC_ASSERT (G_N_ELEMENTS (ART_IDS) == LY_ART_N);
+
+const char *ly_start_page_id (LyStartPage p) { return START_IDS[p]; }
+const char *ly_start_art_id  (LyStartArt  a) { return ART_IDS[a]; }
 
 /* ----------------------------------------------------------- constructor */
 
@@ -171,6 +178,8 @@ ly_config_new (void)
                                   ?: g_get_home_dir ());
 
   cfg->homepage        = g_strdup ("lyndon:start");
+  cfg->start_page      = LY_START_FULL;
+  cfg->start_art       = LY_ART_NONE;
 
   cfg->watchers = g_ptr_array_new_with_free_func (g_free);
 
@@ -270,6 +279,8 @@ ly_config_load (LyConfig *cfg)
   GET_BOOL   ("appearance", "tab-bar-when-single", show_tab_bar_single);
   GET_BOOL   ("appearance", "bookmarks-bar",       show_bookmarks_bar);
   GET_DOUBLE ("appearance", "opacity",       ui_opacity);
+  GET_ENUM   ("appearance", "start-page",    start_page, START_IDS, LyStartPage);
+  GET_ENUM   ("appearance", "start-artwork", start_art,  ART_IDS,   LyStartArt);
 
   GET_ENUM   ("web", "force-dark",         force_dark, DARK_IDS, LyForceDark);
   GET_BOOL   ("web", "javascript",         javascript);
@@ -356,6 +367,8 @@ ly_config_save (LyConfig *cfg)
   g_key_file_set_boolean (kf, "appearance", "tab-bar-when-single", cfg->show_tab_bar_single);
   g_key_file_set_boolean (kf, "appearance", "bookmarks-bar",       cfg->show_bookmarks_bar);
   g_key_file_set_double  (kf, "appearance", "opacity",      cfg->ui_opacity);
+  g_key_file_set_string  (kf, "appearance", "start-page",    START_IDS[cfg->start_page]);
+  g_key_file_set_string  (kf, "appearance", "start-artwork", ART_IDS[cfg->start_art]);
 
   g_key_file_set_string  (kf, "web", "force-dark",       DARK_IDS[cfg->force_dark]);
   g_key_file_set_boolean (kf, "web", "javascript",       cfg->javascript);

@@ -58,6 +58,10 @@ struct _LyWindow {
 
   gboolean url_focused;
   guint    blocker_watch;
+
+  /* The maximise this window was born with, still waiting to be confirmed
+   * against what the compositor turns out to be. See settle_restored_maximize. */
+  gboolean maximize_pending;
 };
 
 G_DEFINE_FINAL_TYPE (LyWindow, ly_window, ADW_TYPE_APPLICATION_WINDOW)
@@ -1946,10 +1950,42 @@ on_blocker_ready (LyBlocker *blocker, gpointer data)
 
 /* -------------------------------------------------------------- geometry */
 
+/* Whether the window is under a compositor that lays windows out itself —
+ * niri, Sway and the rest. There, the size is the compositor's arithmetic
+ * rather than anything the user chose, and asking to be maximised takes the
+ * whole output away from the layout they arranged.
+ *
+ * Two things give it away: a tiling compositor offers no minimise, and when
+ * it does tell clients they are tiled it says so in the toplevel state. */
+static gboolean
+compositor_tiles_windows (GtkWindow *window)
+{
+  GdkSurface *surface = gtk_native_get_surface (GTK_NATIVE (window));
+  if (!GDK_IS_TOPLEVEL (surface))
+    return FALSE;
+
+  if ((gdk_toplevel_get_state (GDK_TOPLEVEL (surface)) & GDK_TOPLEVEL_STATE_TILED) != 0)
+    return TRUE;
+
+#if GTK_CHECK_VERSION (4, 20, 0)
+  return (gdk_toplevel_get_capabilities (GDK_TOPLEVEL (surface))
+          & GDK_TOPLEVEL_CAPABILITIES_MINIMIZE) == 0;
+#else
+  return FALSE;
+#endif
+}
+
 void
 ly_window_save_geometry (LyWindow *self)
 {
   GtkWindow *window = GTK_WINDOW (self);
+
+  /* Under a tiling compositor none of this is the user's to remember: the
+   * size is the one the layout handed out, and "maximised" is a state of the
+   * column rather than a preference. Leave the numbers from the last session
+   * that did get to choose them alone. */
+  if (compositor_tiles_windows (window))
+    return;
 
   /* GTK keeps default-width/height at the size the window had when it was
    * last neither maximised nor fullscreen, which is exactly the size to come
@@ -1963,6 +1999,60 @@ ly_window_save_geometry (LyWindow *self)
   self->cfg->window_maximized = gtk_window_is_maximized (window);
 
   ly_config_queue_save (self->cfg);
+}
+
+/* The config's maximise is applied before the window is mapped, because that
+ * is the only way to come up maximised without a frame at the wrong size. A
+ * Wayland compositor does not say what it is until its first configure, which
+ * comes after that — so the decision is taken back here instead, before the
+ * first frame is drawn. Runs once: a maximise the user asks for later is
+ * theirs to keep. */
+static void
+settle_restored_maximize (LyWindow *self)
+{
+  if (!self->maximize_pending)
+    return;
+  self->maximize_pending = FALSE;
+
+  if (!compositor_tiles_windows (GTK_WINDOW (self)))
+    return;
+
+  gtk_window_unmaximize (GTK_WINDOW (self));
+
+  /* Forget it too, so the next start under this compositor does not ask
+   * again and there is nothing to take back. */
+  self->cfg->window_maximized = FALSE;
+  ly_config_queue_save (self->cfg);
+}
+
+static void
+on_capabilities_changed (GdkToplevel *toplevel, GParamSpec *pspec, gpointer data)
+{
+  settle_restored_maximize (LY_WINDOW (data));
+}
+
+static void
+on_window_realize (GtkWidget *widget, gpointer data)
+{
+  LyWindow   *self    = LY_WINDOW (data);
+  GdkSurface *surface = gtk_native_get_surface (GTK_NATIVE (widget));
+
+  if (!GDK_IS_TOPLEVEL (surface))
+    return;
+
+  g_signal_connect_object (surface, "notify::capabilities",
+                           G_CALLBACK (on_capabilities_changed), self, 0);
+
+#if GTK_CHECK_VERSION (4, 20, 0)
+  /* X11 knows what the window manager can do as soon as the window exists;
+   * Wayland reports a placeholder until the compositor answers. Settle now
+   * only when the answer is already in, and wait for the notify otherwise. */
+  if ((gdk_toplevel_get_capabilities (GDK_TOPLEVEL (surface))
+       & GDK_TOPLEVEL_CAPABILITIES_MINIMIZE) != 0)
+    settle_restored_maximize (self);
+#else
+  settle_restored_maximize (self);
+#endif
 }
 
 static void
@@ -2201,8 +2291,12 @@ window_create (LyApp *app, WebKitNetworkSession *session)
   g_signal_connect (self, "notify::maximized",      G_CALLBACK (on_geometry_changed), self);
   g_signal_connect (self, "close-request",          G_CALLBACK (on_close_request), self);
 
-  if (self->cfg->window_maximized)
+  g_signal_connect (self, "realize", G_CALLBACK (on_window_realize), self);
+
+  if (self->cfg->window_maximized) {
     gtk_window_maximize (GTK_WINDOW (self));
+    self->maximize_pending = TRUE;
+  }
 
   ly_window_refresh (self);
   return self;

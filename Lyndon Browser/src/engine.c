@@ -29,31 +29,55 @@ ly_engine_is_dark (void)
 
 /* ------------------------------------------------- internal lyndon: pages */
 
+/* The start page is the one lyndon: resource not served verbatim. Which of its
+ * three layouts and which artwork it draws is decided here, by rewriting the
+ * body tag, rather than in JavaScript after load: a blank start page should
+ * paint nothing, not paint itself and then take itself away again. */
 static void
-serve_resource (WebKitURISchemeRequest *request, const char *resource, const char *mime)
+serve_start_page (WebKitURISchemeRequest *request, LyConfig *cfg)
 {
   g_autoptr (GError) error = NULL;
   g_autoptr (GBytes) bytes =
-    g_resources_lookup_data (resource, G_RESOURCE_LOOKUP_FLAGS_NONE, &error);
+    g_resources_lookup_data ("/org/lyndon/Browser/web/start.html",
+                             G_RESOURCE_LOOKUP_FLAGS_NONE, &error);
 
   if (bytes == NULL) {
     webkit_uri_scheme_request_finish_error (request, error);
     return;
   }
 
-  g_autoptr (GInputStream) stream = g_memory_input_stream_new_from_bytes (bytes);
-  webkit_uri_scheme_request_finish (request, stream,
-                                    (gint64) g_bytes_get_size (bytes), mime);
+  gsize size = 0;
+  const char *html = g_bytes_get_data (bytes, &size);
+  GString *page = g_string_new_len (html, (gssize) size);
+
+  g_autofree char *body = g_strdup_printf ("<body data-start=\"%s\" data-art=\"%s\">",
+                                           ly_start_page_id (cfg->start_page),
+                                           ly_start_art_id (cfg->start_art));
+  g_string_replace (page, "<body data-start=\"full\" data-art=\"none\">", body, 1);
+
+  gsize length = page->len;
+  g_autoptr (GInputStream) stream =
+    g_memory_input_stream_new_from_data (g_string_free (page, FALSE),
+                                         (gssize) length, g_free);
+  webkit_uri_scheme_request_finish (request, stream, (gint64) length, "text/html");
 }
 
 static void
 on_lyndon_scheme (WebKitURISchemeRequest *request, gpointer user_data)
 {
-  const char *path = webkit_uri_scheme_request_get_path (request);
+  LyEngine   *engine = user_data;
+  const char *path   = webkit_uri_scheme_request_get_path (request);
+
+  /* A URI that reaches us through GFile — a command-line argument, say — has
+   * been normalised to lyndon:///start on the way, so it arrives with slashes
+   * on the front that lyndon:start does not have. win32/tab.c has always
+   * skipped them; without this, `lyndon lyndon:start` opens an error page. */
+  while (path != NULL && *path == '/')
+    path++;
 
   if (path == NULL || *path == '\0' || g_strcmp0 (path, "start") == 0 ||
       g_strcmp0 (path, "newtab") == 0 || g_strcmp0 (path, "home") == 0) {
-    serve_resource (request, "/org/lyndon/Browser/web/start.html", "text/html");
+    serve_start_page (request, engine->cfg);
     return;
   }
 

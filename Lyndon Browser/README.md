@@ -41,6 +41,19 @@ your compositor blurs behind windows you get blur for free; if it does not, it
 degrades to a clean tint rather than to something broken. Web content is never
 translucent.
 
+**The start page can be turned down to nothing.** Three settings: `Full` is the
+wordmark, the tagline and a summary of what your settings are actually doing;
+`Minimal` is the word Lyndon and nothing else; `Blank` is nothing at all. Under
+any of them sits an optional artwork — *Aurora*, *Meridian*, *Dune*, *Lattice*,
+*Ember* or *Monolith* — and the two settings are independent, so `Blank` with
+an artwork chosen is a wallpaper and `Blank` without one is an empty page in
+the theme colour. Every artwork is CSS: gradients, and in Meridian's case the
+app glyph the page already carries, drawn very large and very faint. There is
+no bitmap in the binary, nothing to decode on load and nothing held resident
+once it has painted. Which one you get is substituted into the page when the
+request is served rather than scripted in afterwards, so a blank start page
+paints nothing instead of painting itself and then taking itself away again.
+
 **Passwords live in your keyring, not in a file Lyndon invented.** Logins are
 stored through the Secret Service API via libsecret — GNOME Keyring, KWallet,
 KeePassXC, whatever your desktop already runs, and Windows Credential Manager
@@ -156,9 +169,12 @@ start. It is meant to be hand-editable.
 
 ```ini
 [appearance]
-color-scheme = system        ; system | light | dark
-effects      = full          ; full | reduced | off
-opacity      = 0.82          ; chrome alpha at the "full" level
+color-scheme  = system       ; system | light | dark
+effects       = full         ; full | reduced | off
+opacity       = 0.82         ; chrome alpha at the "full" level
+start-page    = full         ; full | minimal | blank
+start-artwork = none         ; none | aurora | meridian | dune |
+                             ; lattice | ember | monolith
 
 [web]
 force-dark   = smart         ; off | smart | always

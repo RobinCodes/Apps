@@ -266,6 +266,33 @@ build_appearance (Prefs *prefs)
             "Only applies at the Full effect level.",
             0.35, 1.0, 0.01, &prefs->cfg->ui_opacity, NULL);
 
+  AdwPreferencesGroup *start = add_group (page, "Start page",
+    "What the built-in page draws. It applies wherever lyndon:start is open — "
+    "by default that is both the home page and every new tab.");
+  static const char *const START[] = {
+    "Full — wordmark, tagline and a summary of your settings",
+    "Minimal — the word Lyndon, nothing else",
+    "Blank — no content at all",
+    NULL
+  };
+  enum_row (prefs, start, "Content", NULL, START, (int *) &prefs->cfg->start_page);
+
+  static const char *const ART[] = {
+    "None — flat, in the theme colour",
+    "Aurora — cool light spilling from the corners",
+    "Meridian — the Lyndon globe, drawn very large and very faint",
+    "Dune — warm ridges banked along the bottom edge",
+    "Lattice — a fine grid fading out at the edges",
+    "Ember — a low warm glow under a deep field",
+    "Monolith — one soft disc above a horizon",
+    NULL
+  };
+  G_STATIC_ASSERT (G_N_ELEMENTS (ART) == LY_ART_N + 1);
+  enum_row (prefs, start, "Artwork",
+            "Each one is drawn from gradients rather than an image: nothing to "
+            "download, nothing to decode, nothing held in memory.",
+            ART, (int *) &prefs->cfg->start_art);
+
   AdwPreferencesGroup *layout = add_group (page, "Layout", NULL);
   bool_row (prefs, layout, "Compact toolbar",
             "Shorter header, more room for the page.", &prefs->cfg->compact_chrome);

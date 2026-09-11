@@ -15,6 +15,28 @@
     --accent:  #4d6bfe;
     --shadow:  0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
   }
+
+  /* Artwork palette. Every background below is built from these, and only
+     these are redeclared for dark, so a new artwork inherits both themes. */
+  :root {
+    --art-line:     rgba(22,22,26,.075);
+    --aurora-a:     rgba(150,110,240,.20);
+    --aurora-b:     rgba(77,107,254,.20);
+    --aurora-c:     rgba(20,180,165,.15);
+    --meridian-ink: rgba(22,22,26,.16);
+    --meridian-lit: rgba(77,107,254,.09);
+    --dune-sky:     rgba(120,150,255,.10);
+    --dune-a:       rgba(214,150,120,.26);   /* back ridge, deepest  */
+    --dune-b:       rgba(238,178,120,.28);   /* middle              */
+    --dune-c:       rgba(252,220,170,.34);   /* nearest, palest     */
+    --lattice-lit:  rgba(77,107,254,.10);
+    --ember-a:      rgba(238,124,64,.24);
+    --ember-b:      rgba(250,196,110,.20);
+    --ember-veil:   rgba(40,28,54,.07);
+    --mono-disc:    rgba(77,107,254,.13);
+    --mono-veil:    rgba(22,22,26,.05);
+  }
+
   @media (prefers-color-scheme: dark) {
     :root {
       --bg:     #111114;
@@ -24,6 +46,24 @@
       --card:   rgba(255,255,255,.045);
       --accent: #8ea2ff;
       --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.35);
+
+      /* Unlit surroundings take more colour before they read as tinted. */
+      --art-line:     rgba(236,238,244,.07);
+      --aurora-a:     rgba(164,120,255,.30);
+      --aurora-b:     rgba(96,126,255,.30);
+      --aurora-c:     rgba(30,206,186,.22);
+      --meridian-ink: rgba(236,238,244,.14);
+      --meridian-lit: rgba(120,146,255,.11);
+      --dune-sky:     rgba(96,120,220,.13);
+      --dune-a:       rgba(150,70,60,.32);
+      --dune-b:       rgba(206,110,55,.30);
+      --dune-c:       rgba(238,170,95,.26);
+      --lattice-lit:  rgba(110,136,255,.12);
+      --ember-a:      rgba(226,96,44,.32);
+      --ember-b:      rgba(244,170,74,.22);
+      --ember-veil:   rgba(10,8,18,.45);
+      --mono-disc:    rgba(126,150,255,.16);
+      --mono-veil:    rgba(0,0,0,.28);
     }
   }
 
@@ -40,8 +80,10 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* A single very soft light source, positioned off-centre. */
-  body::before {
+  /* A single very soft light source, positioned off-centre. This is the
+     no-artwork background; anything else replaces it outright rather than
+     layering on top, so the chosen artwork is the only light in the room. */
+  body[data-art="none"]::before {
     content: "";
     position: fixed;
     inset: -30%;
@@ -50,7 +92,104 @@
     pointer-events: none;
   }
 
-  main { position: relative; width: min(640px, 88vw); text-align: center; }
+  /* ------------------------------------------------------------ artwork */
+
+  .art {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .art-mark {
+    display: none;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 132vmin;
+    height: 132vmin;
+    transform: translate(-50%, -50%);
+    color: var(--meridian-ink);
+  }
+  /* Screen-space stroke width. The glyph's viewBox is 24 units wide and it is
+     drawn wider than the window, so its own 1.5-unit stroke would scale up
+     into a slab; non-scaling-stroke pins it to one device pixel instead. */
+  .art-mark circle, .art-mark path {
+    vector-effect: non-scaling-stroke;
+    stroke-width: 1;
+  }
+
+  /* Radii are per-axis vw/vh throughout: a single vmax figure ties the artwork
+     to whichever edge happens to be longer, so the same window resized from
+     tall to wide would redraw it at a different size. */
+  body[data-art="aurora"] .art {
+    background:
+      radial-gradient(58vw 60vh at 14%   2%, var(--aurora-a), transparent 68%),
+      radial-gradient(62vw 62vh at 88%  12%, var(--aurora-b), transparent 70%),
+      radial-gradient(90vw 55vh at 50% 108%, var(--aurora-c), transparent 72%);
+  }
+
+  body[data-art="meridian"] .art {
+    background: radial-gradient(66% 58% at 50% 44%, var(--meridian-lit), transparent 72%);
+  }
+  body[data-art="meridian"] .art-mark { display: block; }
+
+  /* Three ridges. Each is an ellipse centred below the floor, held at full
+     strength out to about half its radius and then faded over a tenth of it,
+     which is what puts a crest on the arc instead of a smooth wash. Crest
+     height is centre minus radius times the middle of that fade, so these sit
+     at roughly 55%, 70% and 82% down the window; the horizontal offsets stop
+     them being concentric. Nearest ridge is listed first, because the first
+     background layer is the one on top. */
+  body[data-art="dune"] .art {
+    background:
+      radial-gradient(100vw  60vh at 76% 116%, var(--dune-c) 0 50%, transparent 62%),
+      radial-gradient(130vw  92vh at 24% 124%, var(--dune-b) 0 54%, transparent 64%),
+      radial-gradient(165vw 128vh at 56% 134%, var(--dune-a) 0 56%, transparent 67%),
+      linear-gradient(180deg, var(--dune-sky), transparent 48%);
+  }
+
+  /* The wash goes on the layer itself and the grid in a pseudo-element above
+     it, so the fade at the edges takes the lines without taking the colour. */
+  body[data-art="lattice"] .art {
+    background: radial-gradient(76vw 62vh at 50% 2%, var(--lattice-lit), transparent 70%);
+  }
+  body[data-art="lattice"] .art::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--art-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--art-line) 1px, transparent 1px);
+    background-size: 46px 46px;
+    -webkit-mask-image: radial-gradient(64% 58% at 50% 46%, #000 18%, transparent 78%);
+            mask-image: radial-gradient(64% 58% at 50% 46%, #000 18%, transparent 78%);
+  }
+
+  body[data-art="ember"] .art {
+    background:
+      radial-gradient(130vw 78vh at 50% 124%, var(--ember-a), transparent 72%),
+      radial-gradient( 72vw 44vh at 50% 111%, var(--ember-b), transparent 66%),
+      linear-gradient(180deg, var(--ember-veil), transparent 46%);
+  }
+
+  body[data-art="monolith"] .art {
+    background:
+      radial-gradient(circle 29vmin at 62% 36%, var(--mono-disc) 0 76%, transparent 100%),
+      linear-gradient(180deg, transparent 40%, var(--mono-veil));
+  }
+  body[data-art="monolith"] .art::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 64%;
+    height: 1px;
+    background: var(--art-line);
+  }
+
+  main { position: relative; z-index: 1; width: min(640px, 88vw); text-align: center; }
 
   .mark {
     display: inline-flex; align-items: center; gap: .6rem;
@@ -97,13 +236,37 @@
     background: var(--card);
   }
 
+  /* -------------------------------------------------------------- layout */
+
+  /* Blank keeps the artwork and drops everything else, which is what makes
+     an artwork plus Blank a wallpaper rather than an empty page. */
+  body[data-start="blank"] main { display: none; }
+
+  body[data-start="minimal"] .mark svg,
+  body[data-start="minimal"] .tagline,
+  body[data-start="minimal"] .stats,
+  body[data-start="minimal"] .hint { display: none; }
+  body[data-start="minimal"] .mark {
+    margin: 0;
+    font-size: 2.4rem;
+    letter-spacing: -.035em;
+  }
+
   @media (prefers-reduced-motion: no-preference) {
     main { animation: rise .45s cubic-bezier(.2,.7,.3,1) both; }
     @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
   }
 </style>
 </head>
-<body>
+<body data-start="full" data-art="none">
+<div class="art" aria-hidden="true">
+  <svg class="art-mark" viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="9.25" stroke="currentColor" stroke-width="1.5"/>
+    <path d="M12 2.75c-3 3.4-3 15.1 0 18.5M12 2.75c3 3.4 3 15.1 0 18.5"
+          stroke="currentColor" stroke-width="1.3" opacity=".55"/>
+    <path d="M3.2 9h17.6M3.2 15h17.6" stroke="currentColor" stroke-width="1.3" opacity=".55"/>
+  </svg>
+</div>
 <main>
   <div class="mark">
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">

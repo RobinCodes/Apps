@@ -76,6 +76,28 @@ typedef enum {
   LY_FX_OFF,        /* opaque, flat, no transitions */
 } LyEffects;
 
+/* What the built-in start page draws. The artwork below is orthogonal to this:
+ * BLANK with an artwork chosen is a wallpaper and nothing else. */
+typedef enum {
+  LY_START_FULL = 0,   /* wordmark, tagline, settings summary, keyboard hint */
+  LY_START_MINIMAL,    /* the word "Lyndon", nothing else                    */
+  LY_START_BLANK,      /* no content at all                                  */
+} LyStartPage;
+
+/* Built-in start-page backgrounds. Every one is drawn from CSS gradients, or
+ * from the app glyph the page already carries, so the whole set adds no
+ * bitmap to the binary and nothing to decode at load. */
+typedef enum {
+  LY_ART_NONE = 0,
+  LY_ART_AURORA,
+  LY_ART_MERIDIAN,
+  LY_ART_DUNE,
+  LY_ART_LATTICE,
+  LY_ART_EMBER,
+  LY_ART_MONOLITH,
+  LY_ART_N,
+} LyStartArt;
+
 typedef enum {
   LY_PERM_GEOLOCATION = 0,
   LY_PERM_CAMERA,
@@ -106,6 +128,8 @@ const char *ly_perm_label  (LyPermKind kind);
 const char *ly_cat_id      (LyBlockCat cat);
 const char *ly_cat_label   (LyBlockCat cat);
 const char *ly_cat_summary (LyBlockCat cat);
+const char *ly_start_page_id (LyStartPage page);
+const char *ly_start_art_id  (LyStartArt art);
 
 /* ----------------------------------------------------------------- config */
 
@@ -176,6 +200,8 @@ struct _LyConfig {
   gboolean  show_home_button;
   gboolean  per_site_zoom;
   char     *homepage;
+  LyStartPage start_page;          /* what lyndon:start draws            */
+  LyStartArt  start_art;           /* and what it draws it on            */
   /* Shape of the last window to be closed, so the next one comes back the
    * same size instead of the built-in default. */
   int       window_width;

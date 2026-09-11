@@ -43,6 +43,7 @@ struct _LyTab {
   guint     find_matches;
   gboolean  private_mode;
   gboolean  zoom_restored;
+  int       start_style;     /* start-page layout+artwork this tab rendered */
   char     *selection;   /* cached page selection, for the context menu */
 
   LyTabDelegate delegate;
@@ -63,6 +64,14 @@ notify_changed (LyTab *tab)
 }
 
 /* ------------------------------------------------------------ start page */
+
+/* A single value standing for "which start page is on screen", so a config
+ * change can be told apart from a plain revisit without re-rendering. */
+static int
+start_page_style (LyConfig *cfg)
+{
+  return (int) cfg->start_page * LY_ART_N + (int) cfg->start_art;
+}
 
 static void
 inject_start_page_stats (LyTab *tab)
@@ -1017,8 +1026,12 @@ on_load_changed (WebKitWebView *view, WebKitLoadEvent event, gpointer data)
     }
   } else if (event == WEBKIT_LOAD_FINISHED) {
     const char *uri = webkit_web_view_get_uri (view);
-    if (uri != NULL && g_str_has_prefix (uri, "lyndon:"))
-      inject_start_page_stats (tab);
+    if (uri != NULL && g_str_has_prefix (uri, "lyndon:")) {
+      tab->start_style = start_page_style (tab->cfg);
+      /* The minimal and blank layouts have nowhere to put the numbers. */
+      if (tab->cfg->start_page == LY_START_FULL)
+        inject_start_page_stats (tab);
+    }
 
     /* Private tabs leave no trace in history by construction. */
     if (!tab->private_mode && tab->cfg->remember_history && tab->store != NULL)
@@ -1239,6 +1252,7 @@ static void
 ly_tab_init (LyTab *tab)
 {
   tab->protection_on = TRUE;
+  tab->start_style   = -1;
 }
 
 /* ---------------------------------------------------------- construction */
@@ -1531,6 +1545,17 @@ ly_tab_refresh_policy (LyTab *tab)
   install_scripts (tab);
   ly_engine_style_web_view (tab->engine, tab->view);
   update_protection (tab);
+
+  /* The start page is built from configuration at request time, so a change to
+   * either start-page setting only reaches an open one on a fresh load. The
+   * comparison keeps that to the loads that would actually look different:
+   * this runs on every preference the dialog touches. */
+  const char *uri = webkit_web_view_get_uri (tab->view);
+  if (uri != NULL && g_str_has_prefix (uri, "lyndon:") &&
+      tab->start_style != -1 && tab->start_style != start_page_style (tab->cfg)) {
+    tab->start_style = start_page_style (tab->cfg);
+    webkit_web_view_reload (tab->view);
+  }
 }
 
 /* ----------------------------------------------------------------- find */

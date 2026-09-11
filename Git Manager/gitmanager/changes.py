@@ -142,13 +142,25 @@ class ChangesTab(Gtk.Box):
         self.diff = widgets.DiffView()
         self.diff.on_hunk_action = self._hunk_action
 
-        split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, position=430)
-        split.set_start_child(left)
-        split.set_end_child(self.diff)
-        split.set_resize_start_child(False)
-        split.set_resize_end_child(True)
-        split.set_shrink_start_child(False)
-        self.append(split)
+        self.split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, position=430)
+        self.split.set_start_child(left)
+        self.split.set_end_child(self.diff)
+        self.split.set_resize_start_child(False)
+        self.split.set_resize_end_child(True)
+        self.split.set_shrink_start_child(False)
+        self.append(self.split)
+
+    def set_compact(self, compact):
+        """Stack the file lists above the diff instead of beside it.
+
+        Side by side, the two panes need their widths added together; stacked,
+        only the wider of them. That is the difference between fitting in a
+        tiling column and not.
+        """
+        self.split.set_orientation(
+            Gtk.Orientation.VERTICAL if compact else Gtk.Orientation.HORIZONTAL
+        )
+        self.split.set_position(300 if compact else 430)
 
     def _build_commit_box(self):
         box = Gtk.Box(

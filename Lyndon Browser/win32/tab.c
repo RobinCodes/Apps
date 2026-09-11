@@ -129,6 +129,7 @@ static struct {
   LyEnvReadyFn ready_fn;
   gpointer     ready_data;
   char        *resources;   /* where data/web and data/rules live */
+  LyConfig    *cfg;         /* the start page is rendered from it   */
 } rt;
 
 static gboolean
@@ -192,6 +193,7 @@ ly_webview_init (const char *profile_dir, const char *resource_dir,
 {
   rt.ready_fn = ready;
   rt.ready_data = user_data;
+  rt.cfg = cfg;
   g_free (rt.resources);
   rt.resources = g_strdup (resource_dir);
 
@@ -319,7 +321,8 @@ NavDone_Invoke (ICoreWebView2NavigationCompletedEventHandler *self,
 {
   LyTab *tab = ((NavDone *) self)->data;
   tab->loading = FALSE;
-  if (tab->url && g_str_has_prefix (tab->url, LY_SCHEME ":"))
+  if (tab->url && g_str_has_prefix (tab->url, LY_SCHEME ":") &&
+      tab->cfg != NULL && tab->cfg->start_page == LY_START_FULL)
     inject_start_page_stats (tab);
   tab_changed (tab);
   return S_OK;
@@ -424,8 +427,20 @@ internal_page_response (const char *uri)
     return res;
   }
 
+  /* Which layout and artwork the start page draws is substituted into the
+   * body tag here rather than scripted in afterwards, so a blank start page
+   * paints nothing at all. The tag below is what start.html ships with, so a
+   * page that is not the start page passes through untouched. */
+  g_autoptr (GString) page = g_string_new_len (body, (gssize) length);
+  if (rt.cfg != NULL) {
+    g_autofree char *tag = g_strdup_printf ("<body data-start=\"%s\" data-art=\"%s\">",
+                                            ly_start_page_id (rt.cfg->start_page),
+                                            ly_start_art_id (rt.cfg->start_art));
+    g_string_replace (page, "<body data-start=\"full\" data-art=\"none\">", tag, 1);
+  }
+
   /* SHCreateMemStream copies, so the buffer can go out of scope. */
-  IStream *stream = SHCreateMemStream ((const BYTE *) body, (UINT) length);
+  IStream *stream = SHCreateMemStream ((const BYTE *) page->str, (UINT) page->len);
   ICoreWebView2Environment_CreateWebResourceResponse (
       rt.env, stream, 200, L"OK",
       L"Content-Type: text/html; charset=utf-8\r\n"
