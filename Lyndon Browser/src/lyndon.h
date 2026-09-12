@@ -154,6 +154,12 @@ struct _LyConfig {
   gboolean      media_autoplay;
   gboolean      smooth_scrolling;
   gboolean      page_cache;
+  /* One web process per site rather than per tab. WebKit spawns a whole
+   * WebCore and JavaScriptCore for every view otherwise, which is where a
+   * browser with a few tabs open spends most of its memory. */
+  gboolean      share_site_process;
+  int           unload_after;          /* minutes idle before a background tab
+                                        * is dropped; 0 keeps them all loaded */
   gboolean      developer_tools;
   gboolean      spell_check;
   LyHwAccel     hw_accel;

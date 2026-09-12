@@ -386,10 +386,14 @@ ly_engine_apply (LyEngine *engine)
                                                 (const char * const *) languages);
   }
 
-  /* Reduce WebKit's own caching when the user has asked for a lean profile. */
+  /* The cache model sizes a memory cache inside every web process, so its cost
+   * is multiplied by however many tabs are open. WEB_BROWSER budgets for a
+   * browser that owns the machine; DOCUMENT_BROWSER still keeps a back/forward
+   * cache and still reuses resources, at a fraction of the resident size, and
+   * on anything short of a very large machine that is the better trade. */
   webkit_web_context_set_cache_model (engine->context,
                                       engine->cfg->page_cache
-                                        ? WEBKIT_CACHE_MODEL_WEB_BROWSER
+                                        ? WEBKIT_CACHE_MODEL_DOCUMENT_BROWSER
                                         : WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
 
   for (guint i = 0; i < engine->managers->len; i++)
@@ -512,9 +516,57 @@ ly_engine_clear_data_for_host (LyEngine *engine, const char *host)
 
 /* ------------------------------------------------------------ lifecycle */
 
+/* MemTotal in MB, or 0 when it cannot be read. */
+static guint64
+system_memory_mb (void)
+{
+  g_autofree char *meminfo = NULL;
+  if (!g_file_get_contents ("/proc/meminfo", &meminfo, NULL, NULL))
+    return 0;
+
+  const char *line = strstr (meminfo, "MemTotal:");
+  if (line == NULL)
+    return 0;
+
+  guint64 kb = g_ascii_strtoull (line + strlen ("MemTotal:"), NULL, 10);
+  return kb / 1024;
+}
+
+/* The network process holds the disk and memory caches for every tab, and
+ * WebKit leaves its periodic memory check switched off until someone asks for
+ * one. This is the only memory ceiling the 6.0 API still exposes: the call
+ * that covered the web processes went with the API break, so they are kept
+ * down by sharing a process per site and unloading idle tabs instead.
+ *
+ * It has to run before the first session exists, or the network process is
+ * already up and running on the defaults. */
+static void
+apply_memory_ceiling (void)
+{
+  guint64 total = system_memory_mb ();
+
+  /* An eighth of the machine, held between 128 MB and 512 MB. Below the floor
+   * the cache stops being worth having; above the ceiling a browser cache is
+   * not what the rest of the memory is for. */
+  guint limit = total > 0 ? (guint) CLAMP (total / 8, 128, 512) : 256;
+
+  WebKitMemoryPressureSettings *pressure = webkit_memory_pressure_settings_new ();
+  webkit_memory_pressure_settings_set_memory_limit (pressure, limit);
+  webkit_memory_pressure_settings_set_conservative_threshold (pressure, 0.33);
+  webkit_memory_pressure_settings_set_strict_threshold (pressure, 0.50);
+  /* No kill threshold on purpose: one network process serves every tab in the
+   * browser, and killing it would take all of them down together. */
+  webkit_memory_pressure_settings_set_poll_interval (pressure, 20.0);
+
+  webkit_network_session_set_memory_pressure_settings (pressure);
+  webkit_memory_pressure_settings_free (pressure);
+}
+
 LyEngine *
 ly_engine_new (LyConfig *cfg)
 {
+  apply_memory_ceiling ();
+
   LyEngine *engine = g_new0 (LyEngine, 1);
   engine->cfg      = cfg;
   engine->managers = g_ptr_array_new ();

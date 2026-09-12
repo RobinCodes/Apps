@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Fathom
+GenericName=Disk scanner
+Comment=See what is taking up the disk, as a tree and as a map
+Exec=/home/robin/.local/bin/fathom %f
+Icon=fathom
+Terminal=false
+Categories=Utility;System;Filesystem;
+Keywords=disk;space;usage;size;storage;treemap;cleanup;full;
+StartupNotify=true
+StartupWMClass=com.robin.Fathom

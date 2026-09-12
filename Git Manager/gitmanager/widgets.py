@@ -236,7 +236,11 @@ def prompt(parent, heading, body, action_label, callback, placeholder="", text="
     # grabbing focus on an entry also selects its contents, that reselected
     # the text between every keystroke and ate what had just been typed.
     def focus_entry():
-        entry.grab_focus()
+        # And not at all if the dialog has gone in the meantime: focusing a
+        # widget that is no longer in a window logs a GTK critical and
+        # focuses nothing.
+        if entry.get_root() is not None:
+            entry.grab_focus()
         return GLib.SOURCE_REMOVE
 
     GLib.idle_add(focus_entry)
@@ -396,6 +400,9 @@ CSS = """
   border-bottom: 1px solid alpha(currentColor, 0.12);
 }
 .small-button { padding: 1px 8px; font-size: 0.85em; min-height: 0; }
+/* Adwaita gives stack switcher buttons a 100px floor each, which four tabs
+ * turn into a wider minimum than the whole window should have. */
+.tab-switcher > button { min-width: 0; padding-left: 12px; padding-right: 12px; }
 .monospace { font-family: monospace; }
 .repo-row-path { font-size: 0.82em; }
 .file-status {

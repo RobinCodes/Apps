@@ -1,10 +1,11 @@
 # Apps
 
-Four desktop applications, written for Linux and now also running on Windows.
+Five desktop applications, written for Linux and now also running on Windows.
 
 | | What it is | Windows |
 |---|---|---|
 | [Claude Desk](Claude%20Program/) | A native front end for the Claude Code CLI | GTK4 via MSYS2 |
+| [Fathom](Fathom/) | A disk scanner: what is taking up the space, as a tree and as a map | GTK4 via MSYS2 |
 | [Git Manager](Git%20Manager/) | Every git repository on the machine, and the GitHub account behind them | GTK4 via MSYS2 |
 | [LaRenderer](LaRenderer/) | A LaTeX editor with the compiled pages beside the text | GTK4 via MSYS2 |
 | [Lyndon Browser](Lyndon%20Browser/) | A small, fast, private browser | Win32 + WebView2 |
@@ -13,7 +14,7 @@ Each folder has its own README; this one only covers what is common.
 
 ## On Windows
 
-The three Python apps are GTK4 and libadwaita, and the only GTK4 that exists
+The four Python apps are GTK4 and libadwaita, and the only GTK4 that exists
 for Windows comes from MSYS2 — PyGObject publishes no Windows wheels, so
 `pip install pygobject` cannot work. Install
 [MSYS2](https://www.msys2.org/), then in an **MSYS2 MINGW64** shell:
@@ -73,8 +74,9 @@ edits; what did not move was everything around it:
   unless told not to — `git status` every fifteen seconds is a black rectangle
   blinking over the window forever.
 
-The first three apps answer all of that in one `winenv.py` each, so no other
-module knows which operating system it is on.
+The Python apps answer all of that in one `winenv.py` each, so no other module
+knows which operating system it is on. Fathom shells out to nothing, so its
+copy is the short one: where files go, and what counts as a drive.
 
 ## On Linux
 
@@ -83,6 +85,38 @@ files and XFCE panel entries, and `Lyndon Browser/Makefile` still builds
 against GTK4 and WebKitGTK. The one shared file that both platforms compile,
 `Lyndon Browser/src/lyndon.h`, selects its toolkit on `_WIN32` and is
 otherwise the same header it was.
+
+## Tests
+
+Each app has its own suite and each can be run on its own; `run-tests.py`
+runs all five and is the quickest way to know the repository is sound.
+
+```bash
+python3 run-tests.py            # everything this machine can run
+python3 run-tests.py --list     # what it would run, and what it would skip
+```
+
+A suite that needs something the machine hasn't got — a TeX distribution for
+LaRenderer's compile half, a C compiler for Lyndon — is reported as skipped
+rather than failed, because "not installed here" and "broken" are different
+answers and only one of them is worth acting on.
+
+On Windows, run it with MSYS2's Python, which is the one that has the GTK
+bindings:
+
+```powershell
+C:\msys64\mingw64\bin\python.exe run-tests.py
+```
+
+What each suite covers:
+
+| | Checks |
+|---|---|
+| Claude Desk | The protocol — slash commands, question parsing, the answer frame — the session state machine, and the widgets in a real window. `CLAUDE_DESK_LIVE=1` also drives a real child, which spends tokens. |
+| Git Manager | The porcelain parsers against throwaway repositories built for the purpose: status, renames, conflicts, log, branches, stashes, diffs. Then paths, settings and the ignore rules. No network. |
+| LaRenderer | The engine-log parser against captured text, which needs nothing installed, and a real compile where there is an engine to do it. |
+| Fathom | A small filesystem built for the purpose — hardlink, symlink loop, unreadable folder, empty folder — and the totals that come back off it, checked against `du` where there is a `du`. Then the treemap as geometry, and a real window that deletes real files in its own scratch directory. |
+| Lyndon Browser | The filter-list compiler on Linux, the request matcher on Windows, and on both the shared URL handling — address-or-search, first-party grouping, and the JavaScript escaping the password manager fills through. |
 
 ## Licence
 

@@ -127,16 +127,16 @@ class ChangesTab(Gtk.Box):
             self._on_select, "+", "Stage this file",
         )
 
-        lists = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, position=240)
-        lists.set_start_child(self.staged_list)
-        lists.set_end_child(self.unstaged_list)
-        lists.set_resize_start_child(True)
-        lists.set_resize_end_child(True)
-        lists.set_shrink_start_child(False)
-        lists.set_shrink_end_child(False)
+        self.lists = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, position=240)
+        self.lists.set_start_child(self.staged_list)
+        self.lists.set_end_child(self.unstaged_list)
+        self.lists.set_resize_start_child(True)
+        self.lists.set_resize_end_child(True)
+        self.lists.set_shrink_start_child(False)
+        self.lists.set_shrink_end_child(False)
 
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        left.append(lists)
+        left.append(self.lists)
         left.append(self._build_commit_box())
 
         self.diff = widgets.DiffView()
@@ -160,7 +160,11 @@ class ChangesTab(Gtk.Box):
         self.split.set_orientation(
             Gtk.Orientation.VERTICAL if compact else Gtk.Orientation.HORIZONTAL
         )
-        self.split.set_position(300 if compact else 430)
+        # Stacked, the lists and the diff share the height rather than each
+        # having all of it, so the staged half gives up most of its share —
+        # it is empty far more often than not.
+        self.split.set_position(400 if compact else 430)
+        self.lists.set_position(110 if compact else 240)
 
     def _build_commit_box(self):
         box = Gtk.Box(

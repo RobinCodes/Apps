@@ -36,6 +36,9 @@ typedef struct {
   /* NULL uses the shared persistent session; a private window passes its own
    * ephemeral one, which is what keeps its cookies and cache off disk. */
   WebKitNetworkSession *session;
+  /* A view already showing this site, whose web process the new tab should
+   * join. NULL gives the tab a process of its own. */
+  WebKitWebView *related;
 } LyTabContext;
 
 LyTab *ly_tab_new (const LyTabContext *context);
@@ -92,6 +95,22 @@ char    *ly_tab_host            (LyTab *tab);
 
 /* Re-read configuration that affects this tab (scripts, filters, zoom). */
 void ly_tab_refresh_policy (LyTab *tab);
+
+/* ------------------------------------------------------------- unloading */
+
+/* Whether this tab is the one on screen. A tab that comes to the front is
+ * reloaded if it had been unloaded while it was behind. */
+void     ly_tab_set_foreground (LyTab *tab, gboolean foreground);
+
+/* Drop the page and its web process, keeping the tab, its place on the strip
+ * and the address to come back to. TRUE if it actually unloaded. */
+gboolean ly_tab_discard        (LyTab *tab);
+
+/* Same, but only once the tab has been in the background for the configured
+ * number of minutes and nothing about it says to leave it alone. */
+gboolean ly_tab_discard_if_idle (LyTab *tab);
+
+gboolean ly_tab_is_discarded   (LyTab *tab);
 
 void ly_tab_find       (LyTab *tab, const char *text, gboolean backwards);
 void ly_tab_find_next  (LyTab *tab);

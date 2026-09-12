@@ -125,6 +125,11 @@ ly_config_new (void)
   cfg->media_autoplay   = FALSE;
   cfg->smooth_scrolling = TRUE;
   cfg->page_cache       = TRUE;
+  /* Off by default: measured on a five-same-site-tab benchmark it collapses
+   * five web processes into one without giving any memory back, and it
+   * disables tab unloading, which does. See README. */
+  cfg->share_site_process = FALSE;
+  cfg->unload_after     = 30;
   cfg->developer_tools  = TRUE;
   cfg->spell_check      = FALSE;
   cfg->hw_accel         = LY_HW_AUTO;
@@ -291,6 +296,8 @@ ly_config_load (LyConfig *cfg)
   GET_BOOL   ("web", "media-autoplay",     media_autoplay);
   GET_BOOL   ("web", "smooth-scrolling",   smooth_scrolling);
   GET_BOOL   ("web", "page-cache",         page_cache);
+  GET_BOOL   ("web", "share-site-process", share_site_process);
+  GET_INT    ("web", "unload-background-tabs-after", unload_after);
   GET_BOOL   ("web", "developer-tools",    developer_tools);
   GET_BOOL   ("web", "spell-check",        spell_check);
   GET_ENUM   ("web", "hardware-acceleration", hw_accel, HW_IDS, LyHwAccel);
@@ -350,6 +357,7 @@ ly_config_load (LyConfig *cfg)
   cfg->minimum_font_size = CLAMP (cfg->minimum_font_size, 0, 32);
   /* A hand-edited or stale file must not hand back a window too small to
    * drive, nor one larger than any plausible display. */
+  cfg->unload_after  = CLAMP (cfg->unload_after, 0, 1440);
   cfg->window_width  = CLAMP (cfg->window_width,  480, 32767);
   cfg->window_height = CLAMP (cfg->window_height, 360, 32767);
 }
@@ -379,6 +387,8 @@ ly_config_save (LyConfig *cfg)
   g_key_file_set_boolean (kf, "web", "media-autoplay",   cfg->media_autoplay);
   g_key_file_set_boolean (kf, "web", "smooth-scrolling", cfg->smooth_scrolling);
   g_key_file_set_boolean (kf, "web", "page-cache",       cfg->page_cache);
+  g_key_file_set_boolean (kf, "web", "share-site-process", cfg->share_site_process);
+  g_key_file_set_integer (kf, "web", "unload-background-tabs-after", cfg->unload_after);
   g_key_file_set_boolean (kf, "web", "developer-tools",  cfg->developer_tools);
   g_key_file_set_boolean (kf, "web", "spell-check",      cfg->spell_check);
   g_key_file_set_string  (kf, "web", "hardware-acceleration", HW_IDS[cfg->hw_accel]);

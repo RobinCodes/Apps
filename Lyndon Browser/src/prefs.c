@@ -334,6 +334,15 @@ build_web (Prefs *prefs)
   bool_row (prefs, perf, "Keep pages in memory when navigating back",
             "Faster back and forward, at the cost of resident memory.",
             &prefs->cfg->page_cache);
+  bool_row (prefs, perf, "Share one process between tabs on the same site",
+            "Fewer processes, but measurably no less memory, and it turns tab "
+            "unloading off: ending a shared process would take the tab you are "
+            "reading down with it.",
+            &prefs->cfg->share_site_process);
+  spin_row (prefs, perf, "Unload background tabs after",
+            "Minutes. The tab keeps its place and its title and loads again "
+            "when you return to it. 0 keeps every tab in memory.",
+            0, 240, 5, NULL, &prefs->cfg->unload_after);
 
   AdwPreferencesGroup *text = add_group (page, "Text", NULL);
   spin_row (prefs, text, "Default zoom", NULL, 0.3, 3.0, 0.05,

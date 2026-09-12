@@ -76,6 +76,7 @@ and the GitHub tab explains what's missing.
 | `gitmanager/widgets.py` | Diff rendering, confirmation dialogs, the stylesheet. |
 | `gitmanager/jobs.py` | Thread helpers — the only route from a worker back to the main loop. |
 | `gitmanager/config.py` | Settings, in `~/.config/git-manager/config.json`. |
+| `tests/test_gitmanager.py` | `python3 tests/test_gitmanager.py` — builds throwaway repositories in a temp directory and reads them back. No network, so nothing here fetches or pushes. |
 
 State lives in two places: settings in `~/.config/git-manager/config.json`, and
 the last scan's repository list in `~/.cache/git-manager/repos.json`. Deleting

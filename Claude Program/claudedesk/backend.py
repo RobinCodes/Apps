@@ -121,7 +121,8 @@ def run_standalone(name, cwd, on_done, timeout=60):
         try:
             finished = subprocess.run(
                 [resolve_bin() or CLAUDE_BIN, "-p", f"/{name}"],
-                cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
+                encoding="utf-8", errors="replace",
                 timeout=timeout,
                 env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "claude-desk"},
                 creationflags=winenv.NO_WINDOW,
@@ -263,7 +264,21 @@ class Backend:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                # Not text=True: that decodes in the locale's encoding, which
+                # on a Western Windows install is cp1252, and what comes back
+                # up this pipe is JSON from Node -- real UTF-8, not escapes.
+                # An em dash then reads as "â€”", and the first byte cp1252
+                # has no character for (anything Cyrillic, most CJK) raises
+                # inside the reader thread, which dies silently and takes the
+                # conversation with it. Outbound is safer than it looks --
+                # json.dumps escapes non-ASCII by default -- but naming the
+                # encoding is what makes that a choice rather than a piece of
+                # luck. errors="replace" is the belt to that brace: a damaged
+                # byte should cost one character, not the session.
+                #
+                # tests/test_claudedesk.py::test_unicode_survives_the_pipe.
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 creationflags=winenv.NO_WINDOW,
             )

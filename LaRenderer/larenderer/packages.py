@@ -186,7 +186,7 @@ def installed(sty_files: list[str]) -> dict[str, bool]:
         try:
             out = subprocess.run(
                 [kpsewhich] + unknown,
-                capture_output=True, text=True, timeout=20, errors="replace",
+                capture_output=True, encoding="utf-8", timeout=20, errors="replace",
                 creationflags=winenv.NO_WINDOW,
             ).stdout
         except (OSError, subprocess.SubprocessError):

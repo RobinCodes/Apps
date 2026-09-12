@@ -122,6 +122,8 @@ class MainWindow(Adw.ApplicationWindow):
         # still has to reach the user.
         jobs.on_unhandled = lambda exc: widgets.error_toast(self, exc, context="Background task failed")
 
+        self._install_narrow_breakpoint()
+
         self._install_actions()
         self.connect("close-request", self._on_close)
         self.connect("notify::is-active", self._on_active_changed)
@@ -136,6 +138,39 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._load_repos()
         GLib.timeout_add_seconds(max(5, self.cfg["status_poll_seconds"]), self._poll)
+
+    # ------------------------------------------------------------- layout --
+
+    def _install_narrow_breakpoint(self):
+        """Everything that has to give way for the window to be tiled narrow.
+
+        Three columns side by side — repositories, files, diff — set a floor of
+        a little over 800px, which on a tiling compositor means the window can
+        only ever have half the screen or more. Below the breakpoint the
+        sidebar becomes a page of its own and the panes inside the tabs stack,
+        so the floor is the widest single column rather than the sum.
+        """
+        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 800px"))
+        narrow.add_setter(self.split, "collapsed", True)
+        narrow.connect("apply", lambda _b: self._set_compact(True))
+        narrow.connect("unapply", lambda _b: self._set_compact(False))
+        self.add_breakpoint(narrow)
+
+    def _set_compact(self, compact):
+        # The transport buttons are the widest thing in the header; on their
+        # own row they cost height, which a tiled window has to spare, rather
+        # than width, which it does not.
+        if compact and self.transport.get_parent() is not self.transport_bar:
+            self.header.remove(self.transport)
+            self.transport_bar.append(self.transport)
+            self.transport_bar.set_visible(True)
+        elif not compact and self.transport.get_parent() is self.transport_bar:
+            self.transport_bar.remove(self.transport)
+            self.transport_bar.set_visible(False)
+            self.header.pack_start(self.transport)
+
+        self.changes.set_compact(compact)
+        self.history.set_compact(compact)
 
     # ------------------------------------------------------------ sidebar --
 
@@ -214,10 +249,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.pull_btn.connect("clicked", lambda _b: self.do_pull())
         self.push_btn = Gtk.Button(label="Push", tooltip_text="Push the current branch (Ctrl+P)")
         self.push_btn.connect("clicked", lambda _b: self.do_push())
-        transport = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0, css_classes=["linked"])
+        self.transport = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0, css_classes=["linked"])
         for b in (self.fetch_btn, self.pull_btn, self.push_btn):
-            transport.append(b)
-        self.header.pack_start(transport)
+            self.transport.append(b)
+        self.header.pack_start(self.transport)
 
         repo_menu = Gio.Menu()
         work = Gio.Menu()
@@ -257,9 +292,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack.add_titled(self.ghtab, "github", "GitHub")
         self.stack.connect("notify::visible-child", lambda *_: self.refresh_tabs())
 
-        switcher = Gtk.StackSwitcher(stack=self.stack)
-        switcher_bar = Gtk.Box(halign=Gtk.Align.CENTER, margin_top=2, margin_bottom=2)
-        switcher_bar.append(switcher)
+        switcher = Gtk.StackSwitcher(stack=self.stack, halign=Gtk.Align.CENTER,
+                                     css_classes=["tab-switcher"])
+        # Scrollable so that however narrow the window gets, the tabs slide
+        # rather than setting the floor for the window's own width. EXTERNAL
+        # keeps the scrollbar itself out of a row this shallow.
+        switcher_bar = Gtk.ScrolledWindow(margin_top=2, margin_bottom=2, child=switcher)
+        switcher_bar.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
 
         self.empty = Adw.StatusPage(
             icon_name="folder-symbolic",
@@ -271,8 +310,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.content_stack.add_named(self.stack, "repo")
         self.content_stack.set_visible_child_name("empty")
 
+        # Empty until the window is too narrow to keep Fetch/Pull/Push in the
+        # header; see _set_compact.
+        self.transport_bar = Gtk.Box(halign=Gtk.Align.CENTER, margin_top=4,
+                                     margin_bottom=2, visible=False)
+
         toolbar = Adw.ToolbarView(content=self.content_stack)
         toolbar.add_top_bar(self.header)
+        toolbar.add_top_bar(self.transport_bar)
         toolbar.add_top_bar(switcher_bar)
         return Adw.NavigationPage(title="Repository", child=toolbar)
 
@@ -465,6 +510,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.selected = row.state
         self.cfg["last_repo"] = row.state.path
         self.content_stack.set_visible_child_name("repo")
+        # Collapsed, the two halves are one page at a time, and picking a
+        # repository is the gesture that asks for the second one.
+        self.split.set_show_content(True)
         self._sync_header()
         self.refresh_selected(force=True)
 

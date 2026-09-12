@@ -99,6 +99,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.cfg = cfg
         self.manager = Manager(cfg)
         self.manager.on_changed = self._on_manager_changed
+        self.manager.on_notice = self._on_manager_notice
         self.rows = {}
         self.views = {}
         self.view_order = []
@@ -280,6 +281,9 @@ class MainWindow(Adw.ApplicationWindow):
             self._refresh_row(session)
         else:
             self._refresh_footer()
+
+    def _on_manager_notice(self, message):
+        widgets.toast(self, message, timeout=6)
 
     def _on_row_selected(self, _listbox, row):
         if self._syncing or row is None:

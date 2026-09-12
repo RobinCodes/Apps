@@ -466,10 +466,10 @@ class Session:
             self._send_next_queued()
 
         elif kind == "rate_limit":
-            info = data.get("info") or {}
-            if info.get("status") not in ("allowed", None):
-                percent = int((info.get("utilization") or 0) * 100)
-                self._notify("rate_limit", percent=percent, info=info)
+            # Announced by the manager, not by this session: the numbers are the
+            # account's, and a notice must not go unheard because the child that
+            # happened to report it is not the conversation you are looking at.
+            self.manager.usage_reported(data.get("info") or {})
 
         elif kind == "notice":
             self._append({"role": "notice", "text": data.get("message", "")})
@@ -564,6 +564,115 @@ class Session:
             self._notify("delta", text="", kind=self.live_delta_kind)
 
 
+# Rate-limit headers ride along with every turn, so a child re-states your usage
+# every few seconds — a toast per reading says the same sentence over and over.
+# Announce a window only when it crosses into a new band: the weekly one stays
+# quiet until it is worth planning around, the five-hour one counts from the
+# start because it refills several times a day.
+#
+#                              label           step  floor
+RATE_LIMIT_BANDS = {
+    "seven_day": ("Weekly usage", 5, 70),
+    "seven_day_overage_included": ("Weekly usage", 5, 70),
+    "five_hour": ("5-hour usage", 10, 10),
+}
+
+# `rateLimitType` names a finer set of windows than is worth tracking: the
+# per-model weekly buckets all answer the same question, how much of the week
+# is left.
+RATE_LIMIT_WINDOWS = {
+    "five_hour": "five_hour",
+    "seven_day": "seven_day",
+    "seven_day_opus": "seven_day",
+    "seven_day_sonnet": "seven_day",
+    "seven_day_overage_included": "seven_day_overage_included",
+    "overage": "seven_day_overage_included",
+}
+
+
+def rate_limit_readings(info):
+    """(window, percent, resets_at) for every window one event reports.
+
+    A current child carries them all under `unifiedWindows`; an older one
+    carries a single utilization and the name of the window it belongs to.
+    Both scales are fractions, not percentages.
+    """
+    windows = info.get("unifiedWindows") or {}
+    readings = []
+    for window in RATE_LIMIT_BANDS:
+        data = windows.get(window) or {}
+        utilization = data.get("utilization")
+        if utilization is not None:
+            readings.append((window, utilization * 100, data.get("resetsAt")))
+    # Both weekly windows measure the same week, one of them with the overage
+    # pool folded in; reporting each would say it twice.
+    if any(window == "seven_day" for window, _, _ in readings):
+        readings = [item for item in readings if item[0] != "seven_day_overage_included"]
+    if readings:
+        return readings
+
+    window = RATE_LIMIT_WINDOWS.get(info.get("rateLimitType") or "")
+    utilization = info.get("utilization")
+    if window is None or utilization is None:
+        return []
+    return [(window, utilization * 100, info.get("resetsAt"))]
+
+
+class RateLimitWatch:
+    """Which usage readings are worth interrupting you for.
+
+    A limit belongs to the account, not to one conversation: every live child
+    reports the same numbers, so the bookkeeping lives here. Kept per session,
+    three of them would each announce the same crossing.
+    """
+
+    def __init__(self):
+        self._bands = {}    # window -> (resets_at, last band announced)
+        self._refused = {}  # window -> resets_at already announced as reached
+
+    def notices(self, info):
+        """The messages one rate-limit event earns. Usually none."""
+        messages = []
+        spoken_for = None
+        if info.get("status") == "rejected":
+            reached, spoken_for = self._reached(info)
+            if reached:
+                messages.append(reached)
+
+        for window, percent, resets_at in rate_limit_readings(info):
+            label, step, floor = RATE_LIMIT_BANDS[window]
+            seen_reset, last = self._bands.get(window, (None, None))
+            # A window that has rolled over counts again from nothing, so usage
+            # climbing back past a band you were told about is news once more.
+            if resets_at != seen_reset:
+                last = None
+            band = int(percent) // step if percent >= floor else None
+            if band is not None and (last is None or band > last):
+                # "Weekly usage at 100%" adds nothing to "Weekly limit reached".
+                if window != spoken_for:
+                    messages.append(f"{label} at {int(percent)}%")
+                last = band
+            self._bands[window] = (resets_at, last)
+        return messages
+
+    def _reached(self, info):
+        """A limit actually hit is worth saying however quiet the bands are —
+        but once per window, not once per refused turn.
+
+        Returns the message and the window it covers, so the band below it does
+        not say the same thing a second time.
+        """
+        window = RATE_LIMIT_WINDOWS.get(info.get("rateLimitType") or "")
+        resets_at = info.get("resetsAt")
+        if window in self._refused and self._refused[window] == resets_at:
+            return None, window
+        self._refused[window] = resets_at
+        label = RATE_LIMIT_BANDS[window][0].split()[0] if window else "Usage"
+        when = (" — resets " + time.strftime("%a %H:%M", time.localtime(resets_at))
+                if resets_at else "")
+        return f"{label} limit reached{when}", window
+
+
 class Manager:
     """Owns every session and rations the live-process budget between them."""
 
@@ -573,7 +682,9 @@ class Manager:
         self.live = []  # sessions holding a slot, most recently used last
         self.queue = []  # (session, text) turns waiting for a slot
         self.on_changed = None
+        self.on_notice = None
         self.closing = False
+        self.rate_limits = RateLimitWatch()
         self._pumping = False
         GLib.timeout_add_seconds(60, self._sweep_idle)
 
@@ -582,6 +693,12 @@ class Manager:
     def session_changed(self, session=None):
         if self.on_changed:
             self.on_changed(session)
+
+    def usage_reported(self, info):
+        """One child's rate-limit headers, filtered down to what is worth a word."""
+        for message in self.rate_limits.notices(info):
+            if self.on_notice:
+                self.on_notice(message)
 
     def remember_commands(self, commands):
         """Keep the child's command list on disk, so the next launch can

@@ -58,6 +58,7 @@ struct _LyWindow {
 
   gboolean url_focused;
   guint    blocker_watch;
+  guint    unload_tick;
 
   /* The maximise this window was born with, still waiting to be confirmed
    * against what the compositor turns out to be. See settle_restored_maximize. */
@@ -1226,10 +1227,55 @@ tab_create_view (LyTab *opener, gpointer data)
   return view;
 }
 
+/* A tab already showing the site this one is headed for, so the new page can
+ * join its web process instead of starting a whole engine of its own.
+ *
+ * Only this window is searched. Relating across windows would tie a private
+ * window's tab to a normal window's process, and the session boundary is
+ * exactly what a private window is for. The match is only a starting hint in
+ * any case: if the page turns out to belong somewhere else, WebKit's process
+ * swap moves it on the first navigation. */
+static WebKitWebView *
+related_view_for (LyWindow *self, const char *uri)
+{
+  if (!self->cfg->share_site_process)
+    return NULL;
+
+  gboolean internal = uri == NULL || *uri == '\0' || ly_uri_is_internal (uri);
+  g_autofree char *want = internal ? NULL : ly_uri_base_domain (uri);
+  if (!internal && want == NULL)
+    return NULL;
+
+  for (int i = 0; i < adw_tab_view_get_n_pages (self->tabs); i++) {
+    LyTab *tab = tab_from_page (adw_tab_view_get_nth_page (self->tabs, i));
+    if (tab == NULL || ly_tab_is_discarded (tab))
+      continue;   /* an unloaded tab has no process to share */
+
+    const char *other = ly_tab_uri (tab);
+    if (other == NULL || *other == '\0')
+      continue;
+
+    if (internal) {
+      if (ly_uri_is_internal (other))
+        return ly_tab_web_view (tab);
+      continue;
+    }
+
+    g_autofree char *have = ly_uri_base_domain (other);
+    if (have != NULL && g_ascii_strcasecmp (have, want) == 0)
+      return ly_tab_web_view (tab);
+  }
+
+  return NULL;
+}
+
 LyTab *
 ly_window_open_tab (LyWindow *self, const char *uri, gboolean background)
 {
+  const char *target = uri != NULL && *uri != '\0' ? uri : self->cfg->homepage;
+
   LyTabContext context = tab_context (self);
+  context.related = related_view_for (self, target);
   LyTab *tab = ly_tab_new (&context);
 
   LyTabDelegate delegate = TAB_DELEGATE;
@@ -1241,6 +1287,8 @@ ly_window_open_tab (LyWindow *self, const char *uri, gboolean background)
 
   if (!background)
     adw_tab_view_set_selected_page (self->tabs, page);
+  else
+    ly_tab_set_foreground (tab, FALSE);   /* start its idle clock now */
 
   ly_tab_load (tab, uri && *uri ? uri : self->cfg->homepage);
 
@@ -1252,11 +1300,56 @@ ly_window_open_tab (LyWindow *self, const char *uri, gboolean background)
 
 /* ------------------------------------------------------------- tab view */
 
+/* Tell every tab whether it is the one on screen. A tab that has just come to
+ * the front reloads itself here if it was unloaded while it was behind. */
+static void
+sync_tab_activity (LyWindow *self)
+{
+  AdwTabPage *selected = adw_tab_view_get_selected_page (self->tabs);
+
+  for (int i = 0; i < adw_tab_view_get_n_pages (self->tabs); i++) {
+    AdwTabPage *page = adw_tab_view_get_nth_page (self->tabs, i);
+    LyTab      *tab  = tab_from_page (page);
+    if (tab != NULL)
+      ly_tab_set_foreground (tab, page == selected);
+  }
+}
+
+/* Idle tabs are checked once a minute rather than on a timer per tab: the
+ * whole point is to do less work, and a minute of slack on a timeout measured
+ * in minutes is not worth a source apiece. */
+#define UNLOAD_TICK_SECONDS 60
+
+static gboolean
+on_unload_tick (gpointer data)
+{
+  LyWindow *self = data;
+
+  if (self->cfg->unload_after <= 0)
+    return G_SOURCE_CONTINUE;   /* switched off, but keep the tick for later */
+
+  AdwTabPage *selected = adw_tab_view_get_selected_page (self->tabs);
+
+  for (int i = 0; i < adw_tab_view_get_n_pages (self->tabs); i++) {
+    AdwTabPage *page = adw_tab_view_get_nth_page (self->tabs, i);
+    if (page == selected)
+      continue;
+
+    LyTab *tab = tab_from_page (page);
+    if (tab != NULL && ly_tab_discard_if_idle (tab))
+      sync_tab_page (self, tab);
+  }
+
+  return G_SOURCE_CONTINUE;
+}
+
 static void
 on_selected_page_changed (GObject *object, GParamSpec *pspec, gpointer data)
 {
   LyWindow *self = data;
   self->url_focused = FALSE;
+
+  sync_tab_activity (self);
   sync_chrome (self);
 
   LyTab *tab = ly_window_active_tab (self);
@@ -2087,6 +2180,10 @@ ly_window_dispose (GObject *object)
     g_source_remove (self->suggest_source);
     self->suggest_source = 0;
   }
+  if (self->unload_tick != 0) {
+    g_source_remove (self->unload_tick);
+    self->unload_tick = 0;
+  }
   /* The completion popover is parented to the address bar, so it has to be
    * unparented explicitly rather than left to the container. */
   g_clear_pointer (&self->suggestions, gtk_widget_unparent);
@@ -2147,6 +2244,7 @@ window_create (LyApp *app, WebKitNetworkSession *session)
   self->tabs = ADW_TAB_VIEW (adw_tab_view_new ());
   g_signal_connect (self->tabs, "notify::selected-page",
                     G_CALLBACK (on_selected_page_changed), self);
+  self->unload_tick = g_timeout_add_seconds (UNLOAD_TICK_SECONDS, on_unload_tick, self);
   g_signal_connect (self->tabs, "notify::n-pages",
                     G_CALLBACK (on_pages_changed), self);
   g_signal_connect (self->tabs, "create-window", G_CALLBACK (on_create_window), self);

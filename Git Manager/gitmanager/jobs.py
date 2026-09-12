@@ -72,15 +72,24 @@ class Serial:
                 return
             fn, on_done, on_error = self._queue.pop(0)
 
+        # The pump has to run even when the callback raises. Without the
+        # finally, one exception in a completion handler leaves _running True
+        # with a queue behind it, and nothing submitted afterwards ever starts
+        # again -- the repository list quietly stops refreshing for the rest
+        # of the session, with no visible failure to explain it.
         def done(result):
-            if on_done:
-                on_done(result)
-            self._pump()
+            try:
+                if on_done:
+                    on_done(result)
+            finally:
+                self._pump()
 
         def failed(exc):
-            if on_error:
-                on_error(exc)
-            self._pump()
+            try:
+                if on_error:
+                    on_error(exc)
+            finally:
+                self._pump()
 
         run(fn, done, failed)
 

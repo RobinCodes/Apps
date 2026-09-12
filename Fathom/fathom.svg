@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Fathom. The thing the app makes: a treemap. Big block, then smaller and
+       smaller ones, in the same palette the real map uses, so the icon and the
+       window are recognisably one program. Pure rects and paths — no text
+       elements, so it does not depend on any font being installed, and it is
+       still readable at 16px because the largest block is over a third of it. -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262a33"/>
+      <stop offset="1" stop-color="#171a21"/>
+    </linearGradient>
+    <linearGradient id="cushion" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.26"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.30"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="6" y="9" width="116" height="112" rx="18" fill="#0b0d12" opacity="0.22"
+        transform="translate(0,3)"/>
+  <rect x="6" y="9" width="116" height="112" rx="18" fill="url(#ground)"/>
+
+  <!-- the map itself, inset inside the tile -->
+  <g>
+    <!-- violet: the one big thing, which is the answer most of the time -->
+    <rect x="15" y="18" width="54" height="52" rx="3" fill="#8b5cf6"/>
+    <!-- cyan -->
+    <rect x="73" y="18" width="40" height="30" rx="3" fill="#06b6d4"/>
+    <!-- amber -->
+    <rect x="73" y="52" width="40" height="18" rx="3" fill="#f59e0b"/>
+    <!-- emerald -->
+    <rect x="15" y="74" width="34" height="38" rx="3" fill="#10b981"/>
+    <!-- orange -->
+    <rect x="53" y="74" width="26" height="22" rx="3" fill="#f97316"/>
+    <!-- pink -->
+    <rect x="53" y="100" width="26" height="12" rx="3" fill="#ec4899"/>
+    <!-- blue -->
+    <rect x="83" y="74" width="30" height="22" rx="3" fill="#3b82f6"/>
+    <!-- the tail of small ones, which every real map has -->
+    <rect x="83" y="100" width="14" height="12" rx="2" fill="#a3e635"/>
+    <rect x="101" y="100" width="12" height="12" rx="2" fill="#94a3b8"/>
+  </g>
+
+  <!-- one cushion over the whole map, so it reads as lit from the top left
+       the way the rectangles in the app do -->
+  <rect x="15" y="18" width="98" height="94" rx="3" fill="url(#cushion)"/>
+</svg>

@@ -44,6 +44,14 @@ struct _LyTab {
   gboolean  private_mode;
   gboolean  zoom_restored;
   int       start_style;     /* start-page layout+artwork this tab rendered */
+
+  /* Unloading. `idle_since` is monotonic and 0 while the tab is on screen;
+   * `discarding` separates a termination we asked for from a real crash. */
+  gint64    idle_since;
+  gboolean  discarded;
+  gboolean  discarding;
+  char     *discarded_uri;
+  char     *discarded_title;
   char     *selection;   /* cached page selection, for the context menu */
 
   LyTabDelegate delegate;
@@ -1083,6 +1091,15 @@ static gboolean
 on_web_process_terminated (WebKitWebView *view, WebKitWebProcessTerminationReason reason,
                            gpointer data)
 {
+  LyTab *tab = data;
+
+  /* One we asked for. Leave the view empty rather than telling the user their
+   * page crashed: it is coming back the moment they select the tab. */
+  if (tab->discarding) {
+    tab->discarding = FALSE;
+    return TRUE;
+  }
+
   const char *why;
   switch (reason) {
     case WEBKIT_WEB_PROCESS_CRASHED:              why = "The page crashed."; break;
@@ -1234,6 +1251,8 @@ ly_tab_dispose (GObject *object)
   g_clear_pointer (&tab->seen_origin, g_free);
   g_clear_pointer (&tab->seen_username, g_free);
   g_clear_pointer (&tab->selection, g_free);
+  g_clear_pointer (&tab->discarded_uri, g_free);
+  g_clear_pointer (&tab->discarded_title, g_free);
   g_clear_pointer (&tab->host, g_free);
   g_clear_pointer (&tab->overlay, gtk_widget_unparent);
   g_clear_object (&tab->ucm);
@@ -1376,13 +1395,33 @@ ly_tab_new (const LyTabContext *context)
   WebKitNetworkSession *session = context->session ?: ly_engine_session (tab->engine);
 
   tab->ucm = webkit_user_content_manager_new ();
-  tab->view = WEBKIT_WEB_VIEW (
-    g_object_new (WEBKIT_TYPE_WEB_VIEW,
-                  "web-context",          ly_engine_context (tab->engine),
-                  "network-session",      session,
-                  "user-content-manager", tab->ucm,
-                  "settings",             ly_engine_settings (tab->engine),
-                  NULL));
+
+  /* related-view puts this page in that view's web process, which is the
+   * whole of the saving: WebKit gives every unrelated view a WebCore and a
+   * JavaScriptCore of its own, and five tabs on one site paid for five.
+   *
+   * The content manager passed here survives — it is only the views WebKit
+   * builds for us in ly_tab_new_for_view that inherit the opener's — so each
+   * tab keeps its own script message handlers and its own password capture.
+   * The web context and session come from the related view by definition,
+   * which is why they are not passed as well. Should the page later navigate
+   * to another site, WebKit's process swap moves it into a process of its
+   * own, so this shares a process between same-site pages only. */
+  if (context->related != NULL)
+    tab->view = WEBKIT_WEB_VIEW (
+      g_object_new (WEBKIT_TYPE_WEB_VIEW,
+                    "related-view",         context->related,
+                    "user-content-manager", tab->ucm,
+                    "settings",             ly_engine_settings (tab->engine),
+                    NULL));
+  else
+    tab->view = WEBKIT_WEB_VIEW (
+      g_object_new (WEBKIT_TYPE_WEB_VIEW,
+                    "web-context",          ly_engine_context (tab->engine),
+                    "network-session",      session,
+                    "user-content-manager", tab->ucm,
+                    "settings",             ly_engine_settings (tab->engine),
+                    NULL));
 
   wire_view (tab);
   return tab;
@@ -1434,12 +1473,19 @@ ly_tab_load_input (LyTab *tab, const char *text)
 const char *
 ly_tab_uri (LyTab *tab)
 {
+  /* An unloaded tab has no document, but it is still a tab pointing at an
+   * address: the strip, the address bar and the session file all want it. */
+  if (tab->discarded)
+    return tab->discarded_uri;
   return webkit_web_view_get_uri (tab->view);
 }
 
 const char *
 ly_tab_title (LyTab *tab)
 {
+  if (tab->discarded && tab->discarded_title != NULL)
+    return tab->discarded_title;
+
   const char *title = webkit_web_view_get_title (tab->view);
   if (title != NULL && *title != '\0')
     return title;
@@ -1556,6 +1602,120 @@ ly_tab_refresh_policy (LyTab *tab)
     tab->start_style = start_page_style (tab->cfg);
     webkit_web_view_reload (tab->view);
   }
+}
+
+/* ------------------------------------------------------------- unloading */
+
+/* Reasons to leave a tab alone even when it has been idle long enough. */
+static gboolean
+tab_may_discard (LyTab *tab)
+{
+  if (tab->discarded || tab->discarding)
+    return FALSE;
+
+  /* Unloading and process sharing cannot both be on. Terminating a web
+   * process takes down every view using it, not just this one — measured:
+   * the terminated signal arrives on the sibling views too — so unloading one
+   * idle tab out of a shared process would blank the tab the user is looking
+   * at. Sharing wins the tie only because it is the explicit setting; the
+   * default has unloading on and sharing off, which is the pair that actually
+   * gives memory back. */
+  if (tab->cfg->share_site_process)
+    return FALSE;
+
+  /* Unloading mid-load would throw away the work already done. */
+  if (webkit_web_view_is_loading (tab->view))
+    return FALSE;
+
+  /* Audio is the one thing a background tab is legitimately still doing. */
+  if (webkit_web_view_is_playing_audio (tab->view))
+    return FALSE;
+
+  /* A prompt the user has not answered yet would vanish with the page. */
+  if (tab->pending_permission != NULL || tab->pending_origin != NULL)
+    return FALSE;
+
+  const char *uri = webkit_web_view_get_uri (tab->view);
+  if (uri == NULL || *uri == '\0')
+    return FALSE;
+
+  /* The start page and friends are served from memory in microseconds; there
+   * is nothing to reclaim and the reload would be the more visible cost. */
+  if (ly_uri_is_internal (uri))
+    return FALSE;
+
+  return TRUE;
+}
+
+gboolean
+ly_tab_is_discarded (LyTab *tab)
+{
+  return tab->discarded;
+}
+
+gboolean
+ly_tab_discard (LyTab *tab)
+{
+  if (!tab_may_discard (tab))
+    return FALSE;
+
+  /* Read both through the view rather than the accessors: the accessors are
+   * about to start answering from these very copies. */
+  g_free (tab->discarded_uri);
+  g_free (tab->discarded_title);
+  tab->discarded_uri   = g_strdup (webkit_web_view_get_uri (tab->view));
+  tab->discarded_title = g_strdup (ly_tab_title (tab));
+
+  tab->discarding = TRUE;
+  webkit_web_view_terminate_web_process (tab->view);
+  tab->discarded = TRUE;
+  tab->idle_since = 0;
+
+  notify_changed (tab);
+  return TRUE;
+}
+
+gboolean
+ly_tab_discard_if_idle (LyTab *tab)
+{
+  int minutes = tab->cfg->unload_after;
+  if (minutes <= 0 || tab->idle_since == 0)
+    return FALSE;
+
+  gint64 idle_us = g_get_monotonic_time () - tab->idle_since;
+  if (idle_us < (gint64) minutes * 60 * G_USEC_PER_SEC)
+    return FALSE;
+
+  return ly_tab_discard (tab);
+}
+
+void
+ly_tab_set_foreground (LyTab *tab, gboolean foreground)
+{
+  if (!foreground) {
+    if (tab->idle_since == 0)
+      tab->idle_since = g_get_monotonic_time ();
+    return;
+  }
+
+  tab->idle_since = 0;
+  if (!tab->discarded)
+    return;
+
+  /* Coming back to an unloaded tab: put the page back. The flag has to drop
+   * first, or the accessors would keep answering from the saved copies and
+   * the strip would never pick the live title up again. */
+  tab->discarded  = FALSE;
+  /* Defensive: if the termination never produced a signal, the flag would
+   * otherwise stay set and swallow the report of a genuine crash later. */
+  tab->discarding = FALSE;
+  g_autofree char *uri = g_steal_pointer (&tab->discarded_uri);
+  g_clear_pointer (&tab->discarded_title, g_free);
+
+  if (uri != NULL && *uri != '\0')
+    webkit_web_view_load_uri (tab->view, uri);
+
+  notify_changed (tab);
 }
 
 /* ----------------------------------------------------------------- find */

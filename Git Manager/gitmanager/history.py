@@ -7,7 +7,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Gio, GObject, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gio, GObject, Gtk, Pango  # noqa: E402
 
 from . import gitcmd, jobs, widgets  # noqa: E402
 
@@ -114,10 +114,11 @@ class HistoryTab(Gtk.Box):
         info.append(self.detail_meta)
         info.append(self.detail_body)
 
-        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_top=6)
+        # Wrapping rather than a single row: the picker and three text buttons
+        # side by side are wider than the whole window has to be.
+        actions = Adw.WrapBox(child_spacing=6, line_spacing=6, margin_top=6)
         self.file_picker = Gtk.DropDown.new_from_strings(["All files"])
         self.file_picker.connect("notify::selected", lambda *_: self._render_diff())
-        self.file_picker.set_hexpand(True)
         actions.append(self.file_picker)
         for label, handler, css in (
             ("Copy SHA", self._copy_sha, None),

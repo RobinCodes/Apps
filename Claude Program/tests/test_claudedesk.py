@@ -12,6 +12,7 @@ does spend tokens, so it is off by default.
 import os
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -104,6 +105,48 @@ def test_answer_frame():
     child.answer_question("r2", QUESTION["input"], {}, None, "Neither, actually.")
     sent = written[-1]["response"]["response"]["updatedInput"]
     assert sent["answers"] == {} and sent["response"] == "Neither, actually."
+
+
+def test_unicode_survives_the_pipe():
+    """The child is Node, and Node writes real UTF-8 rather than \\u escapes.
+
+    Decoded in the locale's encoding — cp1252 on a Western Windows install —
+    an em dash arrives as three wrong characters, and the first byte cp1252
+    has no character for raises inside the reader thread, which dies without
+    a word and takes the conversation with it. This drives a stand-in child
+    that answers exactly the way the real one does.
+
+    The stand-in's source is kept pure ASCII, so what is under test is the
+    pipe and nothing else.
+    """
+    text = "Hi — 你好 😀 Привет"
+    source = (
+        "import sys, json\n"
+        "sys.stdout.reconfigure(encoding='utf-8')\n"
+        "text = " + ascii(text) + "\n"
+        "frame = {'type': 'assistant',\n"
+        "         'message': {'content': [{'type': 'text', 'text': text}]}}\n"
+        "sys.stdout.write(json.dumps(frame, ensure_ascii=False) + '\\n')\n"
+        "sys.stdout.flush()\n"
+    )
+
+    seen = []
+
+    class StandIn(backend.Backend):
+        def _argv(self):
+            return [sys.executable, "-c", source]
+
+    child = StandIn(cwd=os.getcwd(), model="default", permission_mode="manual",
+                    on_event=seen.append)
+    child.start()
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and not any(e.kind == "exit" for e in seen):
+        time.sleep(0.02)
+    child.stop()
+
+    blocks = [e for e in seen if e.kind == "block" and e.data.get("block") == "text"]
+    assert blocks, [(e.kind, e.data) for e in seen]
+    assert blocks[0].data["text"] == text, repr(blocks[0].data["text"])
 
 
 def test_command_matching():
@@ -202,6 +245,62 @@ def test_reports_are_not_messages():
     session._on_event(Event("block", {"block": "tool_use", "id": "t", "name": "Bash", "input": {}}))
     assert [e.get("role") for e in session.entries][-3:] == ["user", "assistant", "tool"]
     assert session.entries[-3]["text"] == "/context"
+
+
+def test_usage_is_announced_in_bands():
+    """The headers repeat every turn; the toasts must not."""
+    manager, session = fresh_session()
+    heard = []
+    manager.on_notice = heard.append
+
+    def usage(five=None, week=None, five_reset=1000, week_reset=9000, **info):
+        windows = {}
+        if five is not None:
+            windows["five_hour"] = {"utilization": five, "resetsAt": five_reset}
+        if week is not None:
+            windows["seven_day"] = {"utilization": week, "resetsAt": week_reset}
+        session._on_event(Event("rate_limit", {"info": dict(
+            {"status": "allowed", "unifiedWindows": windows}, **info)}))
+
+    # The weekly window says nothing at all until it is worth knowing about.
+    for fraction in (0.05, 0.4, 0.62, 0.69):
+        usage(week=fraction)
+    assert heard == []
+
+    usage(week=0.71)
+    assert heard == ["Weekly usage at 71%"]
+    for fraction in (0.712, 0.72, 0.749):  # the same band, said once
+        usage(week=fraction)
+    usage(week=0.75)
+    usage(week=0.93)  # a jump skips the bands it passed
+    assert heard == ["Weekly usage at 71%", "Weekly usage at 75%", "Weekly usage at 93%"]
+
+    # The five-hour window counts from the start, ten at a time.
+    heard.clear()
+    for fraction in (0.04, 0.12, 0.19, 0.2, 0.27):
+        usage(five=fraction)
+    assert heard == ["5-hour usage at 12%", "5-hour usage at 20%"]
+
+    # Rolling over is a fresh window, and its bands are news again.
+    heard.clear()
+    usage(five=0.03, five_reset=2000)
+    usage(five=0.14, five_reset=2000)
+    assert heard == ["5-hour usage at 14%"]
+
+    # A limit reached is said once, and not twice over with its own 100%.
+    heard.clear()
+    for _ in range(3):
+        usage(week=1.0, status="rejected", rateLimitType="seven_day", resetsAt=9000)
+    assert len(heard) == 1 and heard[0].startswith("Weekly limit reached")
+
+    # A child too old for per-window headers still reports the one it has.
+    manager.rate_limits = manager.rate_limits.__class__()
+    heard.clear()
+    for fraction in (0.83, 0.84, 0.88):
+        session._on_event(Event("rate_limit", {"info": {
+            "status": "allowed_warning", "rateLimitType": "seven_day_opus",
+            "utilization": fraction, "resetsAt": 9000}}))
+    assert heard == ["Weekly usage at 83%", "Weekly usage at 88%"]
 
 
 def test_standalone_never_waits():
@@ -338,6 +437,7 @@ def main():
     check("slash commands are read the way the terminal reads them", test_split_command)
     check("questions are parsed, and malformed ones are not", test_questions_parsed)
     check("an answer goes back inside updatedInput", test_answer_frame)
+    check("unicode survives the pipe, both directions", test_unicode_survives_the_pipe)
     check("the menu matches on name, alias and substring", test_command_matching)
 
     print("sessions")
@@ -345,6 +445,7 @@ def main():
     check("the described command list wins over the names-only one", test_commands_remembered)
     check("report commands are never messages", test_reports_are_not_messages)
     check("a standalone report never waits for the turn", test_standalone_never_waits)
+    check("usage is announced in bands, not on every header", test_usage_is_announced_in_bands)
 
     print("widgets")
     Adw.init()

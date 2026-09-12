@@ -145,7 +145,7 @@ def scan(roots, max_depth=8, on_found=None, should_stop=None, follow_symlinks=Fa
 def save_cache(repos):
     try:
         os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-        with open(CACHE, "w") as fh:
+        with open(CACHE, "w", encoding="utf-8") as fh:
             json.dump({"when": time.time(), "repos": [r.to_json() for r in repos]}, fh)
     except OSError:
         pass
@@ -154,7 +154,7 @@ def save_cache(repos):
 def load_cache():
     """Repos from the last scan, so the window has content before the walk ends."""
     try:
-        with open(CACHE) as fh:
+        with open(CACHE, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return []

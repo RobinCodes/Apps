@@ -41,6 +41,52 @@ your compositor blurs behind windows you get blur for free; if it does not, it
 degrades to a clean tint rather than to something broken. Web content is never
 translucent.
 
+**Memory was measured, not reasoned about.** WebKit gives every web view a web
+process of its own, and a web process is a complete WebCore and
+JavaScriptCore. Read with `ps`, that looks like a per-tab tax of about 175 MB
+before a page draws anything — and it is the wrong reading. `RSS` counts every
+shared page in full against every process holding it, and five web processes
+forked from one binary share nearly all of theirs. `PSS`, which divides shared
+pages among their users and is the number that actually adds up to what the
+machine has lost, tells a different story.
+
+Five tabs on google.com, same profile, same wait, measured both ways:
+
+| | web processes | total PSS |
+|---|---|---|
+| one process per tab | 5 | 776 MB |
+| one process for all five | 1 | 812 MB |
+
+Consolidating them saves nothing. The per-tab engine was already shared. So
+*Share one process between tabs on the same site* exists in Preferences → Web
+→ Performance and is **off by default**: it collapses the process count, which
+costs a little less in descriptors and scheduling, and it gives no memory
+back. It also cannot be combined with unloading — ending a web process ends it
+for every view using it, so unloading one idle tab out of a shared process
+would blank the tab you are reading — so switching it on switches unloading
+off.
+
+What does return memory is giving a page up entirely:
+
+*Idle background tabs are unloaded.* After the configured number of minutes a
+background tab drops its page and its whole web process, keeping its place on
+the strip, its title and its address, and loads again when you come back to
+it. Tabs that are loading, playing audio, holding an unanswered prompt, or
+showing an internal page are left alone. Thirty minutes by default; 0 turns it
+off.
+
+*The resource cache is sized for a machine with other things to do.* WebKit's
+`WEB_BROWSER` cache model budgets as though the browser owns the computer, and
+it budgets that inside *every* web process. Lyndon asks for `DOCUMENT_BROWSER`
+instead: still a back/forward cache, still resource reuse, a fraction of the
+resident size.
+
+*The network process is given a memory ceiling*, an eighth of the machine held
+between 128 MB and 512 MB, with no kill threshold — one network process serves
+every tab, so killing it would take them all. WebKit leaves this check off
+until it is asked for. It is also the only ceiling WebKitGTK 6.0 still offers:
+the call that covered web processes went in the API break.
+
 **The start page can be turned down to nothing.** Three settings: `Full` is the
 wordmark, the tagline and a summary of what your settings are actually doing;
 `Minimal` is the word Lyndon and nothing else; `Blank` is nothing at all. Under
@@ -153,7 +199,7 @@ zlib and OpenSSL. NSS is optional and only enables Firefox password import.
 make deps      # verify dependencies and print versions
 make           # build
 make run       # build and launch
-make check     # unit tests for the filter compiler
+make check     # unit tests: the filter compiler, and the shared URL handling
 make LTO=1     # link-time optimised
 make DEBUG=1   # asan + ubsan
 sudo make install
@@ -181,6 +227,11 @@ force-dark   = smart         ; off | smart | always
 webgl        = false
 webrtc       = false
 hardware-acceleration = auto ; auto | always | never
+page-cache   = true          ; keep pages around for back/forward
+share-site-process = false   ; fewer processes, no less memory; turns
+                             ; unload-background-tabs-after off
+unload-background-tabs-after = 30
+                             ; minutes; 0 keeps every tab in memory
 
 [privacy]
 cookies                 = no-third-party   ; none | no-third-party | all

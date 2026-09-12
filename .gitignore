@@ -1,5 +1,5 @@
-# Python bytecode. The repository currently tracks a set of .pyc files that
-# predate this; they are regenerated on every run and will show as modified.
+# Python bytecode. Regenerated on every run, so tracking it only produces
+# a diff every time the source changes.
 __pycache__/
 *.py[cod]
 

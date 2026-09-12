@@ -180,7 +180,7 @@ class Job:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                encoding="utf-8",
                 errors="replace",
                 creationflags=winenv.NO_WINDOW,
             )
@@ -321,7 +321,13 @@ def _needs_bibtex(bdir: str, name: str, text: str) -> bool:
 # log parsing
 # --------------------------------------------------------------------------
 
-_FILE_LINE = re.compile(r"^(?:\./)?([^:\n]+?):(\d+):\s*(.*)$")
+# The leading "./" or ".\" is the engine echoing back the relative path it was
+# handed. Both separators, because the buffer is compiled as os.curdir + name,
+# so a Windows TeX Live writes ".\doc.tex" where the Unix one writes "./".
+# Left in place, the name fails to match the job's own and every error in the
+# user's document is filed against a foreign file — which is exactly what
+# stops the editor jumping to the line.
+_FILE_LINE = re.compile(r"^(?:\.[\\/])?([^:\n]+?):(\d+):\s*(.*)$")
 _BANG = re.compile(r"^!\s+(.*)$")
 _PKG_WARN = re.compile(
     r"^(?:(Package|Class|Module)\s+(\S+)\s+)?"
@@ -469,7 +475,7 @@ def pdf_info(pdf: str) -> tuple[int, tuple[float, float]]:
     try:
         out = subprocess.run(
             [PDFINFO, pdf],
-            capture_output=True, text=True, timeout=15, errors="replace",
+            capture_output=True, encoding="utf-8", timeout=15, errors="replace",
             creationflags=winenv.NO_WINDOW,
         ).stdout
     except (OSError, subprocess.SubprocessError):
@@ -522,7 +528,7 @@ def forward_search(pdf: str, tex_name: str, line: int, column: int = 1):
         try:
             out = subprocess.run(
                 [SYNCTEX, "view", "-i", f"{line}:{column}:{name}", "-o", pdf],
-                capture_output=True, text=True, timeout=15, errors="replace",
+                capture_output=True, encoding="utf-8", timeout=15, errors="replace",
                 creationflags=winenv.NO_WINDOW,
             ).stdout
         except (OSError, subprocess.SubprocessError):

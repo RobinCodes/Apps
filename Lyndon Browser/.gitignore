@@ -1,5 +1,6 @@
 build/
 lyndon
 tests/test-abp
+tests/test-util
 *.o
 *.d

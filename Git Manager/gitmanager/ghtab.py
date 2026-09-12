@@ -38,7 +38,9 @@ class GitHubTab(Gtk.Box):
         self.issues = Adw.PreferencesGroup(title="Issues", margin_top=12)
         self.runs = Adw.PreferencesGroup(title="Recent workflow runs", margin_top=12)
 
-        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, margin_bottom=10)
+        # A row rather than a wrap box would make its own width the floor for
+        # the whole tab, and three buttons with text on them is a wide floor.
+        actions = Adw.WrapBox(child_spacing=8, line_spacing=8, margin_bottom=10)
         for label, handler, css in (
             ("New pull request", self._new_pr, "suggested-action"),
             ("Open repository", self._open_repo, None),
