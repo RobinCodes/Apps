@@ -13,6 +13,10 @@ LyWindow *ly_window_new (LyApp *app);
 LyWindow *ly_window_new_private (LyApp *app);
 gboolean  ly_window_is_private  (LyWindow *self);
 
+/* Bank every tab's attention against the page it is showing. Called on the
+ * way out, while the history store is still there to bank it in. */
+void   ly_window_flush_attention (LyWindow *self);
+
 /* Append this window's tabs to a session snapshot. */
 void   ly_window_collect_session (LyWindow *self, GPtrArray *rows, int window_index);
 LyTab *ly_window_restore_tab     (LyWindow *self, const char *url, const char *title);

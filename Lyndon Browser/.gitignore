@@ -2,5 +2,6 @@ build/
 lyndon
 tests/test-abp
 tests/test-util
+tests/test-store
 *.o
 *.d

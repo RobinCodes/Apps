@@ -310,7 +310,9 @@ import_chromium_bookmarks (LyStore *store, const char *profile, GError **error)
 
 /* Both browsers store microseconds; they differ only in the epoch. Carrying
  * the real counts and dates across is what keeps imported history ranking
- * sensibly in the address bar instead of all looking equally fresh. */
+ * sensibly in the address bar instead of all looking equally fresh. The typed
+ * count comes across too: both browsers keep one, and it is the single most
+ * useful column either of them has for deciding what somebody meant. */
 static guint
 import_rows (LyStore *store, sqlite3 *db, const char *sql, gboolean chromium_epoch)
 {
@@ -327,12 +329,13 @@ import_rows (LyStore *store, sqlite3 *db, const char *sql, gboolean chromium_epo
 
     int    visits = sqlite3_column_int (stmt, 2);
     gint64 stamp  = sqlite3_column_int64 (stmt, 3);
+    int    typed  = sqlite3_column_int (stmt, 4);
     gint64 when   = stamp > 0 ? stamp / 1000000 : 0;
     if (chromium_epoch && when > 0)
       when -= CHROMIUM_EPOCH_OFFSET;
 
     ly_store_import_visit (store, (const char *) url,
-                           title ? (const char *) title : "", visits, when);
+                           title ? (const char *) title : "", visits, typed, when);
     count++;
   }
   sqlite3_finalize (stmt);
@@ -354,7 +357,7 @@ import_chromium_history (LyStore *store, const char *profile, GError **error)
   sqlite3 *db = open_copy_readonly (copy);
   if (db != NULL) {
     count = import_rows (store, db,
-      "SELECT url, title, visit_count, last_visit_time FROM urls "
+      "SELECT url, title, visit_count, last_visit_time, typed_count FROM urls "
       "WHERE url LIKE 'http%' "
       "ORDER BY visit_count DESC, last_visit_time DESC LIMIT 5000;", TRUE);
     sqlite3_close (db);
@@ -375,7 +378,7 @@ import_firefox_history (LyStore *store, const char *profile, GError **error)
   sqlite3 *db = open_copy_readonly (copy);
   if (db != NULL) {
     count = import_rows (store, db,
-      "SELECT url, title, visit_count, last_visit_date FROM moz_places "
+      "SELECT url, title, visit_count, last_visit_date, typed FROM moz_places "
       "WHERE url LIKE 'http%' AND hidden = 0 "
       "ORDER BY visit_count DESC, last_visit_date DESC LIMIT 5000;", FALSE);
     sqlite3_close (db);

@@ -122,6 +122,34 @@ grows a password field instead, and Save stays greyed out until there is
 something to save. Two-step logins that ask for the name on one screen and the
 password on the next are stitched back together without asking anything.
 
+**The address bar finishes the address, and knows which one you meant.** Type
+`driv` and the rest of `drive.google.com` appears, already selected, so Enter
+goes there and the next keystroke replaces it. It only ever extends what you
+are typing: never while you are deleting, never with the cursor anywhere but
+the end, never over a pasted address, and never once what you have typed is
+already somewhere you have been — so pressing Enter cannot land you on a page
+deeper inside a site than the one you named.
+
+Which page it offers is decided by three things. Whether you got there by
+typing the address, which is the same question the address bar is asking and
+so counts for most. How often you have been, on a log scale, because the
+hundredth visit says far less than the second. And whether you read the page
+or bounced off it.
+
+That last one is the one worth explaining, because the obvious version of it
+is wrong. Rank by time spent and an eighteen-hour video outranks the site's
+own front page; Discord, sitting on one channel all evening, buries the short
+address you actually type. So attention is capped per visit as it is recorded
+— ninety seconds, after which a page is simply "read" — and scored as an
+average rather than a total. It becomes a quality flag with a ceiling, worth a
+tenth either way, rather than a quantity one long session wins outright. The
+video and a page you read for a minute end up equally engaged, and the front
+page wins on the signals that should decide it. The clock stops when the
+window loses focus, and a page nobody chose to record earns nothing.
+
+Ranking is where arithmetic quietly stops being right, so it is
+[unit tested](tests/test-store.c) against exactly these cases.
+
 **Privacy defaults are the defaults.** Third-party cookies off, WebGL off,
 WebRTC off, autoplay off, passwords not persisted, Intelligent Tracking
 Prevention on, Global Privacy Control on, referrers trimmed to the origin, and
@@ -129,7 +157,7 @@ a fingerprinting-resistance layer that reports generic CPU and memory values,
 masks the GPU model, and adds sub-perceptual noise to canvas readback.
 
 **The rest of what a browser is expected to do**, and not much that it is not.
-History with ranked address-bar completion, bookmarks with a star and an
+History with inline address-bar completion, bookmarks with a star and an
 optional bookmarks bar, private windows on an ephemeral session, session
 restore, windows that reopen at the size they were closed,
 reopen-closed-tab, tab pinning, muting and a full tab context menu,
@@ -199,7 +227,7 @@ zlib and OpenSSL. NSS is optional and only enables Firefox password import.
 make deps      # verify dependencies and print versions
 make           # build
 make run       # build and launch
-make check     # unit tests: the filter compiler, and the shared URL handling
+make check     # unit tests: filter compiler, URL handling, address-bar ranking
 make LTO=1     # link-time optimised
 make DEBUG=1   # asan + ubsan
 sudo make install
@@ -323,7 +351,8 @@ window.c    LyWindow — chrome, tab view, address bar, shield, find bar
 tab.c       LyTab — one WebView plus its policy: permissions, navigation, errors
 engine.c    the single shared WebContext + NetworkSession; privacy user scripts
 blocker.c   rule gathering, compilation and per-tab attachment
-store.c     SQLite: history, bookmarks, per-site zoom and permissions, session
+store.c     SQLite: history, bookmarks, zoom, permissions, session; and the
+            address bar's ranking                                (unit tested)
 import.c    bookmarks, history and logins from other browsers' own stores
 passwords.c form capture and fill; storage via libsecret
 credentials.c the credential struct and the origin rule, shared with Windows

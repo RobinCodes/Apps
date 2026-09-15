@@ -15,10 +15,13 @@ typedef struct {
   char   *url;
   char   *title;
   int     visits;
+  int     typed;     /* visits that began with someone typing the address */
+  gint64  dwell;     /* seconds of attention, capped per visit — see store.c */
   gint64  when;      /* unix seconds */
   int     window;    /* session rows only */
   int     index;     /* session rows only */
   gboolean bookmarked;
+  double  score;     /* completion rank; only ly_store_complete sets it */
 } LyStoreRow;
 
 void ly_store_row_free (LyStoreRow *row);
@@ -27,7 +30,12 @@ LyStore *ly_store_new  (void);
 void     ly_store_free (LyStore *store);
 
 /* -- history ------------------------------------------------------------ */
-void       ly_store_record_visit  (LyStore *store, const char *url, const char *title);
+/* `typed` means the visit was committed through the address bar — typed, or
+ * pasted into it and gone to — rather than followed from a link. It is the
+ * strongest thing the ranking knows, because it is the same question the
+ * address bar is asking. */
+void       ly_store_record_visit  (LyStore *store, const char *url, const char *title,
+                                   gboolean typed);
 /* Titles arrive from the web process over IPC and can land after the load has
  * already finished, so they are recorded separately from the visit itself. */
 void       ly_store_update_title  (LyStore *store, const char *url, const char *title);
@@ -35,10 +43,20 @@ void       ly_store_update_title  (LyStore *store, const char *url, const char *
  * larger visit count and the later date when the URL is already known, so
  * importing twice cannot inflate or rewind anything. */
 void       ly_store_import_visit  (LyStore *store, const char *url, const char *title,
-                                   int visits, gint64 when);
-/* Ranked completions for the address bar: bookmarks first, then by how often
- * and how recently a page was visited. Caller frees with g_ptr_array_unref. */
+                                   int visits, int typed, gint64 when);
+/* Bank attention against a page: seconds it was the one on screen in a window
+ * that had focus. Capped on the way in, and ignored for a URL that is not
+ * already in history, so a page nobody chose to record earns nothing. */
+void       ly_store_add_dwell     (LyStore *store, const char *url, int seconds);
+/* Ranked completions for the address bar. Caller frees with g_ptr_array_unref.
+ * The ranking is described at length in store.c. */
 GPtrArray *ly_store_complete      (LyStore *store, const char *text, guint limit);
+/* The one address worth finishing `text` into, in the form a person types it
+ * — no scheme, no "www.", no bare trailing slash — or NULL when nothing is a
+ * confident enough answer to rewrite what someone is in the middle of typing.
+ * The result always starts with `text` (ignoring ASCII case) and is always
+ * longer. Anchored and cheap: meant to be called on every keystroke. */
+char      *ly_store_autocomplete  (LyStore *store, const char *text);
 GPtrArray *ly_store_recent        (LyStore *store, guint limit);
 void       ly_store_forget_url    (LyStore *store, const char *url);
 void       ly_store_clear_history (LyStore *store);

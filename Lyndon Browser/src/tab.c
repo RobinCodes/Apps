@@ -45,6 +45,22 @@ struct _LyTab {
   gboolean  zoom_restored;
   int       start_style;     /* start-page layout+artwork this tab rendered */
 
+  /* Attention. The clock runs only while this tab is both the page on screen
+   * and in a window that has focus, and what it measures is banked against
+   * the URL it was started for rather than whatever is loaded when it stops.
+   * See the ranking note in store.c for what the number is worth. */
+  char     *dwell_url;
+  gint64    dwell_since;     /* monotonic µs; 0 while the clock is stopped */
+  gint64    dwell_banked;    /* µs already counted towards dwell_url       */
+  gboolean  foreground;
+  gboolean  attended;
+
+  /* Set when a load starts from something typed into the address bar, and
+   * carried to the end of that load, so a site that redirects still credits
+   * the address someone actually typed. */
+  gboolean  typed_pending;
+  gboolean  typed_load;
+
   /* Unloading. `idle_since` is monotonic and 0 while the tab is on screen;
    * `discarding` separates a termination we asked for from a real crash. */
   gint64    idle_since;
@@ -69,6 +85,65 @@ notify_changed (LyTab *tab)
 {
   if (tab->delegate.changed != NULL)
     tab->delegate.changed (tab, tab->delegate_data);
+}
+
+/* ------------------------------------------------------------- attention */
+
+/* Stop the clock, keeping what it has counted so far. */
+static void
+dwell_pause (LyTab *tab)
+{
+  if (tab->dwell_since == 0)
+    return;
+  tab->dwell_banked += g_get_monotonic_time () - tab->dwell_since;
+  tab->dwell_since = 0;
+}
+
+/* The clock only runs when the page is on screen and being looked at, and
+ * only for a page we have somewhere to bank the time against. */
+static void
+dwell_sync (LyTab *tab)
+{
+  if (tab->foreground && tab->attended && tab->dwell_url != NULL) {
+    if (tab->dwell_since == 0)
+      tab->dwell_since = g_get_monotonic_time ();
+  } else {
+    dwell_pause (tab);
+  }
+}
+
+/* Bank what the current page earned and stop counting for it. */
+static void
+dwell_flush (LyTab *tab)
+{
+  char *url = g_steal_pointer (&tab->dwell_url);
+  dwell_sync (tab);   /* with dwell_url gone this can only stop the clock */
+
+  if (url != NULL && tab->dwell_banked > 0 && !tab->private_mode &&
+      tab->cfg != NULL && tab->cfg->remember_history && tab->store != NULL)
+    ly_store_add_dwell (tab->store, url,
+                        (int) (tab->dwell_banked / G_USEC_PER_SEC));
+
+  tab->dwell_banked = 0;
+  g_free (url);
+}
+
+/* Start counting against `uri`, banking whatever the last page earned.
+ *
+ * Restarting the clock is unconditional, and has to be: a load announces its
+ * URL twice, once provisionally and once when it finishes, with the pause at
+ * WEBKIT_LOAD_COMMITTED in between. Taking the second announcement as "the
+ * same page, nothing to do" would leave that pause in place for good, and
+ * every page after the first in a tab would be measured at nothing. */
+static void
+dwell_begin (LyTab *tab, const char *uri)
+{
+  if (g_strcmp0 (tab->dwell_url, uri) != 0) {
+    dwell_flush (tab);
+    if (uri != NULL && *uri != '\0')
+      tab->dwell_url = g_strdup (uri);
+  }
+  dwell_sync (tab);
 }
 
 /* ------------------------------------------------------------ start page */
@@ -1013,6 +1088,12 @@ on_load_changed (WebKitWebView *view, WebKitLoadEvent event, gpointer data)
   LyTab *tab = data;
 
   if (event == WEBKIT_LOAD_STARTED) {
+    /* Claim the typing for this load and only this one: a link clicked while
+     * the typed page was still loading starts here with the flag already
+     * spent, and is credited as the link it is. */
+    tab->typed_load    = tab->typed_pending;
+    tab->typed_pending = FALSE;
+
     dismiss_permission_bar (tab);
     /* Signing in navigates, and dismissing the offer on that navigation would
      * mean never seeing it at all. A load this long after the capture is the
@@ -1021,6 +1102,11 @@ on_load_changed (WebKitWebView *view, WebKitLoadEvent event, gpointer data)
         g_get_monotonic_time () - tab->pending_at > 5 * G_USEC_PER_SEC)
       clear_pending_login (tab);
   } else if (event == WEBKIT_LOAD_COMMITTED) {
+    /* The old page is off the screen from here, so the loading of its
+     * replacement is not time spent reading it. What it earned stays banked
+     * until there is a new URL to hand it over at. */
+    dwell_pause (tab);
+
     g_free (tab->host);
     tab->host = ly_uri_host (webkit_web_view_get_uri (view));
     update_protection (tab);
@@ -1043,7 +1129,11 @@ on_load_changed (WebKitWebView *view, WebKitLoadEvent event, gpointer data)
 
     /* Private tabs leave no trace in history by construction. */
     if (!tab->private_mode && tab->cfg->remember_history && tab->store != NULL)
-      ly_store_record_visit (tab->store, uri, webkit_web_view_get_title (view));
+      ly_store_record_visit (tab->store, uri, webkit_web_view_get_title (view),
+                             tab->typed_load);
+    tab->typed_load = FALSE;
+
+    dwell_begin (tab, uri);
   }
 
   notify_changed (tab);
@@ -1169,11 +1259,20 @@ static void
 on_property_changed (GObject *object, GParamSpec *pspec, gpointer data)
 {
   LyTab *tab = data;
+  const char *property = g_param_spec_get_name (pspec);
 
-  if (g_strcmp0 (g_param_spec_get_name (pspec), "title") == 0 &&
+  if (g_strcmp0 (property, "title") == 0 &&
       !tab->private_mode && tab->cfg->remember_history && tab->store != NULL)
     ly_store_update_title (tab->store, webkit_web_view_get_uri (tab->view),
                            webkit_web_view_get_title (tab->view));
+
+  /* Sites that rewrite their own address — Discord moving between channels,
+   * a video site moving between videos — never finish a load, so this is the
+   * only notice that the page being looked at has changed. Handing the clock
+   * over here is what stops an evening in one of them piling every minute
+   * onto whichever URL happened to be open first. */
+  if (g_strcmp0 (property, "uri") == 0)
+    dwell_begin (tab, webkit_web_view_get_uri (tab->view));
 
   notify_changed (tab);
 }
@@ -1243,6 +1342,10 @@ ly_tab_dispose (GObject *object)
   if (tab->ucm != NULL && tab->blocker != NULL)
     ly_blocker_detach (tab->blocker, tab->ucm);
 
+  /* Closing a tab is the last chance to credit the page it was showing.
+   * dwell_flush clears the URL, so a second dispose pass does nothing. */
+  dwell_flush (tab);
+
   g_clear_object (&tab->pending_permission);
   clear_pending_login (tab);
   /* Dispose can run twice; the second pass must not reach into widgets the
@@ -1272,6 +1375,10 @@ ly_tab_init (LyTab *tab)
 {
   tab->protection_on = TRUE;
   tab->start_style   = -1;
+  /* A tab is born in front of someone; the window corrects both of these the
+   * moment it knows better. */
+  tab->foreground    = TRUE;
+  tab->attended      = TRUE;
 }
 
 /* ---------------------------------------------------------- construction */
@@ -1467,6 +1574,11 @@ void
 ly_tab_load_input (LyTab *tab, const char *text)
 {
   g_autofree char *uri = ly_config_resolve_input (tab->cfg, text);
+  /* The only entry point a person reaches through the address bar itself —
+   * Enter, or middle-click paste-and-go. Both are somebody naming where they
+   * want to be, which is exactly the question the address bar asks next
+   * time; following a link is not, and goes through ly_tab_load instead. */
+  tab->typed_pending = TRUE;
   ly_tab_load (tab, uri);
 }
 
@@ -1666,6 +1778,10 @@ ly_tab_discard (LyTab *tab)
   tab->discarded_uri   = g_strdup (webkit_web_view_get_uri (tab->view));
   tab->discarded_title = g_strdup (ly_tab_title (tab));
 
+  /* The page is about to stop existing; its time is earned and should not
+   * wait for a navigation that may never come. */
+  dwell_flush (tab);
+
   tab->discarding = TRUE;
   webkit_web_view_terminate_web_process (tab->view);
   tab->discarded = TRUE;
@@ -1692,6 +1808,9 @@ ly_tab_discard_if_idle (LyTab *tab)
 void
 ly_tab_set_foreground (LyTab *tab, gboolean foreground)
 {
+  tab->foreground = foreground;
+  dwell_sync (tab);
+
   if (!foreground) {
     if (tab->idle_since == 0)
       tab->idle_since = g_get_monotonic_time ();
@@ -1716,6 +1835,19 @@ ly_tab_set_foreground (LyTab *tab, gboolean foreground)
     webkit_web_view_load_uri (tab->view, uri);
 
   notify_changed (tab);
+}
+
+void
+ly_tab_set_attention (LyTab *tab, gboolean attended)
+{
+  tab->attended = attended;
+  dwell_sync (tab);
+}
+
+void
+ly_tab_flush_attention (LyTab *tab)
+{
+  dwell_flush (tab);
 }
 
 /* ----------------------------------------------------------------- find */

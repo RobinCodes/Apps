@@ -43,6 +43,11 @@ struct _LyWindow {
   GtkWidget *suggestion_list;   /* GtkListBox */
   GPtrArray *suggestion_rows;   /* LyStoreRow*, parallel to the list */
   guint      suggest_source;
+  /* What was actually typed, before any completion was appended to it: the
+   * list under the bar answers the typing, not the guess. */
+  char      *url_query;
+  gboolean   url_typing;        /* the last edit was one character typed in */
+  gboolean   url_completing;    /* we are writing a completion; ignore it   */
 
   GPtrArray *closed_tabs;       /* char* URL, most recently closed last */
 
@@ -193,6 +198,10 @@ on_url_focus_leave (GtkEventControllerFocus *controller, gpointer data)
 {
   LyWindow *self = data;
   self->url_focused = FALSE;
+  self->url_typing  = FALSE;
+  /* The next visit to the address bar starts from what is typed then, not
+   * from a prefix left over from this one. */
+  g_clear_pointer (&self->url_query, g_free);
   hide_suggestions (self);
   sync_chrome (self);
 }
@@ -276,7 +285,10 @@ refresh_suggestions (gpointer data)
   LyWindow *self = data;
   self->suggest_source = 0;
 
-  const char *text = gtk_editable_get_text (GTK_EDITABLE (self->url_text));
+  /* What was typed, not what the inline completion turned it into: the list
+   * is there to offer the alternatives, and filtering it by our own guess
+   * would leave it showing only the guess. */
+  const char *text = self->url_query;
 
   /* One character matches almost everything; it is noise, not help. */
   if (self->store == NULL || text == NULL || g_utf8_strlen (text, -1) < 2) {
@@ -312,12 +324,88 @@ refresh_suggestions (gpointer data)
   return G_SOURCE_REMOVE;
 }
 
+/* Finish the address as it is typed: the rest of the best match from history
+ * is appended and left selected, so the next keystroke replaces it, Escape or
+ * Backspace discards it, and Enter simply accepts it.
+ *
+ * Every condition below is there to keep this from fighting the person for
+ * control of their own cursor. It only ever extends: never while deleting,
+ * never with the caret anywhere but the end, never over a selection, and
+ * never on a paste — a pasted address is already the whole thing somebody
+ * meant, and finishing it for them would send them somewhere else entirely.
+ * Unlike the list below, this runs on the keystroke rather than after the
+ * debounce, because text that arrives 110 ms late arrives under two more
+ * characters of typing.
+ */
+static void
+apply_inline_completion (LyWindow *self, const char *text)
+{
+  if (!self->url_typing || self->store == NULL)
+    return;
+
+  long typed_chars = g_utf8_strlen (text, -1);
+  if (typed_chars < 2)
+    return;   /* one character matches half of history */
+
+  GtkEditable *editable = GTK_EDITABLE (self->url_text);
+  int start, end;
+  if (gtk_editable_get_selection_bounds (editable, &start, &end))
+    return;                                        /* editing, not extending */
+  if (gtk_editable_get_position (editable) != (int) typed_chars)
+    return;                                        /* caret is not at the end */
+
+  g_autofree char *completion = ly_store_autocomplete (self->store, text);
+  if (completion == NULL)
+    return;
+
+  /* Keep the letters already on screen exactly as they were typed and add
+   * only the tail, so nothing shifts case under the cursor. The store
+   * guarantees the completion matches ignoring ASCII case, which is
+   * byte-length preserving, so splicing by byte offset is safe. */
+  g_autofree char *whole = g_strconcat (text, completion + strlen (text), NULL);
+
+  self->url_completing = TRUE;
+  gtk_editable_set_text (editable, whole);
+  gtk_editable_select_region (editable, (int) typed_chars, -1);
+  self->url_completing = FALSE;
+}
+
+/* GtkEditable reports the edit before the text settles, which is the only
+ * place to tell typing apart from deleting and pasting. */
+static void
+on_url_insert_text (GtkEditable *editable, const char *text, int length,
+                    int *position, gpointer data)
+{
+  LyWindow *self = data;
+  self->url_typing = !self->url_completing && length > 0 && length <= 4 &&
+                     g_utf8_strlen (text, length) == 1;
+}
+
+static void
+on_url_delete_text (GtkEditable *editable, int start, int end, gpointer data)
+{
+  /* A keystroke landing on a selection deletes before it inserts, and GTK
+   * emits "changed" in between, so a single character typed over the last
+   * completion arrives here first, then at "changed" with the completion
+   * gone, and only then as the insertion that counts as typing. Writing the
+   * completion out lands here too, which leaves the flag off until the next
+   * real keystroke turns it back on — which is what it should mean. */
+  ((LyWindow *) data)->url_typing = FALSE;
+}
+
 static void
 on_url_text_changed (GtkEditable *editable, gpointer data)
 {
   LyWindow *self = data;
-  if (!self->url_focused)
+  if (!self->url_focused || self->url_completing)
     return;
+
+  const char *text = gtk_editable_get_text (editable);
+  g_free (self->url_query);
+  self->url_query = g_strdup (text);
+
+  apply_inline_completion (self, self->url_query);
+
   if (self->suggest_source != 0)
     g_source_remove (self->suggest_source);
   self->suggest_source = g_timeout_add (110, refresh_suggestions, self);
@@ -330,6 +418,20 @@ on_url_key_pressed (GtkEventControllerKey *controller, guint keyval, guint keyco
   LyWindow *self = data;
 
   if (keyval == GDK_KEY_Escape) {
+    /* Escape hands the address bar back to whoever was typing in it: the
+     * completion goes first, and only once there is none left does Escape
+     * mean what it otherwise means. */
+    const char *shown = gtk_editable_get_text (GTK_EDITABLE (self->url_text));
+    if (self->url_query != NULL && g_strcmp0 (shown, self->url_query) != 0 &&
+        g_str_has_prefix (shown, self->url_query)) {
+      self->url_completing = TRUE;
+      gtk_editable_set_text (GTK_EDITABLE (self->url_text), self->url_query);
+      gtk_editable_set_position (GTK_EDITABLE (self->url_text), -1);
+      self->url_completing = FALSE;
+      self->url_typing = FALSE;
+      hide_suggestions (self);
+      return GDK_EVENT_STOP;
+    }
     hide_suggestions (self);
     return GDK_EVENT_PROPAGATE;   /* Escape still stops the page */
   }
@@ -1306,13 +1408,24 @@ static void
 sync_tab_activity (LyWindow *self)
 {
   AdwTabPage *selected = adw_tab_view_get_selected_page (self->tabs);
+  /* A window nobody is looking at has no page anybody is reading, whatever
+   * the tab strip says. */
+  gboolean attended = gtk_window_is_active (GTK_WINDOW (self));
 
   for (int i = 0; i < adw_tab_view_get_n_pages (self->tabs); i++) {
     AdwTabPage *page = adw_tab_view_get_nth_page (self->tabs, i);
     LyTab      *tab  = tab_from_page (page);
-    if (tab != NULL)
+    if (tab != NULL) {
       ly_tab_set_foreground (tab, page == selected);
+      ly_tab_set_attention (tab, attended && page == selected);
+    }
   }
+}
+
+static void
+on_window_active_changed (GObject *object, GParamSpec *pspec, gpointer data)
+{
+  sync_tab_activity ((LyWindow *) data);
 }
 
 /* Idle tabs are checked once a minute rather than on a timer per tab: the
@@ -1892,6 +2005,8 @@ build_url_bar (LyWindow *self)
                                  "Search or enter address");
   g_signal_connect (self->url_text, "activate", G_CALLBACK (on_url_activate), self);
   g_signal_connect (self->url_text, "changed", G_CALLBACK (on_url_text_changed), self);
+  g_signal_connect (self->url_text, "insert-text", G_CALLBACK (on_url_insert_text), self);
+  g_signal_connect (self->url_text, "delete-text", G_CALLBACK (on_url_delete_text), self);
 
   GtkEventController *keys = gtk_event_controller_key_new ();
   g_signal_connect (keys, "key-pressed", G_CALLBACK (on_url_key_pressed), self);
@@ -2171,6 +2286,9 @@ ly_window_dispose (GObject *object)
    * shutdown the config it would be written to is already gone. */
   g_signal_handlers_disconnect_by_func (self, on_geometry_changed, self);
   g_signal_handlers_disconnect_by_func (self, on_close_request, self);
+  /* Same reason: unrealising flips is-active, and the tab view it would send
+   * us to look at is on its way out. */
+  g_signal_handlers_disconnect_by_func (self, on_window_active_changed, self);
 
   if (self->downloads != NULL)
     ly_downloads_set_callbacks (self->downloads, NULL, NULL, NULL);
@@ -2188,6 +2306,7 @@ ly_window_dispose (GObject *object)
    * unparented explicitly rather than left to the container. */
   g_clear_pointer (&self->suggestions, gtk_widget_unparent);
   g_clear_pointer (&self->suggestion_rows, g_ptr_array_unref);
+  g_clear_pointer (&self->url_query, g_free);
   g_clear_pointer (&self->closed_tabs, g_ptr_array_unref);
   g_clear_object (&self->private_session);
 
@@ -2245,6 +2364,8 @@ window_create (LyApp *app, WebKitNetworkSession *session)
   g_signal_connect (self->tabs, "notify::selected-page",
                     G_CALLBACK (on_selected_page_changed), self);
   self->unload_tick = g_timeout_add_seconds (UNLOAD_TICK_SECONDS, on_unload_tick, self);
+  g_signal_connect (self, "notify::is-active",
+                    G_CALLBACK (on_window_active_changed), self);
   g_signal_connect (self->tabs, "notify::n-pages",
                     G_CALLBACK (on_pages_changed), self);
   g_signal_connect (self->tabs, "create-window", G_CALLBACK (on_create_window), self);
@@ -2450,6 +2571,17 @@ ly_window_collect_session (LyWindow *self, GPtrArray *rows, int window_index)
     row->url    = g_strdup (uri);
     row->title  = g_strdup (ly_tab_title (tab));
     g_ptr_array_add (rows, row);
+  }
+}
+
+void
+ly_window_flush_attention (LyWindow *self)
+{
+  int pages = adw_tab_view_get_n_pages (self->tabs);
+  for (int i = 0; i < pages; i++) {
+    LyTab *tab = tab_from_page (adw_tab_view_get_nth_page (self->tabs, i));
+    if (tab != NULL)
+      ly_tab_flush_attention (tab);
   }
 }
 

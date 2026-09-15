@@ -115,9 +115,10 @@ deps:
 run: $(APP)
 	@./$(APP)
 
-check: tests/test-abp tests/test-util
+check: tests/test-abp tests/test-util tests/test-store
 	@./tests/test-abp
 	@./tests/test-util
+	@./tests/test-store
 
 tests/test-abp: tests/test-abp.c src/abp.c
 	@echo "  CC    $@"
@@ -133,6 +134,15 @@ tests/test-util: tests/test-util.c src/util.c
 	@$(CC) $(STD) $(WARN) -O1 -g -Isrc -o $@ $^ \
 	  $(shell pkg-config --cflags gtk4 libadwaita-1 webkitgtk-6.0) \
 	  $(shell pkg-config --cflags --libs glib-2.0 gio-2.0)
+
+# store.c needs sqlite and glib and nothing else; the test supplies the one
+# symbol it wants from the rest of the browser. lyndon.h still pulls adwaita
+# in on this platform, hence the headers on the include path -- see test-util.
+tests/test-store: tests/test-store.c src/store.c
+	@echo "  CC    $@"
+	@$(CC) $(STD) $(WARN) -O1 -g -Isrc -o $@ $^ -lm \
+	  $(shell pkg-config --cflags gtk4 libadwaita-1 webkitgtk-6.0) \
+	  $(shell pkg-config --cflags --libs glib-2.0 gio-2.0 sqlite3)
 
 install: $(APP)
 	install -Dm755 $(APP) $(DESTDIR)$(BINDIR)/$(APP)
@@ -153,12 +163,12 @@ uninstall:
 	      $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
 
 clean:
-	rm -rf build $(APP) tests/test-abp tests/test-util
+	rm -rf build $(APP) tests/test-abp tests/test-util tests/test-store
 
 help:
 	@echo "make            build"
 	@echo "make run        build and launch"
-	@echo "make check      run unit tests (filter lists, URL handling)"
+	@echo "make check      run unit tests (filter lists, URL handling, ranking)"
 	@echo "make DEBUG=1    asan/ubsan build"
 	@echo "make LTO=1      link-time optimised build"
 	@echo "make deps       verify build dependencies"

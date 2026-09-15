@@ -730,7 +730,8 @@ on_tab_changed (LyTab *tab, gpointer data)
   if (!ly_tab_loading (tab) && win->store && win->cfg && win->cfg->remember_history) {
     const char *url = ly_tab_url (tab);
     if (url && *url && !ly_uri_is_internal (url)) {
-      ly_store_record_visit (win->store, url, ly_tab_title (tab));
+      /* The Win32 chrome has no typed-navigation signal to pass on yet. */
+      ly_store_record_visit (win->store, url, ly_tab_title (tab), FALSE);
       ly_store_update_title (win->store, url, ly_tab_title (tab));
     }
   }

@@ -102,6 +102,18 @@ void ly_tab_refresh_policy (LyTab *tab);
  * reloaded if it had been unloaded while it was behind. */
 void     ly_tab_set_foreground (LyTab *tab, gboolean foreground);
 
+/* Whether anyone is actually looking: the tab on screen in a window that has
+ * focus. Kept apart from the foreground flag on purpose — losing focus must
+ * stop the attention clock, but it must not start the unload clock on the
+ * very page someone alt-tabbed away from and is about to come back to. */
+void     ly_tab_set_attention  (LyTab *tab, gboolean attended);
+
+/* Bank the page's attention now rather than at the next navigation. Closing a
+ * tab does this for itself; the application calls it on the way out, because
+ * at that point the store is about to go and the tabs have not been disposed
+ * of yet. */
+void     ly_tab_flush_attention (LyTab *tab);
+
 /* Drop the page and its web process, keeping the tab, its place on the strip
  * and the address to come back to. TRUE if it actually unloaded. */
 gboolean ly_tab_discard        (LyTab *tab);

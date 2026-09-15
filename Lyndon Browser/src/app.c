@@ -612,6 +612,14 @@ ly_app_shutdown (GApplication *application)
   if (app->cfg != NULL)
     ly_config_save (app->cfg);
 
+  /* Quitting outright leaves the windows standing until the application
+   * itself is finalised, which is after the store below has gone. Whatever
+   * the open pages have earned has to be banked while there is still
+   * somewhere to bank it. */
+  for (GList *l = gtk_application_get_windows (GTK_APPLICATION (app)); l != NULL; l = l->next)
+    if (LY_IS_WINDOW (l->data))
+      ly_window_flush_attention (LY_WINDOW (l->data));
+
   g_clear_pointer (&app->passwords, ly_passwords_free);
   g_clear_pointer (&app->store, ly_store_free);
   g_clear_pointer (&app->downloads, ly_downloads_free);
