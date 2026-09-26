@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- A Markdown document, as Explorer shows one once Notedown opens it: a
+       page with its corner turned, the Markdown mark on it, and Notedown's
+       split sheet as a badge. Paths and rects only, like the app icon, so
+       nothing depends on a font. -->
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e8ecf4"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1a54c0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- the page and its shadow -->
+  <path d="M 26 8 H 80 L 106 34 V 116 A 6 6 0 0 1 100 122 H 26 A 6 6 0 0 1 20 116 V 14 A 6 6 0 0 1 26 8 Z"
+        fill="#0d1729" opacity="0.20" transform="translate(0,3)"/>
+  <path d="M 26 8 H 80 L 106 34 V 116 A 6 6 0 0 1 100 122 H 26 A 6 6 0 0 1 20 116 V 14 A 6 6 0 0 1 26 8 Z"
+        fill="url(#page)" stroke="#c2cad9" stroke-width="2"/>
+  <!-- the turned corner -->
+  <path d="M 80 8 V 28 A 6 6 0 0 0 86 34 H 106 Z" fill="#d5dbe7" stroke="#c2cad9"
+        stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- the Markdown mark: M and a down arrow in a rounded frame -->
+  <rect x="30" y="46" width="66" height="40" rx="7" fill="none" stroke="#8a3ffc"
+        stroke-width="5"/>
+  <path d="M 39 77 V 55 L 48 66 L 57 55 V 77" fill="none" stroke="#8a3ffc"
+        stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 76 55 V 73" stroke="#8a3ffc" stroke-width="6" stroke-linecap="round"/>
+  <path d="M 67 67 L 76 77 L 85 67" fill="none" stroke="#8a3ffc" stroke-width="6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- a few lines of text below -->
+  <g fill="#9aa7bd">
+    <rect x="30" y="96" width="46" height="5" rx="2"/>
+    <rect x="30" y="106" width="34" height="5" rx="2"/>
+  </g>
+
+  <!-- the Notedown badge: its split sheet, small, bottom right -->
+  <rect x="80" y="92" width="36" height="32" rx="6" fill="#0d1729" opacity="0.2"
+        transform="translate(0,2)"/>
+  <rect x="80" y="92" width="36" height="32" rx="6" fill="#ffffff" stroke="#c2cad9"
+        stroke-width="1.5"/>
+  <path d="M 86 92 H 98 V 124 H 86 A 6 6 0 0 1 80 118 V 98 A 6 6 0 0 1 86 92 Z" fill="#e3e8f1"/>
+  <rect x="97.5" y="92" width="1.5" height="32" fill="#c2cad9"/>
+  <rect x="84" y="99" width="10" height="3" rx="1.5" fill="#8a3ffc"/>
+  <rect x="84" y="106" width="10" height="3" rx="1.5" fill="#9aa7bd"/>
+  <rect x="84" y="113" width="8" height="3" rx="1.5" fill="#9aa7bd"/>
+  <rect x="102" y="99" width="10" height="4" rx="2" fill="url(#accent)"/>
+  <rect x="102" y="107" width="10" height="3" rx="1.5" fill="#7d8798"/>
+  <rect x="102" y="114" width="8" height="3" rx="1.5" fill="#7d8798"/>
+</svg>

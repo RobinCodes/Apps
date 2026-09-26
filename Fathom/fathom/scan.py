@@ -41,7 +41,18 @@ import threading
 import time
 from array import array
 
+from . import winenv
+
 BLOCK = 512
+
+# A junction is Windows' directory-shaped link, and a stock profile is full of
+# them: "Application Data" points back at AppData, "My Documents" at
+# Documents, "C:\Documents and Settings" at C:\Users. Following them counts
+# the same folders twice or walks in a circle, so they get what symlinks get —
+# never followed. A volume mounted into a folder carries the same tag, which is
+# what `one_filesystem` would have wanted anyway. Other reparse points are left
+# alone: OneDrive's folders are one, and they hold real files.
+JUNCTION = getattr(statmod, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
 
 # Never descend into these, whatever the settings say. They are kernel
 # bookkeeping rather than storage: /proc alone contains a nominal several
@@ -253,10 +264,20 @@ class Scan:
 
         try:
             st = os.stat(self.path)
-            root.mtime = st.st_mtime
-            root.self_alloc = st.st_blocks * BLOCK
-            root_dev = st.st_dev
         except OSError:
+            st = None
+        if st is not None:
+            # Windows has no st_blocks. What a file costs there is its length
+            # rounded up to the volume's cluster, which is right for all but
+            # compressed and sparse files — and asking the filesystem about
+            # each of those is a system call per file on a walk of millions.
+            blocks = hasattr(st, "st_blocks")
+            cluster = BLOCK if blocks else winenv.cluster_size(self.path)
+            root.mtime = st.st_mtime
+            root.self_alloc = (st.st_blocks * BLOCK if blocks
+                               else -(-st.st_size // cluster) * cluster)
+            root_dev = st.st_dev
+        else:
             root.unreadable = True
             result.unreadable = 1
             result.examples = [self.path]
@@ -268,7 +289,11 @@ class Scan:
         scandir = os.scandir
         seen_inodes: set[tuple[int, int]] = set()
         dedup = self.dedup_hardlinks
-        one_fs = self.one_filesystem
+        # Entries from os.scandir carry no device number on Windows — it is
+        # always 0 — so comparing it would stop the walk at the first level.
+        # There, other volumes appear as junctions and are skipped as those.
+        one_fs = self.one_filesystem and not winenv.WINDOWS
+        junctions = winenv.WINDOWS
         excludes = self.excludes
         cancelled = self._cancel.is_set
 
@@ -325,13 +350,16 @@ class Scan:
                     if statmod.S_ISDIR(mode):
                         if entry.name in excludes:
                             continue
+                        if junctions and st.st_reparse_tag == JUNCTION:
+                            continue
                         child_path = entry.path
                         if child_path in PSEUDO_PATHS or (
                                 one_fs and st.st_dev != root_dev):
                             continue
                         sub = Dir(entry.name, node)
                         sub.mtime = st.st_mtime
-                        sub.self_alloc = st.st_blocks * BLOCK
+                        sub.self_alloc = (st.st_blocks * BLOCK if blocks
+                                          else -(-st.st_size // cluster) * cluster)
                         node.subdirs.append(sub)
                         stack.append((sub, child_path))
                         dirs += 1
@@ -342,7 +370,8 @@ class Scan:
                     # them is how a disk tool reports a home directory as
                     # infinite, or counts /usr twice.
                     size = st.st_size
-                    alloc = st.st_blocks * BLOCK
+                    alloc = (st.st_blocks * BLOCK if blocks
+                             else -(-size // cluster) * cluster)
                     fnames.append(entry.name)
                     fsizes.append(size)
                     fallocs.append(alloc)

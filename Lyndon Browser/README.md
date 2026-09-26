@@ -527,6 +527,11 @@ Nothing else is needed for the passwords: DPAPI and CNG are part of Windows,
 so the Chromium import and the AES-GCM under it cost two more `-l` flags and
 no dependency.
 
+`windows\install.ps1`, at the root of the repository, registers the build in
+`dist\` as a browser — for `http` and `https` links and for saved pages — so
+it is offered in Settings → Default apps, and `-Default Lyndon` opens its page
+there.
+
 ### What is shared and what is new
 
 `src/lyndon.h` drops the toolkit includes under `_WIN32`, and that is the
@@ -596,6 +601,7 @@ On top of that, the parts that were GTK-bound and had to be built again:
 | **Importing** | `src/import.c` | The Linux file, compiled here; the profile locations and the way the key is unwrapped differ, nothing else. |
 | **Password files** | `src/pwfile.c` | The Linux file, unchanged: the same CSV, TSV, `.xlsx` and `.ods` reader and the same CSV writer. |
 | **Session restore** | `win32/chrome.c` | The store's own session table, so both builds read the same rows. |
+| **One browser at a time** | `win32/chrome.c` | GApplication's job on Linux. A second start finds the first by a named mutex and hands over what it was asked to open with `WM_COPYDATA`, so a link clicked in another program becomes a tab in the open window. A path — what Explorer passes for a saved page — is opened as its `file://` URL. |
 | **The look** | `win32/ui.c` | `data/css/lyndon.css`, followed measurement for measurement. |
 | **`lyndon:start`** | `win32/scheme.c` | The same start page, on the same URL, from the same file. |
 

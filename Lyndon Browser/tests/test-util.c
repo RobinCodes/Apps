@@ -13,6 +13,7 @@
 
 #include "lyndon.h"
 
+#include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -97,6 +98,35 @@ main (void)
               "and deeper subdomains still land on it");
   expect_str (ly_uri_base_domain ("http://127.0.0.1:8080/x"), "127.0.0.1",
               "an IP literal is left alone");
+
+  printf ("\na file named on the command line\n");
+  {
+    /* The way Explorer opens a page: its path, not a URL. A space in the
+     * name, because paths from Explorer have them and URIs must not. */
+    g_autofree char *dir = g_dir_make_tmp ("lyndon-test-XXXXXX", NULL);
+    g_autofree char *page = g_build_filename (dir, "a page.html", NULL);
+    g_file_set_contents (page, "<p>hi</p>", -1, NULL);
+    g_autofree char *uri = g_filename_to_uri (page, NULL, NULL);
+
+    expect_str (ly_uri_from_path (page, NULL), uri,
+                "an absolute path becomes its file URI");
+    expect_bool (strstr (uri, "a%20page.html") != NULL, TRUE,
+                 "with the space escaped");
+    expect_str (ly_uri_from_path ("a page.html", dir), uri,
+                "a relative one is resolved against the directory given");
+    expect_str (ly_uri_from_path ("missing.html", dir), NULL,
+                "a file that is not there is not a file");
+    expect_str (ly_uri_from_path ("example.com", dir), NULL,
+                "so an address stays an address");
+    expect_str (ly_uri_from_path ("https://example.com", dir), NULL,
+                "and a URL stays a URL");
+    expect_str (ly_uri_from_path (uri, dir), NULL,
+                "including a file URI, which needs no converting");
+    expect_str (ly_uri_from_path ("", dir), NULL, "nothing is nothing");
+
+    g_remove (page);
+    g_rmdir (dir);
+  }
 
   printf ("\nwhat the address bar says\n");
   expect_bool (ly_uri_is_secure ("https://example.com"), TRUE, "https is secure");

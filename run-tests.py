@@ -31,7 +31,7 @@ WINDOWS = os.name == "nt"
 class Suite:
     def __init__(self, name, kind, argv, cwd, needs=()):
         self.name = name
-        self.kind = kind          # "python" or "c"
+        self.kind = kind          # "python", "c" or "powershell"
         self.argv = argv
         self.cwd = cwd
         self.needs = needs        # executables that must exist to run at all
@@ -83,6 +83,14 @@ def suites():
         if os.path.exists(path):
             found.append(Suite(app, "python", [sys.executable, path],
                                cwd=os.path.dirname(os.path.dirname(path))))
+
+    if WINDOWS:
+        # What windows/install.ps1 writes to the registry, written to a
+        # sandbox of it: the keys it shares with every other program.
+        found.append(Suite("Windows installer", "powershell",
+                           ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                            "-File", os.path.join(ROOT, "windows", "test-install.ps1")],
+                           cwd=ROOT, needs=("powershell",)))
 
     lyndon = os.path.join(ROOT, "Lyndon Browser")
     if os.path.isdir(lyndon):

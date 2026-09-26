@@ -26,6 +26,8 @@ scratch = tempfile.mkdtemp(prefix="git-manager-tests-")
 os.environ["XDG_CONFIG_HOME"] = os.path.join(scratch, "config")
 os.environ["XDG_DATA_HOME"] = os.path.join(scratch, "data")
 os.environ["XDG_CACHE_HOME"] = os.path.join(scratch, "cache")
+# An app built by a test must not go to the network for an update.
+os.environ["APPS_NO_UPDATE"] = "1"
 
 import gi  # noqa: E402
 
@@ -589,6 +591,33 @@ def test_the_unhandled_error_handler_belongs_to_the_application():
     assert isinstance(window, MainWindow)
 
 
+def native_icons(window):
+    """The big and the small icon Windows holds for `window`; 0 for none."""
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32")
+    user32.SendMessageW.restype = ctypes.c_void_p
+    user32.SendMessageW.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t,
+                                    ctypes.c_void_p)
+    hwnd = winenv.window_handle(window)
+    return [user32.SendMessageW(hwnd, 0x007F, which, None) or 0   # WM_GETICON
+            for which in (1, 0)]                                  # ICON_BIG, ICON_SMALL
+
+
+def test_on_windows_a_window_wears_the_apps_icon_not_pythons():
+    """GTK 4 sets no icon on a window there, so each one wore pythonw.exe's:
+    the Python logo, in Alt+Tab and on the taskbar."""
+    if not winenv.WINDOWS:
+        return
+    window = _test_app().new_window()
+    window.realize()
+    try:
+        big, small = native_icons(window)
+        assert big and small, "the window has no icon of its own"
+    finally:
+        window.destroy()
+
+
 def main():
     print("plumbing")
     check("a fresh repository reads back clean", test_status_clean)
@@ -645,6 +674,8 @@ def main():
           test_two_windows_open_at_once_and_share_nothing)
     check("the unhandled-error handler belongs to the application",
           test_the_unhandled_error_handler_belongs_to_the_application)
+    check("on Windows, a window wears the app's icon, not Python's",
+          test_on_windows_a_window_wears_the_apps_icon_not_pythons)
 
     print("all good")
 

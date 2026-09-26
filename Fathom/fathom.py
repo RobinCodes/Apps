@@ -14,6 +14,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
+# Before the app itself is imported, so an update fetched last time is
+# the code that runs this time.
+from fathom import updater  # noqa: E402
+
+updater.apply()
+
 from fathom.app import main  # noqa: E402
 
 if __name__ == "__main__":

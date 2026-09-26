@@ -11,7 +11,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio  # noqa: E402
 
-from . import widgets  # noqa: E402
+from . import updater, widgets, winenv  # noqa: E402
 from .window import MainWindow  # noqa: E402
 
 APP_ID = "com.robin.Fathom"
@@ -44,6 +44,8 @@ class FathomApp(Adw.Application):
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+        winenv.use_icon(self, "fathom.ico")
+        updater.watch(self, "Fathom", "fathom.py")
         widgets.install_css()
         quit_action = Gio.SimpleAction.new("quit", None)
         quit_action.connect("activate", lambda *_: self._quit())
@@ -132,6 +134,7 @@ def main():
             print(f"Fathom {__version__}")
             return 0
 
+    winenv.set_app_id(APP_ID)
     return FathomApp().run(sys.argv)
 
 

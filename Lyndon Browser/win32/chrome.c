@@ -15,6 +15,13 @@
 #define ID_ADDRESS     1001
 #define TIMER_PROGRESS    1   /* the indeterminate load bar */
 
+/* WM_COPYDATA from a second start of Lyndon: the addresses it was asked to
+ * open, UTF-8, one per line. See ly_window_hand_over(). */
+#define COPYDATA_OPEN  0x4c594f50   /* 'LYOP' */
+/* How long a second start waits on the first: for its window to exist, and
+ * then for it to answer. */
+#define HAND_OVER_WAIT_MS  8000
+
 static guint window_count;
 /* Every live window, so that the environment becoming ready can reach the
  * ones created before it did. Not owned: WM_DESTROY removes them. */
@@ -1372,6 +1379,31 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       return 0;
     }
 
+    case WM_COPYDATA: {
+      /* A second start of Lyndon handing over what it was asked to open:
+       * each line becomes a tab, read the way the address bar would read it.
+       * Nothing at all means it was only started — show what is open. */
+      const COPYDATASTRUCT *cds = (const COPYDATASTRUCT *) lp;
+      if (cds == NULL || cds->dwData != COPYDATA_OPEN)
+        break;
+      /* No bytes may come with no pointer either. */
+      g_autofree char *text = cds->lpData ? g_strndup ((const char *) cds->lpData, cds->cbData)
+                                          : g_strdup ("");
+      g_auto (GStrv) lines = g_strsplit (text, "\n", -1);
+      for (int i = 0; lines[i] != NULL; i++) {
+        if (*lines[i] == '\0')
+          continue;
+        g_autofree char *url = win->cfg ? ly_config_resolve_input (win->cfg, lines[i])
+                                        : ly_normalise_input (lines[i], NULL);
+        if (url)
+          ly_window_open_tab (win, url);
+      }
+      if (IsIconic (hwnd))
+        ShowWindow (hwnd, SW_RESTORE);
+      SetForegroundWindow (hwnd);
+      return TRUE;
+    }
+
     case WM_CLOSE:
       DestroyWindow (hwnd);
       return 0;
@@ -1501,8 +1533,52 @@ ly_window_register (HINSTANCE instance)
   wc.hbrBackground = NULL;
   wc.lpszClassName = CLASS_NAME;
   wc.hIcon = LoadIconW (instance, L"APPICON");
-  wc.hIconSm = wc.hIcon;
+  /* Its own size, so the title bar gets the icon's 16px drawing rather than
+   * the 32px one shrunk. */
+  wc.hIconSm = (HICON) LoadImageW (instance, L"APPICON", IMAGE_ICON,
+                                   GetSystemMetrics (SM_CXSMICON),
+                                   GetSystemMetrics (SM_CYSMICON), 0);
   return RegisterClassExW (&wc) != 0;
+}
+
+gboolean
+ly_window_hand_over (GPtrArray *wanted)
+{
+  /* The first Lyndon creates this and holds it until it exits; its handle is
+   * never closed. Any later start finds it already there. A window alone
+   * would not do: two starts a moment apart — five pages opened together
+   * from Explorer — would each look, find none yet, and each open one. */
+  HANDLE running = CreateMutexW (NULL, FALSE, L"Local\\" LYNDON_APP_ID);
+  if (running == NULL || GetLastError () != ERROR_ALREADY_EXISTS)
+    return FALSE;
+
+  /* Running, or still starting: its window can be a moment away. */
+  HWND other = NULL;
+  for (int waited = 0; waited < HAND_OVER_WAIT_MS; waited += 50) {
+    if ((other = FindWindowW (CLASS_NAME, NULL)) != NULL)
+      break;
+    Sleep (50);
+  }
+  if (other == NULL)
+    return FALSE;
+
+  GString *text = g_string_new (NULL);
+  for (guint i = 0; wanted && i < wanted->len; i++)
+    g_string_append_printf (text, "%s\n", (const char *) g_ptr_array_index (wanted, i));
+
+  /* This process was just started by the user, so it may take the
+   * foreground; the one that will actually show the page may not, unless
+   * this one passes that on. */
+  DWORD pid = 0;
+  GetWindowThreadProcessId (other, &pid);
+  AllowSetForegroundWindow (pid);
+
+  COPYDATASTRUCT cds = { COPYDATA_OPEN, (DWORD) text->len, text->str };
+  DWORD_PTR answer = 0;
+  LRESULT sent = SendMessageTimeoutW (other, WM_COPYDATA, 0, (LPARAM) &cds,
+                                      SMTO_ABORTIFHUNG, HAND_OVER_WAIT_MS, &answer);
+  g_string_free (text, TRUE);
+  return sent != 0 && answer == TRUE;
 }
 
 LyWindow *

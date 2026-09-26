@@ -25,13 +25,15 @@ scratch = tempfile.mkdtemp(prefix="fathom-tests-")
 os.environ["XDG_CONFIG_HOME"] = os.path.join(scratch, "config")
 os.environ["XDG_DATA_HOME"] = os.path.join(scratch, "data")
 os.environ["XDG_CACHE_HOME"] = os.path.join(scratch, "cache")
+# An app built by a test must not go to the network for an update.
+os.environ["APPS_NO_UPDATE"] = "1"
 
 import gi  # noqa: E402
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from fathom import filetypes, scan, treemap, units, volumes  # noqa: E402
+from fathom import filetypes, scan, treemap, units, volumes, winenv  # noqa: E402
 from fathom.config import Config  # noqa: E402
 
 skipped = []
@@ -44,11 +46,26 @@ def check(name, fn):
 
 def needs(tool, name, fn):
     """Run fn only where the tool exists; say so plainly when it doesn't."""
-    if shutil.which(tool):
+    # The du a Windows machine has is MSYS's or Git's, which reports what its
+    # own emulation of blocks comes to rather than what NTFS allocated — a
+    # second opinion that is not about the same disk.
+    if tool == "du" and winenv.WINDOWS:
+        skipped.append((name, "no native du on Windows"))
+        print(f"  --  {name}  (no native du on Windows)")
+    elif shutil.which(tool):
         check(name, fn)
     else:
-        skipped.append((name, tool))
+        skipped.append((name, f"no {tool} on this machine"))
         print(f"  --  {name}  (no {tool} on this machine)")
+
+
+def posix(name, fn, why):
+    """Run fn except on Windows, where what it tests is not there to test."""
+    if winenv.WINDOWS:
+        skipped.append((name, why))
+        print(f"  --  {name}  ({why})")
+    else:
+        check(name, fn)
 
 
 # ------------------------------------------------------------ a filesystem --
@@ -65,6 +82,19 @@ def make_tree(where):
     write(os.path.join(where, "code", "src", "util.py"), 300)
     os.makedirs(os.path.join(where, "empty"), exist_ok=True)
     return where
+
+
+def cost(path):
+    """What the filesystem says `path` occupies — the number the scan must match.
+
+    Blocks where there are blocks. Windows reports none, and there the scan
+    rounds to the volume's cluster, which is the most it can know cheaply.
+    """
+    st = os.stat(path)
+    if hasattr(st, "st_blocks"):
+        return st.st_blocks * scan.BLOCK
+    cluster = winenv.cluster_size(path)
+    return -(-st.st_size // cluster) * cluster
 
 
 def write(path, size):
@@ -106,9 +136,9 @@ def test_a_directory_costs_its_own_blocks():
     root = scan.Scan(where).run().root
     empty = root.find("empty")
     assert empty.size == 0, empty.size
-    assert empty.alloc == os.stat(empty.path).st_blocks * scan.BLOCK, empty.alloc
+    assert empty.alloc == cost(empty.path), empty.alloc
     films = root.find("films")
-    own = os.stat(films.path).st_blocks * scan.BLOCK
+    own = cost(films.path)
     assert films.alloc == 40960 + own or films.alloc >= films.size, films.alloc
 
 
@@ -176,7 +206,10 @@ def test_an_unreadable_folder_is_counted_not_crashed_on():
 
 
 def test_a_scan_can_be_stopped():
-    running = scan.Scan(os.path.expanduser("~"))
+    # A folder this suite made, not the home directory: under MSYS2's shell
+    # "~" is a home that need not exist, and a scan of nothing ends before
+    # it looks at whether it was stopped.
+    running = scan.Scan(make_tree(os.path.join(scratch, "stopped")))
     running.cancel()
     result = running.run()
     assert result.cancelled
@@ -356,7 +389,10 @@ def test_settings_survive_a_round_trip_and_rubbish_does_not():
 def test_the_machine_has_somewhere_to_scan():
     found = volumes.volumes()
     assert found, "no filesystems found at all"
-    assert any(vol.path == os.path.expanduser("~") for vol in found)
+    # Home is offered when there is one; under MSYS2's shell "~" can name a
+    # folder that was never made, and offering that would be the bug.
+    home = os.path.expanduser("~")
+    assert any(vol.path == home for vol in found) == os.path.isdir(home)
     assert all(vol.total >= vol.free for vol in found)
 
 
@@ -507,10 +543,66 @@ def test_two_windows_open_at_once_and_share_nothing():
         window.destroy()
 
 
+def native_icons(window):
+    """The big and the small icon Windows holds for `window`; 0 for none."""
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32")
+    user32.SendMessageW.restype = ctypes.c_void_p
+    user32.SendMessageW.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t,
+                                    ctypes.c_void_p)
+    hwnd = winenv.window_handle(window)
+    return [user32.SendMessageW(hwnd, 0x007F, which, None) or 0   # WM_GETICON
+            for which in (1, 0)]                                  # ICON_BIG, ICON_SMALL
+
+
+def test_on_windows_a_window_wears_the_apps_icon_not_pythons():
+    """GTK 4 sets no icon on a window there, so each one wore pythonw.exe's:
+    the Python logo, in Alt+Tab and on the taskbar."""
+    if not winenv.WINDOWS:
+        return
+    window = _test_app().new_window()
+    window.realize()
+    try:
+        big, small = native_icons(window)
+        assert big and small, "the window has no icon of its own"
+    finally:
+        window.destroy()
+
+
 def test_the_new_window_action_is_there_with_its_accelerator():
     app = _test_app()
     assert app.lookup_action("new-window") is not None, "no app.new-window action"
     assert app.get_accels_for_action("app.new-window") == ["<Control>n"]
+
+
+def test_a_junction_is_never_followed():
+    """Windows' folder links are skipped, the way symlinks are everywhere.
+
+    A stock profile has a dozen — "Application Data" is AppData again — and
+    following them counts the same gigabytes twice.
+    """
+    where = make_tree(os.path.join(scratch, "junction"))
+    link = os.path.join(where, "films again")
+    import _winapi  # what CPython's own tests make junctions with
+
+    _winapi.CreateJunction(os.path.join(where, "films").replace("/", "\\"),
+                           link.replace("/", "\\"))
+    root = scan.Scan(where).run().root
+    assert root.find("films again") is None, "the junction was walked"
+    assert root.size == 4000 + 30000 + 10000 + 700 + 300, root.size
+
+
+def test_a_windows_scan_goes_below_the_top():
+    """Every entry scandir hands back on Windows says it is on device 0.
+
+    Compared against the real device of the folder the scan started in, that
+    made everything a different filesystem, and the default scan stopped one
+    level down with nothing in it.
+    """
+    where = make_tree(os.path.join(scratch, "devices"))
+    root = scan.Scan(where, one_filesystem=True).run().root
+    assert root.find("code").find("src").nfiles == 2
 
 
 def main():
@@ -518,13 +610,25 @@ def main():
     check("a tree adds up to what is in it", test_a_tree_adds_up_to_what_is_in_it)
     check("a directory costs its own blocks", test_a_directory_costs_its_own_blocks)
     needs("du", "the total is the one du gives", test_the_total_is_the_one_du_gives)
-    check("a hardlink is one file however many names",
-          test_a_hardlink_is_one_file_however_many_names)
+    # Windows gives os.scandir no link count, and asking each file for one is
+    # a system call per file on a walk of millions — so there a hardlinked
+    # file is counted per name, the way Explorer counts it.
+    posix("a hardlink is one file however many names",
+          test_a_hardlink_is_one_file_however_many_names,
+          "no link counts from scandir on Windows")
     needs("du", "hardlinks agree with du too", test_hardlinks_agree_with_du_too)
-    check("a symlink is never followed", test_a_symlink_is_never_followed)
-    check("an unreadable folder is counted, not crashed on",
-          test_an_unreadable_folder_is_counted_not_crashed_on)
+    # Making a symlink on Windows takes a privilege a user does not have by
+    # default, and chmod cannot lock a folder there; the junction test below
+    # is what stands in for the first.
+    posix("a symlink is never followed", test_a_symlink_is_never_followed,
+          "symlinks need a privilege on Windows")
+    posix("an unreadable folder is counted, not crashed on",
+          test_an_unreadable_folder_is_counted_not_crashed_on,
+          "chmod cannot lock a folder on Windows")
     check("a scan can be stopped", test_a_scan_can_be_stopped)
+    if winenv.WINDOWS:
+        check("a junction is never followed", test_a_junction_is_never_followed)
+        check("a Windows scan goes below the top", test_a_windows_scan_goes_below_the_top)
     check("deleting takes the size out of every folder above it",
           test_deleting_takes_the_size_out_of_every_folder_above_it)
     check("the biggest files come back biggest first",
@@ -575,6 +679,8 @@ def main():
              lambda _a: test_two_windows_open_at_once_and_share_nothing()),
             ("the new-window action is there with its accelerator",
              lambda _a: test_the_new_window_action_is_there_with_its_accelerator()),
+            ("on Windows, a window wears the app's icon, not Python's",
+             lambda _a: test_on_windows_a_window_wears_the_apps_icon_not_pythons()),
             ("the views build and take a scan", test_the_views_build_and_take_a_scan),
             ("deleting from the window updates the numbers",
              test_deleting_from_the_window_updates_the_numbers),
@@ -602,9 +708,9 @@ def main():
         raise failures[0]
 
     if skipped:
-        print("\nskipped for want of a tool:")
-        for name, tool in skipped:
-            print(f"  {name}  (needs {tool})")
+        print("\nskipped:")
+        for name, why in skipped:
+            print(f"  {name}  ({why})")
     print("all good")
 
 

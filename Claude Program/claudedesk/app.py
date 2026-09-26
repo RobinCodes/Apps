@@ -12,7 +12,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 
-from . import backend, config, widgets  # noqa: E402
+from . import backend, config, updater, widgets, winenv  # noqa: E402
 from .manager import Manager  # noqa: E402
 from .window import MainWindow  # noqa: E402
 
@@ -48,6 +48,8 @@ class ClaudeDeskApp(Adw.Application):
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+        winenv.use_icon(self, "claude-desk.ico")
+        updater.watch(self, "Claude Desk", "claude-desk")
         widgets.install_css()
         display = Gdk.Display.get_default()
         if display is not None:
@@ -189,6 +191,7 @@ def main():
             "Install Claude Code, or point CLAUDE_DESK_BIN at the binary."
         )
         return 1
+    winenv.set_app_id(APP_ID)
     return ClaudeDeskApp().run(sys.argv)
 
 

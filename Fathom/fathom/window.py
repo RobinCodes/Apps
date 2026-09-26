@@ -386,7 +386,14 @@ class MainWindow(Adw.ApplicationWindow):
             self._scan_finished(result)
 
         def failed(exc):
+            if running is not self.scan:
+                return
+            self.scan = None
             self.banner.set_reveal_child(False)
+            # Left alone, the strip would go on saying "Scanning C:\" under a
+            # window that has stopped, which reads as a scan that never ends.
+            self.status.set_text(f"Could not scan {path}")
+            self.status.add_css_class("warning")
             widgets.error_toast(self, exc)
 
         jobs.run(work, done, failed)

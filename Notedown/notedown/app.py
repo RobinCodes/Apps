@@ -11,7 +11,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio  # noqa: E402
 
-from . import widgets  # noqa: E402
+from . import updater, widgets, winenv  # noqa: E402
 from .window import MainWindow  # noqa: E402
 
 APP_ID = "com.robin.Notedown"
@@ -56,6 +56,8 @@ class NotedownApp(Adw.Application):
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+        winenv.use_icon(self, "notedown.ico")
+        updater.watch(self, "Notedown", "notedown.py")
         widgets.install_css()
 
         quit_action = Gio.SimpleAction.new("quit", None)
@@ -173,6 +175,7 @@ def main():
             print(f"Notedown {__version__}")
             return 0
 
+    winenv.set_app_id(APP_ID)
     return NotedownApp().run(sys.argv)
 
 

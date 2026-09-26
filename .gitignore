@@ -21,3 +21,10 @@ __pycache__/
 
 # Generated from the .svg files by windows/install.ps1
 /windows/icons/_preview*.png
+
+# Left by win32/launch.py: the next build while it is waiting to be swapped in,
+# the one it replaced, its lock, and its log.
+/Lyndon Browser/dist-next/
+/Lyndon Browser/dist-old*/
+/Lyndon Browser/.update.lock
+/Lyndon Browser/update.log

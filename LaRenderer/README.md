@@ -566,7 +566,10 @@ powershell -ExecutionPolicy Bypass -File windows\install.ps1 -Desktop
 
 That checks the runtime is really there before it makes anything, generates
 the icons from the `.svg`, and puts a shortcut in the Start Menu (and on the
-Desktop with `-Desktop`). `-Uninstall` removes them again.
+Desktop with `-Desktop`). `-Uninstall` removes them again. It also registers
+LaRenderer for `.tex` and LaTeX's other source types, the way the `.desktop`
+file does for `text/x-tex`: it is offered under *Open with*, and becomes the
+default with `-Default LaRenderer`, which opens its page in Settings.
 
 The shortcuts run MSYS2's `pythonw.exe` directly rather than going through the
 `.bat`. Windows looks for a program's DLLs beside the `.exe` first, so GTK is

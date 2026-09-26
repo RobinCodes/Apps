@@ -245,6 +245,12 @@ char     *ly_normalise_input (const char *text, const char *search_url);
 /* Like ly_normalise_input, but first honours a "keyword rest of query"
  * shortcut from [privacy] search-keywords. */
 char     *ly_config_resolve_input (LyConfig *cfg, const char *text);
+/* A command-line argument that names a file, as the file:// URI to load it
+ * from; NULL when it names none, and is an address or a search instead.
+ * Explorer opens a page by handing over "C:\…\page.html", which is neither —
+ * the GTK build never sees one, as GApplication turns arguments into GFiles.
+ * `cwd` is what a relative path is relative to; NULL is this process's. */
+char     *ly_uri_from_path   (const char *arg, const char *cwd);
 gboolean  ly_looks_like_url  (const char *text);
 char     *ly_uri_host        (const char *uri);
 char     *ly_uri_base_domain (const char *uri);   /* eTLD+1, approximated     */

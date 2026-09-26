@@ -24,6 +24,14 @@ G_BEGIN_DECLS
 /* Register the window class. Once, before the first ly_window_new(). */
 gboolean ly_window_register (HINSTANCE instance);
 
+/* When a Lyndon is already running, give it `wanted` — addresses, or text
+ * for the address bar — to open as tabs, bring it to the front, and return
+ * TRUE: this process has nothing left to do. FALSE means this is the first
+ * Lyndon, or the one running did not answer, and this one opens its own
+ * window. Called before anything is loaded, so that a link clicked in another
+ * program reaches the open window without a second browser starting up. */
+gboolean ly_window_hand_over (GPtrArray *wanted);
+
 LyWindow *ly_window_new (HINSTANCE instance, LyConfig *cfg, LyStore *store,
                          LyBlock *block, LyDownloads *downloads,
                          LyPasswords *passwords, const char *url);

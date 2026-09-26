@@ -2,7 +2,11 @@
 
 import sys
 
-from .app import main
+from . import updater
+
+updater.apply()
+
+from .app import main  # noqa: E402
 
 if __name__ == "__main__":
     sys.exit(main())

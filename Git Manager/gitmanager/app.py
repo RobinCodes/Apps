@@ -11,7 +11,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib  # noqa: E402
 
-from . import jobs, service, widgets  # noqa: E402
+from . import jobs, service, updater, widgets, winenv  # noqa: E402
 from .window import MainWindow  # noqa: E402
 
 APP_ID = "com.robin.GitManager"
@@ -50,6 +50,8 @@ class GitManagerApp(Adw.Application):
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+        winenv.use_icon(self, "git-manager.ico")
+        updater.watch(self, "Git Manager", "git-manager")
         widgets.install_css()
         quit_action = Gio.SimpleAction.new("quit", None)
         quit_action.connect("activate", lambda *_: self.quit())
@@ -204,6 +206,7 @@ def main():
     if any(flag in ("-h", "--help") for flag in sys.argv[1:]):
         print(USAGE.strip())
         return 0
+    winenv.set_app_id(APP_ID)
     return GitManagerApp().run(sys.argv)
 
 

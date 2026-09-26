@@ -15,11 +15,41 @@
 #include <commctrl.h>
 #include <objbase.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 
 static void
 on_environment (gboolean ok, const char *message, gpointer data)
 {
   ly_window_environment_ready (ok, message);
+}
+
+/* What this start was asked to open, one entry per argument. A file becomes
+ * its file:// URI here, the one place that knows what a relative path is
+ * relative to; anything else stays as typed, for the address bar's rules. */
+static GPtrArray *
+requested (void)
+{
+  GPtrArray *wanted = g_ptr_array_new_with_free_func (g_free);
+  int argc = 0;
+  LPWSTR *argv = CommandLineToArgvW (GetCommandLineW (), &argc);
+  for (int i = 1; argv && i < argc; i++) {
+    char *arg = g_utf16_to_utf8 ((const gunichar2 *) argv[i], -1, NULL, NULL, NULL);
+    /* The Linux build's --new-window and --private have nothing to do here,
+     * and read as address-bar text they would be searched for. */
+    if (arg == NULL || *arg == '\0' || g_str_has_prefix (arg, "--")) {
+      g_free (arg);
+      continue;
+    }
+    char *uri = ly_uri_from_path (arg, NULL);
+    if (uri) {
+      g_free (arg);
+      arg = uri;
+    }
+    g_ptr_array_add (wanted, arg);
+  }
+  if (argv)
+    LocalFree (argv);
+  return wanted;
 }
 
 /* The data directory the app was installed with: rules/ and web/ live beside
@@ -49,6 +79,20 @@ wWinMain (HINSTANCE instance, HINSTANCE prev, PWSTR cmdline, int show)
   HRESULT hr = CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
   if (FAILED (hr) && hr != RPC_E_CHANGED_MODE)
     return 1;
+
+  /* Before any window exists, so every one of them carries it. The Start
+   * Menu shortcut starts the updater rather than this executable, and the
+   * shared ID is what lets the taskbar see the two as one app — the pinned
+   * icon lights up rather than a second one appearing beside it. */
+  SetCurrentProcessExplicitAppUserModelID (L"" LYNDON_APP_ID);
+
+  /* One Lyndon at a time, the way GApplication makes it on Linux: a link
+   * clicked while one is open becomes a tab in it, not a second browser. */
+  g_autoptr (GPtrArray) wanted = requested ();
+  if (ly_window_hand_over (wanted)) {
+    CoUninitialize ();
+    return 0;
+  }
 
   /* Per-monitor v2, so the chrome redraws at the right size when the window
    * is dragged to a display with a different scale factor. */
@@ -82,20 +126,22 @@ wWinMain (HINSTANCE instance, HINSTANCE prev, PWSTR cmdline, int show)
     return 1;
   }
 
-  /* A URL on the command line opens instead of the homepage. */
-  g_autofree char *first = NULL;
-  int argc = 0;
-  LPWSTR *argv = CommandLineToArgvW (GetCommandLineW (), &argc);
-  if (argv) {
-    if (argc > 1)
-      first = g_utf16_to_utf8 ((const gunichar2 *) argv[1], -1, NULL, NULL, NULL);
-    LocalFree (argv);
+  /* What the command line asked for opens instead of the homepage, read the
+   * way the address bar would read it: "example.com" is a site, and words
+   * are a search. WebView2 itself takes nothing but a complete URL. */
+  g_autoptr (GPtrArray) urls = g_ptr_array_new_with_free_func (g_free);
+  for (guint i = 0; i < wanted->len; i++) {
+    char *url = ly_config_resolve_input (cfg, g_ptr_array_index (wanted, i));
+    if (url)
+      g_ptr_array_add (urls, url);
   }
 
-  LyWindow *win = ly_window_new (instance, cfg, store, block, downloads,
-                                 passwords, first);
+  LyWindow *win = ly_window_new (instance, cfg, store, block, downloads, passwords,
+                                 urls->len ? g_ptr_array_index (urls, 0) : NULL);
   if (win == NULL)
     return 1;
+  for (guint i = 1; i < urls->len; i++)
+    ly_window_open_tab (win, g_ptr_array_index (urls, i));
 
   /* Cookies, cache and logins live here, shared by every tab and window. */
   g_autofree char *data_home = ly_data_dir ();

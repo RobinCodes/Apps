@@ -19,6 +19,8 @@ sys.path.insert(0, ROOT)
 scratch = tempfile.mkdtemp(prefix="claude-desk-tests-")
 os.environ["XDG_CONFIG_HOME"] = os.path.join(scratch, "config")
 os.environ["XDG_DATA_HOME"] = os.path.join(scratch, "data")
+# An app built by a test must not go to the network for an update.
+os.environ["APPS_NO_UPDATE"] = "1"
 
 import gi  # noqa: E402
 
@@ -27,7 +29,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, GLib, Gio, Gtk  # noqa: E402
 
-from claudedesk import backend, chat, config, widgets  # noqa: E402
+from claudedesk import backend, chat, config, widgets, winenv  # noqa: E402
 from claudedesk.backend import Event  # noqa: E402
 from claudedesk.manager import Manager  # noqa: E402
 
@@ -384,6 +386,28 @@ def test_command_menu():
 
 # ----------------------------------------------------------- the whole app --
 
+def native_icons(window):
+    """The big and the small icon Windows holds for `window`; 0 for none."""
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32")
+    user32.SendMessageW.restype = ctypes.c_void_p
+    user32.SendMessageW.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t,
+                                    ctypes.c_void_p)
+    hwnd = winenv.window_handle(window)
+    return [user32.SendMessageW(hwnd, 0x007F, which, None) or 0   # WM_GETICON
+            for which in (1, 0)]                                  # ICON_BIG, ICON_SMALL
+
+
+def test_on_windows_the_window_wears_the_apps_icon_not_pythons(app):
+    """GTK 4 sets no icon on a window there, so each one wore pythonw.exe's:
+    the Python logo, in Alt+Tab and on the taskbar."""
+    if not winenv.WINDOWS:
+        return
+    big, small = native_icons(app.props.active_window or app.get_windows()[0])
+    assert big and small, "the window has no icon of its own"
+
+
 def test_the_new_window_flag_never_reaches_the_paths():
     from claudedesk.app import split_new_window_flag
 
@@ -552,6 +576,8 @@ def main():
         try:
             test_window(app)
             print("  ok  cards, commands and Escape, in the real window")
+            test_on_windows_the_window_wears_the_apps_icon_not_pythons(app)
+            print("  ok  on Windows, the window wears the app's icon, not Python's")
             test_the_new_window_flag_never_reaches_the_paths()
             print("  ok  the new-window flag never reaches the paths")
             test_two_windows_share_one_manager(app)

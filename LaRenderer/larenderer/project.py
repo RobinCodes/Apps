@@ -169,12 +169,16 @@ def _tex_files(folder: str, depth: int = 0, limit: int = 400) -> list[str]:
     for entry in entries:
         if len(found) >= limit:
             break
+        # os.path.join, not entry.path: MSYS2's Python joins with "/" but
+        # its scandir with "\", and a path that is spelled two ways is two
+        # different documents to every comparison in the app.
+        path = os.path.join(folder, entry.name)
         try:
             if entry.is_file() and is_tex(entry.name):
-                found.append(entry.path)
+                found.append(path)
             elif (depth > 0 and entry.is_dir() and not entry.name.startswith(".")
                   and entry.name not in SKIP_DIRS):
-                found.extend(_tex_files(entry.path, depth - 1, limit - len(found)))
+                found.extend(_tex_files(path, depth - 1, limit - len(found)))
         except OSError:
             continue
     return found

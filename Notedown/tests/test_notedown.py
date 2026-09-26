@@ -28,6 +28,8 @@ scratch = tempfile.mkdtemp(prefix="notedown-tests-")
 os.environ["XDG_CONFIG_HOME"] = os.path.join(scratch, "config")
 os.environ["XDG_DATA_HOME"] = os.path.join(scratch, "data")
 os.environ["XDG_CACHE_HOME"] = os.path.join(scratch, "cache")
+# An app built by a test must not go to the network for an update.
+os.environ["APPS_NO_UPDATE"] = "1"
 
 import gi  # noqa: E402
 
@@ -687,6 +689,53 @@ def test_a_link_to_a_local_file_opens_it_rather_than_a_browser(window):
     document = window.open_path(source)
     assert window.open_url(document, "linked.md") is True
     assert any(d.is_at(target) for d in window.documents)
+
+
+def test_a_name_typed_bare_is_saved_as_markdown():
+    # The Windows save dialog hands back exactly what was typed, and "notes"
+    # with nothing after it is a file Explorer calls "File" and opens with
+    # nothing.
+    from notedown.window import with_extension
+
+    assert with_extension(os.path.join("d", "notes"), ".md") == os.path.join("d", "notes.md")
+    assert with_extension(os.path.join("d", "notes.md"), ".md") == os.path.join("d", "notes.md")
+    # An extension the user chose is theirs, even one this app would not pick.
+    assert with_extension(os.path.join("d", "notes.txt"), ".md") == os.path.join("d", "notes.txt")
+    # A dot in the folder is not an extension on the file.
+    assert with_extension(os.path.join("v1.2", "notes"), ".md") == os.path.join("v1.2", "notes.md")
+
+
+def native_icons(window):
+    """The big and the small icon Windows holds for `window`; 0 for none."""
+    import ctypes
+
+    from notedown import winenv
+
+    user32 = ctypes.WinDLL("user32")
+    user32.SendMessageW.restype = ctypes.c_void_p
+    user32.SendMessageW.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t,
+                                    ctypes.c_void_p)
+    hwnd = winenv.window_handle(window)
+    return [user32.SendMessageW(hwnd, 0x007F, which, None) or 0   # WM_GETICON
+            for which in (1, 0)]                                  # ICON_BIG, ICON_SMALL
+
+
+def test_on_windows_the_window_wears_notedowns_icon_not_pythons(window):
+    # GTK 4 sets no icon on a window there, so it wore pythonw.exe's: the
+    # Python logo, in Alt+Tab and on the taskbar. NotedownApp does this at
+    # startup; the window here belongs to a plain test application.
+    from notedown import winenv
+
+    if not winenv.WINDOWS:
+        return
+    winenv.use_icon(window.get_application(), "notedown.ico")
+    big, small = native_icons(window)
+    assert big and small, "the window has no icon of its own"
+
+
+def test_ctrl_t_is_a_new_document_like_ctrl_n(window):
+    accels = window.get_application().get_accels_for_action("win.new")
+    assert "<Control>t" in accels and "<Control>n" in accels, accels
 
 
 def test_replacing_one_regex_match_keeps_its_groups(window):

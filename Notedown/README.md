@@ -178,7 +178,12 @@ xdg-mime default notedown.desktop text/markdown
 ```
 
 On Windows, see [the shared README](../README.md#on-windows); `notedown.bat`
-starts it on MSYS2's Python.
+starts it on MSYS2's Python. There, the default is chosen in Settings, which
+the installer opens at Notedown's page:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\install.ps1 -Default Notedown
+```
 
 ## Tests
 

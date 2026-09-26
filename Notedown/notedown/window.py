@@ -41,6 +41,25 @@ from .search import FindBar  # noqa: E402
 MAX_FILE_BYTES = 40 * 1024 * 1024
 
 
+
+def _markdown_filter():
+    markdown_filter = Gtk.FileFilter()
+    markdown_filter.set_name("Markdown")
+    for extension in MARKDOWN_EXTENSIONS:
+        markdown_filter.add_pattern("*" + extension)
+    return markdown_filter
+
+
+def with_extension(path, extension):
+    """`path`, with `extension` added if its name has none of its own.
+
+    A name the user gave an extension to — notes.txt, README.markdown — is
+    theirs and stays as it is.
+    """
+    if not extension or os.path.splitext(os.path.basename(path))[1]:
+        return path
+    return path + extension
+
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Notedown")
@@ -114,7 +133,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         # -- header, start ------------------------------------------------
         self.new_button = Gtk.Button(icon_name="tab-new-symbolic",
-                                     tooltip_text="New (Ctrl+N)")
+                                     tooltip_text="New (Ctrl+N or Ctrl+T)")
         self.new_button.set_action_name("win.new")
         self.header.pack_start(self.new_button)
 
@@ -505,7 +524,7 @@ class MainWindow(Adw.ApplicationWindow):
         if app is None:
             return
         for action, keys in (
-            ("win.new", ["<Control>n"]),
+            ("win.new", ["<Control>n", "<Control>t"]),
             ("win.open", ["<Control>o"]),
             ("win.save", ["<Control>s"]),
             ("win.save-as", ["<Control><Shift>s"]),
@@ -617,10 +636,7 @@ class MainWindow(Adw.ApplicationWindow):
         dialog = Gtk.FileDialog(title="Open a document")
         filters = Gio.ListStore.new(Gtk.FileFilter)
 
-        markdown_filter = Gtk.FileFilter()
-        markdown_filter.set_name("Markdown")
-        for extension in MARKDOWN_EXTENSIONS:
-            markdown_filter.add_pattern("*" + extension)
+        markdown_filter = _markdown_filter()
         filters.append(markdown_filter)
 
         text_filter = Gtk.FileFilter()
@@ -757,6 +773,18 @@ class MainWindow(Adw.ApplicationWindow):
             return
         dialog = Gtk.FileDialog(title="Save as")
         dialog.set_initial_name(document.name if document.path else UNTITLED)
+        # Without a type to offer, the Windows dialog saves exactly the name
+        # typed — "notes" becomes a file with no extension, which Explorer
+        # shows as a plain "File" and opens with nothing.
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        markdown_filter = _markdown_filter()
+        filters.append(markdown_filter)
+        every = Gtk.FileFilter()
+        every.set_name("All files")
+        every.add_pattern("*")
+        filters.append(every)
+        dialog.set_filters(filters)
+        dialog.set_default_filter(markdown_filter)
         folder = document.folder or self.config["last_folder"]
         if folder and os.path.isdir(folder):
             dialog.set_initial_folder(Gio.File.new_for_path(folder))
@@ -769,6 +797,9 @@ class MainWindow(Adw.ApplicationWindow):
             path = gfile.get_path() if gfile else None
             if not path:
                 return
+            self._confirm_extended(path, ".md", save_to)
+
+        def save_to(path):
             document.set_path(path)
             page = self._page_of(document)
             if page is not None:
@@ -1123,9 +1154,27 @@ class MainWindow(Adw.ApplicationWindow):
             except GLib.Error:
                 return
             if gfile and gfile.get_path():
-                handler(gfile.get_path())
+                extension = os.path.splitext(suggested)[1]
+                self._confirm_extended(gfile.get_path(), extension, handler)
 
         dialog.save(self, None, chosen)
+
+    def _confirm_extended(self, path, extension, then):
+        """then(path), with `extension` added when the name was typed without one.
+
+        The dialog already asked about replacing the name as typed; a name
+        this adds to is one nobody was asked about, so that gets its own
+        question.
+        """
+        full = with_extension(path, extension)
+        if full == path or not os.path.exists(full):
+            then(full)
+            return
+        widgets.confirm(
+            self, f"Replace {os.path.basename(full)}?",
+            "A file with that name already exists in this folder. Saving will "
+            "replace what is in it.",
+            "Replace", lambda: then(full))
 
     def export_html(self):
         document = self.active
@@ -1235,7 +1284,7 @@ class MainWindow(Adw.ApplicationWindow):
     def show_shortcuts(self):
         groups = [
             ("Files", [
-                ("Ctrl+N", "New document"), ("Ctrl+O", "Open"),
+                ("Ctrl+N / Ctrl+T", "New document"), ("Ctrl+O", "Open"),
                 ("Ctrl+S", "Save"), ("Ctrl+Shift+S", "Save as"),
                 ("Ctrl+W", "Close tab"), ("Ctrl+Shift+E", "Export as HTML"),
             ]),

@@ -105,6 +105,25 @@ ly_normalise_input (const char *text, const char *search_url)
 }
 
 char *
+ly_uri_from_path (const char *arg, const char *cwd)
+{
+  if (arg == NULL || *arg == '\0')
+    return NULL;
+
+  /* Something that says what it is stays that: a file:// URI is one already,
+   * and https://… could only be a path by accident. */
+  for (int i = 0; KNOWN_SCHEMES[i] != NULL; i++)
+    if (g_str_has_prefix (arg, KNOWN_SCHEMES[i]))
+      return NULL;
+
+  g_autofree char *here = cwd ? g_strdup (cwd) : g_get_current_dir ();
+  g_autofree char *path = g_canonicalize_filename (arg, here);
+  if (!g_file_test (path, G_FILE_TEST_EXISTS))
+    return NULL;
+  return g_filename_to_uri (path, NULL, NULL);
+}
+
+char *
 ly_uri_host (const char *uri)
 {
   if (uri == NULL || *uri == '\0')

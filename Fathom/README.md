@@ -128,7 +128,7 @@ which is why this app has the shortest `winenv.py` of the four.
 | `fathom/volumes.py` | What there is to scan: `/proc/mounts` on Linux, drive letters on Windows. |
 | `fathom/units.py` | Sizes, percentages and dates as a person writes them. |
 | `fathom/config.py` | Settings, in `~/.config/fathom/config.json`. |
-| `fathom/winenv.py` | Where files go on each platform, and nothing else. |
+| `fathom/winenv.py` | Where files go on each platform, and a volume's cluster size — Windows reports no `st_blocks`, so a file there costs its length rounded up to one. Junctions are never followed, and hardlinks count once per name, as Explorer counts them: `os.scandir` gives no link counts on Windows. |
 
 ## Keyboard
 
