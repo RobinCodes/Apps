@@ -29,12 +29,13 @@ WINDOWS = os.name == "nt"
 
 
 class Suite:
-    def __init__(self, name, kind, argv, cwd, needs=()):
+    def __init__(self, name, kind, argv, cwd, needs=(), env=None):
         self.name = name
         self.kind = kind          # "python", "c" or "powershell"
         self.argv = argv
         self.cwd = cwd
         self.needs = needs        # executables that must exist to run at all
+        self.env = env or {}      # on top of the environment every suite gets
 
     def missing(self):
         return [tool for tool in self.needs if not shutil.which(tool)]
@@ -57,17 +58,34 @@ def make_argv(makefile=None):
     """GNU make, named the way this platform has it.
 
     MSYS2 ships make under usr/bin and it is not usually on a Windows PATH,
-    so look there before giving up.
+    so look there first: win32/Makefile is written for MSYS2's make, and the
+    rest of MSYS2 is found from where it is, so another make that comes
+    first on PATH (Chocolatey installs one) will not do.
     """
-    found = shutil.which("make") or shutil.which("mingw32-make")
-    if not found and WINDOWS:
+    found = None
+    if WINDOWS:
         for guess in (r"C:\msys64\usr\bin\make.exe", r"C:\tools\msys64\usr\bin\make.exe"):
             if os.path.exists(guess):
                 found = guess
                 break
+    found = found or shutil.which("make") or shutil.which("mingw32-make")
     if not found:
         return None
     return [found] + (["-f", makefile] if makefile else [])
+
+
+def msys2_path(make):
+    """PATH as an MSYS2 MINGW64 shell has it, for MSYS2's make run from outside one.
+
+    Started from Windows, make inherits the Windows PATH, where win32/Makefile
+    finds no pkg-config, gcc or which, and the tests it builds cannot load
+    the GLib DLLs they link against. The MSYS2 is the one make came from:
+    C:\\msys64\\usr\\bin\\make.exe -> C:\\msys64.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.dirname(make)))
+    return os.pathsep.join([os.path.join(root, "mingw64", "bin"),
+                            os.path.join(root, "usr", "bin"),
+                            os.environ.get("PATH", "")])
 
 
 def suites():
@@ -100,7 +118,8 @@ def suites():
         argv = make_argv(makefile)
         if argv:
             found.append(Suite("Lyndon Browser", "c", argv + ["check"], cwd=lyndon,
-                               needs=("gcc",) if not WINDOWS else ()))
+                               needs=("gcc",) if not WINDOWS else (),
+                               env={"PATH": msys2_path(argv[0])} if WINDOWS else None))
         else:
             found.append(Suite("Lyndon Browser", "c", None, cwd=lyndon, needs=("make",)))
     return found
@@ -110,7 +129,7 @@ def run(suite, env):
     started = time.monotonic()
     try:
         done = subprocess.run(
-            suite.argv, cwd=suite.cwd, env=env,
+            suite.argv, cwd=suite.cwd, env={**env, **suite.env},
             capture_output=True, encoding="utf-8", errors="replace", timeout=1800,
         )
     except (OSError, subprocess.SubprocessError) as exc:
