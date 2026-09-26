@@ -8,6 +8,7 @@ commit, push, branch, merge, stash — from one window.
 ```bash
 git-manager               # open the window (on PATH via ~/.local/bin)
 git-manager .             # open it with the repository containing . selected
+git-manager --background  # serve other apps without a window (LaRenderer starts this)
 ```
 
 ## Where it's installed
@@ -70,6 +71,7 @@ and the GitHub tab explains what's missing.
 | `gitmanager/link.py` | Connect helper — joining a folder that already exists to a repository that already exists. |
 | `gitmanager/gitcmd.py` | Every git invocation, returning dataclasses. Knows no GTK. |
 | `gitmanager/github.py` | Every `gh` invocation, likewise. |
+| `gitmanager/service.py` | The git operations other apps ask for, and the session-bus object that serves them. |
 | `gitmanager/ignore.py` | Gitignore helper — the file picker, the pattern writer, the tracked-file check. |
 | `gitmanager/readme.py` | README helper — repository introspection and the markdown generator. |
 | `gitmanager/scanner.py` | The filesystem walk that finds repositories. |
@@ -258,6 +260,77 @@ too, for repos that keep their code in `app/` or `src/`. Sections with no
 evidence are switched off rather than filled with confident prose, and the
 gaps it can't infer are left as HTML comments to replace. It warns before
 replacing an existing README, whatever its capitalisation.
+
+## More than one window
+
+`Ctrl+N` opens another window, and so does **New Window** on the launcher
+icon's right-click menu. Both windows list every repository, and each keeps
+its own selection, its own job queue and its own view — which is the point:
+two repositories on screen at once, rather than one and a lot of clicking.
+
+From outside, one instance serves the lot:
+
+```bash
+git-manager           # show it, or start it
+git-manager PATH      # select that repository, in the window already open
+git-manager -n PATH   # select it in a window of its own
+```
+
+`--background` is unchanged and still means *no* window at all: it is a
+request to serve LaRenderer, not to show anything.
+
+One thing had to move for this. `jobs.on_unhandled` — where a background
+failure with no handler of its own ends up — is a single slot, and the window
+used to claim it on the way up. With two windows the second silently took it
+from the first, and a *closed* window went on owning it, so every later
+failure was reported onto a window that was no longer there. It belongs to the
+application now, which posts it on whichever window is in front.
+
+## Serving other apps
+
+LaRenderer's Git menu and its Overleaf sync don't run git themselves; they
+ask Git Manager over the session bus. Every Git Manager serves — a window
+opened by hand as much as one started for the purpose — on the object
+`/com/robin/GitManager/Service`, under the name the application already owns.
+
+The interface is one method, `Call(operation, arguments)`, with JSON both
+ways, so a new operation never changes the interface an older caller was
+built against:
+
+| Operation | Does |
+|---|---|
+| `status` | Branch, upstream distance and changed files — or `{"repo": null}` outside a repository |
+| `commit` | `git add -A` and commit, unless there is nothing to commit |
+| `pull`, `push` | As the buttons do; a push with no upstream publishes the branch to `origin` |
+| `sync` | Commit everything, merge the remote's changes, push — in that order, the only one that always has a next step |
+| `clone` | Clone into a folder that doesn't exist yet; a failed clone leaves nothing behind |
+| `init` | Start a repository in a folder |
+| `show` | Bring up the window with that repository selected |
+
+Each call runs on its own worker thread, and each repository takes one call at
+a time, so a commit can never land in the middle of a pull. Failures come back
+as D-Bus errors named for what the caller can do about them —
+`…Error.Auth` (ask for a sign-in and try again), `…Error.Conflict`,
+`…Error.Nothing` — rather than as git's own words to be pattern-matched.
+
+**Credentials.** A caller may pass a token — Overleaf's git bridge wants one.
+It reaches git through the environment of that single command, as a
+credential helper declared with `GIT_CONFIG_COUNT`, reading the token from an
+environment variable: never on a command line, where `ps` would show it, and
+never in a file of this app's. Helpers declared that way are asked after the
+user's own, and when the token works git hands it to those, so it is kept
+exactly where the user already keeps credentials.
+
+**`--background`** starts an instance with no window. It stays up for as long
+as the app that asked for it is on the bus — callers `Attach`, and the service
+watches their connections — then exits, but only once no operation is still
+running, since a push cut off half-way is worse than a process that lives a
+few seconds longer. An instance nobody attaches to gives up after a minute.
+Opening Git Manager normally while one is running just gives it a window.
+
+The service object is exported from `dbus_register`, before GApplication
+claims the name: a caller watching for the name would otherwise ask for the
+service in the gap between the two, and be told it doesn't exist.
 
 ## Destructive operations
 

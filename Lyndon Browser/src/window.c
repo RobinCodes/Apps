@@ -1638,6 +1638,13 @@ action_escape (GSimpleAction *action, GVariant *param, gpointer data)
     find_show (self, FALSE);
     return;
   }
+  /* Before stopping the page, because with the chrome hidden there is
+   * nothing on screen to say how to get out, and Escape is what everyone
+   * tries first. */
+  if (gtk_window_is_fullscreen (GTK_WINDOW (self))) {
+    gtk_window_unfullscreen (GTK_WINDOW (self));
+    return;
+  }
   LyTab *tab = ly_window_active_tab (self);
   if (tab != NULL && ly_tab_is_loading (tab))
     ly_tab_stop (tab);
@@ -1673,6 +1680,143 @@ action_print (GSimpleAction *action, GVariant *param, gpointer data)
   LyTab *tab = ly_window_active_tab (self);
   if (tab != NULL)
     ly_tab_print (tab);
+}
+
+/* ------------------------------------------------- shortcuts a page may keep
+ *
+ * Ctrl+S in Overleaf saves the document, not the web page it arrived in; the
+ * same goes for Ctrl+P, Ctrl+F and the rest of what any editor on the web
+ * binds. GTK dispatches application accelerators in the capture phase, which
+ * is before the focused widget -- so an accelerator on Ctrl+S takes the key
+ * away from the page entirely, and the editor never hears it. That is the
+ * whole bug: the browser answers a keystroke that was not addressed to it.
+ *
+ * These are therefore kept off the accelerator table (see app.c) and matched
+ * here instead, where the page can be asked first. WebKit's editor state says
+ * whether the keyboard focus is inside something editable -- a text field, a
+ * textarea, anything contenteditable -- and while it is, these keys are left
+ * alone to reach the page. Everywhere else they still mean what they always
+ * meant: reading an article, Ctrl+S saves it and Ctrl+F opens the find bar.
+ *
+ * The keys the browser keeps for itself regardless -- new tab, close tab, the
+ * address bar, navigation, zoom, full screen -- stay ordinary accelerators.
+ */
+static const struct {
+  guint            keyval;
+  GdkModifierType  mods;
+  const char      *action;
+} PAGE_SHORTCUTS[] = {
+  { GDK_KEY_s, GDK_CONTROL_MASK,                  "win.save-page"  },
+  { GDK_KEY_p, GDK_CONTROL_MASK,                  "win.print"      },
+  { GDK_KEY_f, GDK_CONTROL_MASK,                  "win.find"       },
+  { GDK_KEY_g, GDK_CONTROL_MASK,                  "win.find-next"  },
+  { GDK_KEY_g, GDK_CONTROL_MASK | GDK_SHIFT_MASK, "win.find-prev"  },
+  { GDK_KEY_d, GDK_CONTROL_MASK,                  "win.bookmark"   },
+  { GDK_KEY_h, GDK_CONTROL_MASK,                  "win.history"    },
+  { GDK_KEY_i, GDK_CONTROL_MASK,                  "win.site-info"  },
+  { GDK_KEY_u, GDK_CONTROL_MASK,                  "win.view-source"},
+};
+
+/* Whether the keystroke is addressed to something the page is typing into. */
+static gboolean
+page_has_the_cursor (LyWindow *self)
+{
+  if (self->url_focused)
+    return FALSE;   /* the address bar is ours, whatever the page is doing */
+
+  LyTab *tab = ly_window_active_tab (self);
+  if (tab == NULL || ly_tab_is_discarded (tab))
+    return FALSE;
+
+  GtkWidget *view  = GTK_WIDGET (ly_tab_web_view (tab));
+  GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (self));
+  if (focus == NULL || (focus != view && !gtk_widget_is_ancestor (focus, view)))
+    return FALSE;
+
+  /* "Paste available" is WebKit's way of saying the focus is in something
+   * that takes typing, which is exactly the question being asked. */
+  WebKitEditorState *state =
+    webkit_web_view_get_editor_state (WEBKIT_WEB_VIEW (view));
+  return state != NULL && webkit_editor_state_is_paste_available (state);
+}
+
+static gboolean
+on_window_key_pressed (GtkEventControllerKey *controller, guint keyval, guint keycode,
+                       GdkModifierType state, gpointer data)
+{
+  LyWindow *self = data;
+  GdkModifierType mods = state & gtk_accelerator_get_default_mod_mask ();
+  guint plain = gdk_keyval_to_lower (keyval);
+
+  for (guint i = 0; i < G_N_ELEMENTS (PAGE_SHORTCUTS); i++) {
+    if (PAGE_SHORTCUTS[i].keyval != plain || PAGE_SHORTCUTS[i].mods != mods)
+      continue;
+    if (page_has_the_cursor (self))
+      return GDK_EVENT_PROPAGATE;   /* not ours: let it reach the page */
+    gtk_widget_activate_action (GTK_WIDGET (self), PAGE_SHORTCUTS[i].action, NULL);
+    return GDK_EVENT_STOP;
+  }
+  return GDK_EVENT_PROPAGATE;
+}
+
+/* ---------------------------------------------------------- full screen */
+
+
+/* How near the top edge brings the chrome back while full screen. */
+#define FULLSCREEN_REVEAL_EDGE 5
+
+/* Full screen means the page and nothing else, so the whole top bar goes:
+ * header, bookmarks bar, tab strip and progress bar are one widget in the
+ * toolbar view, and AdwToolbarView animates it out and gives the space to
+ * the content.
+ *
+ * This hangs off the window's own property rather than off the action that
+ * toggles it, because F11 is not the only way in. The menu item, the
+ * compositor, and WebKit putting a video up by itself all end here instead
+ * of each needing to remember to hide the chrome. */
+static void
+on_fullscreen_changed (GObject *object, GParamSpec *pspec, gpointer data)
+{
+  LyWindow *self = data;
+  gboolean full = gtk_window_is_fullscreen (GTK_WINDOW (self));
+
+  adw_toolbar_view_set_reveal_top_bars (self->toolbar, !full);
+  if (full)
+    hide_suggestions (self);
+}
+
+/* Putting the pointer against the top edge brings the chrome back without
+ * leaving full screen, which is the only thing that keeps the address bar
+ * and the tabs reachable once they are hidden. */
+static void
+on_chrome_motion (GtkEventControllerMotion *motion, double x, double y, gpointer data)
+{
+  LyWindow *self = data;
+  if (!gtk_window_is_fullscreen (GTK_WINDOW (self)))
+    return;
+
+  /* Somebody typing in the address bar keeps it, wherever the pointer has
+   * wandered off to. */
+  if (self->url_focused)
+    return;
+
+  /* Once the chrome is out it sits under the pointer, so the zone has to
+   * grow to its height: measured against the same few pixels it would
+   * flicker away the instant it appeared. */
+  gboolean shown = adw_toolbar_view_get_reveal_top_bars (self->toolbar);
+  int edge = shown ? MAX (gtk_widget_get_height (self->chrome),
+                          FULLSCREEN_REVEAL_EDGE)
+                   : FULLSCREEN_REVEAL_EDGE;
+
+  adw_toolbar_view_set_reveal_top_bars (self->toolbar, y <= edge);
+}
+
+static void
+on_chrome_motion_leave (GtkEventControllerMotion *motion, gpointer data)
+{
+  LyWindow *self = data;
+  if (gtk_window_is_fullscreen (GTK_WINDOW (self)) && !self->url_focused)
+    adw_toolbar_view_set_reveal_top_bars (self->toolbar, FALSE);
 }
 
 static void
@@ -2272,7 +2416,15 @@ on_geometry_changed (GObject *object, GParamSpec *pspec, gpointer data)
 static gboolean
 on_close_request (GtkWindow *window, gpointer data)
 {
-  ly_window_save_geometry (LY_WINDOW (data));
+  LyWindow *self = LY_WINDOW (data);
+
+  ly_window_save_geometry (self);
+  /* Here rather than at shutdown: closing the last window by hand destroys it
+   * before shutdown runs, and a save from there would find nothing open and
+   * clear the session. */
+  if (self->app != NULL)
+    ly_app_save_session (self->app, self);
+
   return GDK_EVENT_PROPAGATE;   /* carry on closing */
 }
 
@@ -2485,6 +2637,26 @@ window_create (LyApp *app, WebKitNetworkSession *session)
   adw_toolbar_view_set_content (self->toolbar, content_overlay);
   adw_toolbar_view_add_bottom_bar (self->toolbar, build_find_bar (self));
   adw_toolbar_view_set_top_bar_style (self->toolbar, ADW_TOOLBAR_FLAT);
+
+  g_signal_connect (self, "notify::fullscreened",
+                    G_CALLBACK (on_fullscreen_changed), self);
+
+  /* Capture phase, so these are decided before they reach the page -- the
+   * point being that most of the time the decision is to do nothing and let
+   * them through. */
+  GtkEventController *page_keys = gtk_event_controller_key_new ();
+  gtk_event_controller_set_propagation_phase (page_keys, GTK_PHASE_CAPTURE);
+  g_signal_connect (page_keys, "key-pressed", G_CALLBACK (on_window_key_pressed), self);
+  gtk_widget_add_controller (GTK_WIDGET (self), page_keys);
+
+  /* Capture phase: the pointer spends full screen over the web view, which
+   * is a child of the toolbar, and the chrome has to come back from there
+   * rather than only from the strip it is hidden behind. */
+  GtkEventController *hover = gtk_event_controller_motion_new ();
+  gtk_event_controller_set_propagation_phase (hover, GTK_PHASE_CAPTURE);
+  g_signal_connect (hover, "motion", G_CALLBACK (on_chrome_motion), self);
+  g_signal_connect (hover, "leave", G_CALLBACK (on_chrome_motion_leave), self);
+  gtk_widget_add_controller (GTK_WIDGET (self->toolbar), hover);
 
   self->toasts = ADW_TOAST_OVERLAY (adw_toast_overlay_new ());
   adw_toast_overlay_set_child (self->toasts, GTK_WIDGET (self->toolbar));

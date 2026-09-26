@@ -43,13 +43,17 @@ class GitError(Exception):
         super().__init__(self.stderr or self.stdout or f"{self.cmd} exited {returncode}")
 
 
-def git(repo, *args, check=True, stdin=None, timeout=120):
-    """Run git in `repo` and return stdout. Raises GitError unless check=False."""
+def git(repo, *args, check=True, stdin=None, timeout=120, env=None):
+    """Run git in `repo` and return stdout. Raises GitError unless check=False.
+
+    `env` adds to the environment rather than replacing it -- the service
+    hands a credential over this way, see service.credential_env.
+    """
     try:
         proc = subprocess.run(
             [GIT, *args],
             cwd=repo,
-            env=_ENV,
+            env={**_ENV, **env} if env else _ENV,
             input=stdin,
             capture_output=True,
             # Not text=True: git speaks UTF-8 on both platforms, but text=True
@@ -426,13 +430,13 @@ def fetch(repo, all_remotes=True, prune=True):
     return git(repo, *args, timeout=300)
 
 
-def pull(repo, rebase=False):
+def pull(repo, rebase=False, env=None):
     args = ["pull"]
     args.append("--rebase" if rebase else "--no-rebase")
-    return git(repo, *args, timeout=300)
+    return git(repo, *args, timeout=300, env=env)
 
 
-def push(repo, remote=None, branch=None, force=False, set_upstream=False):
+def push(repo, remote=None, branch=None, force=False, set_upstream=False, env=None):
     args = ["push"]
     if force:
         # --force-with-lease refuses when the remote moved under us, which is
@@ -444,7 +448,18 @@ def push(repo, remote=None, branch=None, force=False, set_upstream=False):
         args.append(remote)
         if branch:
             args.append(branch)
-    return git(repo, *args, timeout=300)
+    return git(repo, *args, timeout=300, env=env)
+
+
+def clone(url, dest, env=None, timeout=900):
+    """Clone `url` into `dest`, which must not exist yet or be empty.
+
+    Run from the parent directory, which is made if it isn't there: there is
+    no repository yet to be the working directory.
+    """
+    parent = os.path.dirname(os.path.abspath(dest))
+    os.makedirs(parent, exist_ok=True)
+    return git(parent, "clone", "--", url, os.path.abspath(dest), env=env, timeout=timeout)
 
 
 def remotes(repo):

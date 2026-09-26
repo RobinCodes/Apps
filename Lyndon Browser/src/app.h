@@ -23,8 +23,14 @@ LyWindow *ly_app_new_window (LyApp *app);
 /* A window backed by an ephemeral session: nothing it does touches disk. */
 LyWindow *ly_app_new_private_window (LyApp *app);
 
-/* Write every open tab to the session store, for restore on next launch. */
-void ly_app_save_session (LyApp *app);
+/* Write every open tab to the session store, for restore on next launch.
+ * `closing` is a window on its way out, whose tabs are counted and then
+ * banked so that later saves -- including the one from a window that closes
+ * after it -- still remember them. NULL when nothing is closing. */
+void ly_app_save_session (LyApp *app, LyWindow *closing);
+
+/* Drop the tabs banked from windows already closed this run. */
+void ly_app_forget_closed_session (LyApp *app);
 
 /* Re-apply configuration everywhere: engine settings, blocker rules, chrome
  * styling and every live tab. */

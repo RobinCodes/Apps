@@ -192,6 +192,24 @@ load_resource_text (const char *path)
   return g_strndup (data, len);
 }
 
+/* `managers` holds no reference, so a manager has to take its own pointer out
+ * of the array when it goes. Each tab owns its content manager and drops the
+ * last reference to it on the way out; without this the pointer stayed behind,
+ * and the next ly_engine_apply -- a preference change, a theme switch, a
+ * refresh -- called remove_all_scripts on freed memory. Closing a tab and then
+ * opening the preferences was enough to do it.
+ *
+ * Only the pointer is used here, never the object: by the time this runs the
+ * manager is already in finalization. */
+static void
+manager_gone (gpointer data, GObject *where)
+{
+  LyEngine *engine = data;
+
+  if (engine->managers != NULL)
+    g_ptr_array_remove_fast (engine->managers, where);
+}
+
 void
 ly_engine_prepare_content_manager (LyEngine *engine, WebKitUserContentManager *ucm)
 {
@@ -200,8 +218,10 @@ ly_engine_prepare_content_manager (LyEngine *engine, WebKitUserContentManager *u
   webkit_user_content_manager_remove_all_scripts (ucm);
   webkit_user_content_manager_remove_all_style_sheets (ucm);
 
-  if (!g_ptr_array_find (engine->managers, ucm, NULL))
+  if (!g_ptr_array_find (engine->managers, ucm, NULL)) {
     g_ptr_array_add (engine->managers, ucm);
+    g_object_weak_ref (G_OBJECT (ucm), manager_gone, engine);
+  }
 
   /* -- privacy shims, before any page script runs -------------------- */
   if (cfg->gpc || cfg->trim_referrer || cfg->fingerprint_defence) {
@@ -603,6 +623,12 @@ ly_engine_free (LyEngine *engine)
 {
   if (engine == NULL)
     return;
+  /* Drop the weak references first: a manager that outlives the engine would
+   * otherwise call manager_gone with a pointer to freed memory. */
+  if (engine->managers != NULL) {
+    for (guint i = 0; i < engine->managers->len; i++)
+      g_object_weak_unref (g_ptr_array_index (engine->managers, i), manager_gone, engine);
+  }
   g_clear_pointer (&engine->managers, g_ptr_array_unref);
   g_clear_object (&engine->settings);
   g_clear_object (&engine->context);

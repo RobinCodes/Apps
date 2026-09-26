@@ -7,7 +7,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango  # noqa: E402
 
 SEVERITY_ICON = {
     "error": "✕",      # a cross
@@ -57,6 +57,51 @@ def confirm(parent, heading, body, action_label, callback, destructive=True):
     dialog.choose(parent, None, answered)
 
 
+def ask_text(parent, heading, body, initial, action_label, callback, select_stem=False,
+             secret=False):
+    """Ask for one line of text. callback(text) runs only on a yes.
+
+    Enter in the field answers yes, the way a rename box does everywhere
+    else. `select_stem` preselects a file name without its extension, so
+    typing replaces "chapter" and keeps ".tex".
+    """
+    dialog = Adw.AlertDialog(heading=heading, body=body or "")
+    entry = Gtk.PasswordEntry(show_peek_icon=True) if secret else Gtk.Entry()
+    entry.set_text(initial or "")
+    # Enter is handled below rather than with activates-default, which would
+    # press the button as well and answer twice.
+    dialog.set_extra_child(entry)
+    dialog.add_response("cancel", "Cancel")
+    dialog.add_response("go", action_label)
+    dialog.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
+    dialog.set_default_response("go")
+    dialog.set_close_response("cancel")
+
+    def answered(dlg, response):
+        if response == "go":
+            text = entry.get_text().strip()
+            if text:
+                callback(text)
+
+    def activated(_entry):
+        dialog.force_close()
+        answered(dialog, "go")
+
+    entry.connect("activate", activated)
+    dialog.connect("response", answered)
+    dialog.present(parent)
+
+    def focus():
+        entry.grab_focus()
+        if select_stem and initial and not secret:
+            stem = len(initial.rsplit(".", 1)[0]) if "." in initial.lstrip(".") else len(initial)
+            entry.select_region(0, stem)
+        return False
+
+    GLib.idle_add(focus)
+    return dialog
+
+
 def copyable(widget, text, note="Copied"):
     display = Gdk.Display.get_default()
     if display:
@@ -79,9 +124,15 @@ def pill(text, css=None):
 
 
 class ProblemsList(Gtk.ScrolledWindow):
-    """Errors, warnings and bad boxes. Clicking one jumps the editor to it."""
+    """Errors, warnings and bad boxes. Clicking one jumps the editor to it.
 
-    def __init__(self, on_activate):
+    `on_activate(line)` handles a line in the document itself. When
+    `on_message(message)` is given it handles every row instead — a
+    document made of several files has problems in files other than the one
+    on screen, and only the window knows how to open those.
+    """
+
+    def __init__(self, on_activate, on_message=None):
         super().__init__(hexpand=True)
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         # Grow with the number of problems rather than reserving a fixed slab
@@ -89,6 +140,7 @@ class ProblemsList(Gtk.ScrolledWindow):
         self.set_propagate_natural_height(True)
         self.set_max_content_height(240)
         self.on_activate = on_activate
+        self.on_message = on_message
         self._box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self._box.add_css_class("problems-list")
         self._box.connect("row-activated", self._activated)
@@ -153,12 +205,17 @@ class ProblemsList(Gtk.ScrolledWindow):
         where = "line %d" % message.line if message.line else "—"
         if message.file:
             where = "%s:%s" % (message.file, message.line or "?")
-        locator = Gtk.Label(label=where, css_classes=["dim-label", "monospace", "locator"])
+        # In a document of several files the locator carries a path; keep its
+        # end, which is the part that says which file, and let the message
+        # have the width.
+        locator = Gtk.Label(label=where, css_classes=["dim-label", "monospace", "locator"],
+                            ellipsize=Pango.EllipsizeMode.START, max_width_chars=26)
+        locator.set_tooltip_text(where)
         locator.set_valign(Gtk.Align.START)
         box.append(locator)
 
         row = Gtk.ListBoxRow(child=box)
-        row.set_activatable(bool(message.line) and not message.file)
+        row.set_activatable(bool(message.line) and (not message.file or bool(self.on_message)))
         row._index = index
         return row
 
@@ -167,7 +224,9 @@ class ProblemsList(Gtk.ScrolledWindow):
         if index is None:
             return
         message = self._messages[index]
-        if message.line and not message.file:
+        if self.on_message is not None:
+            self.on_message(message)
+        elif message.line and not message.file:
             self.on_activate(message.line)
 
 
@@ -226,6 +285,33 @@ CSS = """
 .package-missing { color: alpha(currentColor, 0.55); }
 .log-view { font-family: monospace; font-size: 0.85em; }
 .compiling { color: #e5a50a; }
+
+/* The folder side bar. */
+.file-tree-header {
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid alpha(currentColor, 0.10);
+}
+.file-tree listview { background: transparent; }
+.file-tree listview.navigation-sidebar > row {
+  min-height: 26px;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+.tree-dir { font-weight: 600; }
+.tree-hidden { opacity: 0.6; }
+.tree-current { color: @accent_color; font-weight: bold; }
+.git-badge { font-family: monospace; font-weight: bold; font-size: 0.85em; min-width: 12px; }
+.git-modified { color: #e5a50a; }
+.git-added    { color: #2ec27e; }
+.git-deleted  { color: #e01b24; }
+.git-conflict { color: #e01b24; }
+.git-renamed  { color: #3584e4; }
+.git-dir      { color: alpha(currentColor, 0.45); }
+.git-heading { font-weight: bold; }
+.git-summary { font-size: 0.9em; }
+.overleaf-note { font-size: 0.9em; }
 """
 
 

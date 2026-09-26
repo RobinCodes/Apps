@@ -333,12 +333,75 @@ syntax. Preferences → Blocking → Edit opens it.
 | `F7` | caret browsing |
 | `Ctrl H` | history |
 | `Ctrl P` | print |
-| `F11` | full screen |
+| `F11` | full screen — the whole top bar goes with it |
 | `Alt Home` | home page |
 | `Ctrl Shift P` | pause protection on this site |
 | `Ctrl Shift K` | clear cache (also `Ctrl Shift Backspace`) |
 | `Ctrl Shift Delete` | clear browsing data — pick what goes |
-| `Esc` | stop loading, or close the find bar |
+| `Esc` | close the find bar, leave full screen, or stop loading — in that order |
+
+---
+
+## Full screen
+
+`F11` hides the chrome as well as the window frame: the header, the bookmarks
+bar, the tab strip and the progress bar are one widget in the toolbar view, so
+all four leave together and the page takes the space. Putting the pointer
+against the top edge slides them back without leaving full screen, and takes
+them away again when it moves off — so the address bar is still reachable
+without a round trip through `F11`. `Esc` leaves too, which matters because
+with the chrome gone there is nothing on screen to say how else to.
+
+This hangs off the window's own `fullscreened` property rather than off the
+key that toggles it, because `F11` is not the only way in: the menu item, the
+compositor's own full-screen binding, and WebKit putting a video up by itself
+all arrive at the same place instead of each having to remember to hide the
+chrome.
+
+## More than one window
+
+`Ctrl N` and `Ctrl Shift N` open a window and a private window; dragging a tab
+off the strip makes a window of it; and each window keeps its own tabs, its own
+find bar and its own private session if it has one. Everything they do share —
+the engine, the blocker, the history, the one network session — is owned by the
+application rather than by any window, so the second window costs a window and
+not a browser.
+
+From outside, one instance serves the lot. A second `lyndon` does not start a
+second browser; it hands what it was given to the one already running:
+
+```sh
+lyndon                       # show the browser, or start it
+lyndon URL…                  # open these in the window already in front
+lyndon -n  URL…              # …in a new window instead
+lyndon -p  URL…              # …in a new private window
+```
+
+The launcher icon offers **New Window** and **New Private Window** as right-click
+actions, which is the same two flags spelled out in the `.desktop` file.
+
+What comes back is every window's tabs, not just the last one's. Each window
+writes the session down on its way out, together with whatever is still open,
+because windows close one at a time even when the whole browser is quitting —
+so a window that recorded only its own tabs would leave the last one out, always
+the smallest, overwriting everything the others had. Closing the final window by
+hand used to do exactly that and clear the session outright: the window is
+destroyed before shutdown runs, so the save there found nothing open. Quitting
+with `Ctrl+Q` happened to work, because that ends the loop with every window
+still alive — which is the sort of difference nobody notices until their tabs
+are gone.
+
+A window you close on purpose keeps counting until you open another one. That
+errs towards bringing back a tab you had rather than losing one, and opening a
+window is the signal that the old ones are finished with.
+
+Any of these arriving with the browser shut restores the last session first,
+and then does what it was asked on top of it. That is not politeness: the
+session is written back at shutdown from whatever is on screen, so opening a
+single link from another application and later quitting would otherwise
+replace yesterday's eight windows with that one tab, silently and for good.
+Restoring costs nothing when there is nothing to restore, and `restore` in
+`[session]` still decides whether any of it happens.
 
 ---
 

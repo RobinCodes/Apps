@@ -681,8 +681,12 @@ class Manager:
         self.sessions = [Session(meta, self) for meta in cfg.sessions]
         self.live = []  # sessions holding a slot, most recently used last
         self.queue = []  # (session, text) turns waiting for a slot
-        self.on_changed = None
-        self.on_notice = None
+        # Lists rather than single slots, the way a Session's are: there is
+        # one Manager for the application and there may be several windows
+        # watching it, and the second to open must not silently take the
+        # first one's place.
+        self.change_listeners = []
+        self.notice_listeners = []
         self.closing = False
         self.rate_limits = RateLimitWatch()
         self._pumping = False
@@ -690,15 +694,40 @@ class Manager:
 
     # ----------------------------------------------------------- bookkeeping --
 
+    def watch(self, on_changed=None, on_notice=None):
+        """Hear about sessions changing and about notices worth showing.
+
+        Returns the pair back, to be handed to unwatch when a window closes —
+        a window that stayed subscribed after being destroyed would have every
+        later change delivered into widgets that are no longer there.
+        """
+        if on_changed is not None:
+            self.change_listeners.append(on_changed)
+        if on_notice is not None:
+            self.notice_listeners.append(on_notice)
+        return on_changed, on_notice
+
+    def unwatch(self, on_changed=None, on_notice=None):
+        if on_changed in self.change_listeners:
+            self.change_listeners.remove(on_changed)
+        if on_notice in self.notice_listeners:
+            self.notice_listeners.remove(on_notice)
+
     def session_changed(self, session=None):
-        if self.on_changed:
-            self.on_changed(session)
+        for callback in list(self.change_listeners):
+            try:
+                callback(session)
+            except Exception:  # noqa: BLE001 - one broken window must not stall the rest
+                pass
 
     def usage_reported(self, info):
         """One child's rate-limit headers, filtered down to what is worth a word."""
         for message in self.rate_limits.notices(info):
-            if self.on_notice:
-                self.on_notice(message)
+            for callback in list(self.notice_listeners):
+                try:
+                    callback(message)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def remember_commands(self, commands):
         """Keep the child's command list on disk, so the next launch can

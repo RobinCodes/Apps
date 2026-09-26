@@ -1,26 +1,35 @@
-"""The window: editor on the left, rendered pages on the right.
+"""The window: the folder on the left, then the editor, then the rendered pages.
 
 Owns the compile cycle. Every keystroke restarts a short timer; when it
 expires the buffer goes to the engine on a worker thread, and whatever comes
 back updates the preview, the problems list and the status strip. A compile
 still running when the next one is due is killed rather than waited for.
+
+Also where the three things around the editor meet it: the open folder
+(filetree.py, and project.py for which file in it is the document), git
+(gitlink.py, which asks Git Manager), and Overleaf, which is git with a
+particular remote and a token.
 """
 
 from __future__ import annotations
 
 import os
+import time
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import compiler, jobs, packages, templates, widgets  # noqa: E402
+from . import (compiler, filetree, gitlink, jobs, overleafweb, packages,  # noqa: E402
+               project, templates, widgets)
+from . import __version__  # noqa: E402
 from .config import Config  # noqa: E402
 from .document import UNTITLED, Document  # noqa: E402
-from .preview import FIT_PAGE, FIT_WIDTH, THEME_LABEL, THEMES  # noqa: E402
+from .preview import (FIT_PAGE, FIT_WIDTH, THEME_LABEL, THEMES, ZOOM_MAX,  # noqa: E402
+                      ZOOM_MIN)
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -32,6 +41,31 @@ class MainWindow(Adw.ApplicationWindow):
         # and the properties below have to answer for one that isn't there.
         self.active: Document | None = None
         self._by_page: dict = {}
+
+        # The folder in the side bar, and the main document found in it.
+        self.folder: str | None = None
+        self._found_main: dict[str, str | None] = {}
+
+        # Git goes through Git Manager, which is only started the first time
+        # something here needs it. See gitlink.py.
+        self.git = gitlink.Link()
+        self.git.on_ready = self.refresh_git
+        self._git_status: dict | None = None
+        self._git_busy: str | None = None
+        self._git_refresh_timer = 0
+        self._overleaf_timer = 0
+        self._closing = False
+        self._warned_busy = False
+        # Kept for this session only. When it works, git hands it to the
+        # credential helper the user already has, which keeps it for good.
+        self._overleaf_token = ""
+
+        # Tabs showing Overleaf's own editor, by page (overleafweb.py). While
+        # one is in front, the document chrome steps aside for it.
+        self._web_tabs: dict = {}
+        self._web_front = None
+        self._document_chrome: list = []   # filled as the header and strip are built
+        self._last_live_pull = 0.0
 
         self.set_default_size(self.config["window_width"], self.config["window_height"])
         # Applied before the window is mapped, because that is the only way to
@@ -49,6 +83,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.problems_button.set_active(bool(self.config["show_problems"]))
 
         self.connect("close-request", self._on_close)
+        # Files change behind our back — a terminal, another editor — and the
+        # git letters should say so when the window comes back.
+        self.connect("notify::is-active", self._on_active_changed)
 
         GLib.idle_add(self._start_up)
 
@@ -85,7 +122,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     @path.setter
     def path(self, value):
-        self.active.path = value
+        self.active.set_path(value)
 
     @property
     def _result(self):
@@ -160,15 +197,32 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.tab_bar = Adw.TabBar(view=self.tabs, autohide=True)
 
+        # Before the first document, which tells it which file is in front.
+        self.tree = filetree.FileTree(on_open=self.open_path, on_request=self._on_tree_request)
+        self.tree.set_show_hidden(bool(self.config["show_hidden_files"]))
+
         # One document before the chrome, because the header and the status
         # strip are built from it — the zoom label asks the preview what it
         # currently says, and there has to be a preview to ask. _start_up
         # either fills this tab or replaces it with the remembered ones.
         self.open_document()
 
+        documents = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        documents.append(self.tab_bar)
+        documents.append(self.tabs)
+
+        self.side_paned = Gtk.Paned(
+            orientation=Gtk.Orientation.HORIZONTAL, vexpand=True,
+            position=int(self.config["sidebar_width"]),
+            resize_start_child=False, resize_end_child=True,
+            shrink_start_child=False, shrink_end_child=False,
+        )
+        self.side_paned.set_start_child(self.tree)
+        self.side_paned.set_end_child(documents)
+        self.tree.set_visible(bool(self.config["sidebar_visible"]))
+
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        content.append(self.tab_bar)
-        content.append(self.tabs)
+        content.append(self.side_paned)
         content.append(self._build_status_strip())
 
         view = Adw.ToolbarView()
@@ -220,6 +274,14 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_tab_selected(self, *_):
         page = self.tabs.get_selected_page()
+        web = self._web_tabs.get(page) if page else None
+        if hasattr(self, "status_label"):
+            left = self._web_front
+            self._set_web_mode(web)
+            if left is not None and web is None:
+                self._after_live_editing(left, throttle=True)
+        if web is not None:
+            return
         document = self._by_page.get(page) if page else None
         if document is None or document is self.active:
             return
@@ -228,6 +290,10 @@ class MainWindow(Adw.ApplicationWindow):
         # and there is nothing to point at it yet.
         if hasattr(self, "status_label"):
             self._adopt_active()
+            # A tab restored at start-up, or opened behind the one in front,
+            # has not been compiled yet; showing it is when it is wanted.
+            if document.result is None and not document.compiling:
+                self.compile_now(document)
 
     def _adopt_active(self):
         """Point the shared chrome at whichever document is now in front.
@@ -248,6 +314,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.compile_button.set_sensitive(not document.compiling)
         self.problems_revealer.set_reveal_child(self.problems_button.get_active())
         self.page_label.set_label(document.page_text)
+        self.zoom_button.set_label(document.preview.zoom_label())
+        self.tree.set_current(document.path)
         self._on_cursor()
 
     def new_document(self):
@@ -264,6 +332,15 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_close_page(self, view, page):
         """Adw asks before removing a page; unsaved work is why we might say no."""
+        web = self._web_tabs.pop(page, None)
+        if web is not None:
+            # Nothing to save: Overleaf saved it as it was typed.
+            web.close()
+            if self._web_front is web:
+                self._web_front = None
+            view.close_page_finish(page, True)
+            self._after_live_editing(web)
+            return True
         document = self._by_page.get(page)
         if document is None:
             view.close_page_finish(page, True)
@@ -344,9 +421,22 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_header(self) -> Adw.HeaderBar:
         header = Adw.HeaderBar()
 
-        open_button = Gtk.Button(label="Open")
+        # A click opens a file, as it always did; the arrow has the rest.
+        self._open_menu = Gio.Menu()
+        opening = Gio.Menu()
+        opening.append("Open file…", "win.open")
+        opening.append("Open folder…", "win.open-folder")
+        opening.append("Open an Overleaf project…", "win.overleaf-open")
+        opening.append("Overleaf's editor, live, in a tab", "win.overleaf-web")
+        self._open_menu.append_section(None, opening)
+        self._recent_menu = Gio.Menu()
+        self._open_menu.append_section("Recent folders", self._recent_menu)
+        open_button = Adw.SplitButton(label="Open", menu_model=self._open_menu)
         open_button.set_action_name("win.open")
+        open_button.set_tooltip_text("Open a document (Ctrl+O)")
+        open_button.set_dropdown_tooltip("Open a folder, or a project on Overleaf")
         header.pack_start(open_button)
+        self._refresh_recent_folders()
 
         self.save_button = Gtk.Button(label="Save")
         self.save_button.set_action_name("win.save")
@@ -355,6 +445,7 @@ class MainWindow(Adw.ApplicationWindow):
         new_button = Gtk.MenuButton(label="New")
         new_button.set_popover(self._templates_popover())
         header.pack_start(new_button)
+        self._document_chrome += [self.save_button, new_button]
 
         self.title_widget = Adw.WindowTitle(title=UNTITLED, subtitle="")
         header.set_title_widget(self.title_widget)
@@ -377,11 +468,21 @@ class MainWindow(Adw.ApplicationWindow):
         insert_button.set_popover(self._insert_popover())
         header.pack_end(insert_button)
 
+        self._document_chrome += [self.compile_button, packages_button, insert_button]
         return header
 
     def _build_status_strip(self) -> Gtk.Widget:
         strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         strip.add_css_class("status-strip")
+
+        # The folder and git live down here rather than in the header, which
+        # is what sets the window's narrowest width: on a 1366-pixel screen,
+        # two more header buttons are the difference between fitting niri's
+        # two-thirds column and not.
+        files_button = Gtk.ToggleButton(label="Files", css_classes=["flat", "small-button"])
+        files_button.set_action_name("win.sidebar")
+        files_button.set_tooltip_text("Show or hide the folder (F9)")
+        strip.append(files_button)
 
         self.status_label = Gtk.Label(label="Ready", xalign=0, hexpand=True)
         self.status_label.set_ellipsize(3)  # Pango.EllipsizeMode.END
@@ -396,6 +497,14 @@ class MainWindow(Adw.ApplicationWindow):
 
         strip.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
 
+        # "Git" until git has been asked about; then the branch and what
+        # changed, the way an IDE's status bar shows it.
+        self.git_button = Gtk.MenuButton(label="Git", css_classes=["flat", "small-button"],
+                                         direction=Gtk.ArrowType.UP)
+        self.git_button.set_popover(self._git_popover())
+        self.git_button.set_tooltip_text("Commit, pull, push and sync, through Git Manager")
+        strip.append(self.git_button)
+
         self.cursor_label = Gtk.Label(label="Ln 1, Col 1", css_classes=["dim-label"])
         strip.append(self.cursor_label)
 
@@ -409,15 +518,19 @@ class MainWindow(Adw.ApplicationWindow):
         strip.append(zoom_out)
 
         self.zoom_button = Gtk.MenuButton(
-            label=self.preview.zoom_label(), css_classes=["flat", "small-button"]
+            label=self.preview.zoom_label(), css_classes=["flat", "small-button"],
+            direction=Gtk.ArrowType.UP,
         )
-        self.zoom_button.set_menu_model(self._zoom_menu())
+        self.zoom_button.set_tooltip_text("Zoom: fit, a preset, or type any size")
+        self.zoom_button.set_popover(self._zoom_popover())
         strip.append(self.zoom_button)
 
         zoom_in = widgets.small_button("+", tooltip="Zoom in (Ctrl++)")
         zoom_in.set_action_name("win.zoom-in")
         strip.append(zoom_in)
 
+        self._document_chrome += [self.problems_button, self.cursor_label, self.page_label,
+                                  zoom_out, self.zoom_button, zoom_in]
         return strip
 
     # -- popovers ---------------------------------------------------------
@@ -532,17 +645,75 @@ class MainWindow(Adw.ApplicationWindow):
         row.append(button)
         return row
 
-    def _zoom_menu(self) -> Gio.Menu:
-        menu = Gio.Menu()
-        fit = Gio.Menu()
-        fit.append("Fit width", "win.zoom-mode('fit-width')")
-        fit.append("Fit page", "win.zoom-mode('fit-page')")
-        menu.append_section(None, fit)
-        steps = Gio.Menu()
-        for value in ("0.5", "0.75", "1.0", "1.5", "2.0"):
-            steps.append(f"{round(float(value) * 100)}%", f"win.zoom-mode('{value}')")
-        menu.append_section(None, steps)
-        return menu
+    def _zoom_popover(self) -> Gtk.Popover:
+        """Any size at all in the box at the top; the usual ones below it."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=8,
+                      margin_bottom=8, margin_start=8, margin_end=8)
+        popover = Gtk.Popover(child=box)
+
+        exact = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        exact.append(Gtk.Label(label="Zoom", xalign=0, hexpand=True, css_classes=["heading"]))
+        spin = Gtk.SpinButton.new_with_range(round(ZOOM_MIN * 100), round(ZOOM_MAX * 100), 5)
+        spin.set_digits(0)
+        spin.set_numeric(True)
+        spin.set_width_chars(4)
+        spin.set_tooltip_text(f"Any size from {round(ZOOM_MIN * 100)}% to "
+                              f"{round(ZOOM_MAX * 100)}%")
+        exact.append(spin)
+        exact.append(Gtk.Label(label="%"))
+        box.append(exact)
+        box.append(Gtk.Label(label="Type a size and press Enter. Ctrl+0 is 100%.",
+                             xalign=0, css_classes=["dim-label", "caption"]))
+        box.append(Gtk.Separator(margin_top=2, margin_bottom=2))
+
+        def choose(raw):
+            popover.popdown()
+            self._set_zoom_mode(raw)
+
+        fits = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4, homogeneous=True)
+        for label, mode in (("Fit width", FIT_WIDTH), ("Fit page", FIT_PAGE)):
+            button = Gtk.Button(label=label, css_classes=["flat"])
+            button.connect("clicked", lambda _b, m=mode: choose(m))
+            fits.append(button)
+        box.append(fits)
+
+        presets = Gtk.Grid(column_homogeneous=True, column_spacing=4, row_spacing=4)
+        for index, value in enumerate((0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0)):
+            button = Gtk.Button(label=f"{round(value * 100)}%", css_classes=["flat"])
+            button.connect("clicked", lambda _b, v=value: choose(str(v)))
+            presets.attach(button, index % 4, index // 4, 1, 1)
+        box.append(presets)
+
+        guard = {"on": False}
+
+        def shown(_popover):
+            # Show the size the pages are at, fit modes included, selected so
+            # typing replaces it.
+            guard["on"] = True
+            spin.set_value(round(self.preview.effective_scale() * 100))
+            guard["on"] = False
+            spin.grab_focus()
+            spin.select_region(0, -1)
+
+        def changed(button):
+            if not guard["on"]:
+                self._set_zoom_mode(str(round(button.get_value() / 100, 4)))
+
+        def entered(button):
+            # Enter applies even an unchanged number: 118 typed while "Fit
+            # width" happens to be at 118% means "stay at 118%", fixed.
+            button.update()
+            changed(button)
+            popover.popdown()
+
+        popover.connect("show", shown)
+        spin.connect("value-changed", changed)
+        spin.connect("activate", entered)
+        self._zoom_spin = spin
+        return popover
+
+    def _set_zoom_mode(self, raw: str):
+        self.activate_action("win.zoom-mode", GLib.Variant.new_string(raw))
 
     def _main_menu(self) -> Gio.Menu:
         menu = Gio.Menu()
@@ -559,6 +730,19 @@ class MainWindow(Adw.ApplicationWindow):
         files.append("Export PDF…", "win.export")
         files.append("Reload from disk", "win.reload")
         menu.append_section(None, files)
+
+        folder = Gio.Menu()
+        folder.append("Open folder…", "win.open-folder")
+        folder.append("Show the folder", "win.sidebar")
+        folder.append("Close folder", "win.close-folder")
+        menu.append_section("Folder", folder)
+
+        overleaf = Gio.Menu()
+        overleaf.append("Open an Overleaf project…", "win.overleaf-open")
+        overleaf.append("Overleaf's editor, live, in a tab", "win.overleaf-web")
+        overleaf.append("Sync with Overleaf", "win.git-sync")
+        overleaf.append("Sync after every save", "win.overleaf-sync-on-save")
+        menu.append_section("Overleaf", overleaf)
 
         build = Gio.Menu()
         build.append("Compile now", "win.compile")
@@ -584,6 +768,7 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append_section(None, tools)
 
         about = Gio.Menu()
+        about.append("New Window", "app.new-window")
         about.append("Preferences", "win.preferences")
         about.append("Keyboard shortcuts", "win.shortcuts")
         about.append("About LaRenderer", "win.about")
@@ -601,6 +786,16 @@ class MainWindow(Adw.ApplicationWindow):
             return action
 
         simple("open", self.open_dialog)
+        simple("open-folder", self.open_folder_dialog)
+        simple("close-folder", self.close_folder)
+        simple("overleaf-open", self.overleaf_open_dialog)
+        simple("overleaf-web", lambda: self.open_overleaf_web())
+        simple("git-show", self.git_show)
+        simple("git-commit", self.git_commit)
+        simple("git-pull", self.git_pull)
+        simple("git-push", self.git_push)
+        simple("git-sync", self.git_sync)
+        simple("git-init", self.git_init)
         simple("new-tab", self.new_document)
         simple("close-tab", self.close_current)
         simple("next-tab", self.next_tab)
@@ -617,6 +812,7 @@ class MainWindow(Adw.ApplicationWindow):
         simple("about", self.show_about)
         simple("zoom-in", lambda: self._zoom_step(self.preview.zoom_in))
         simple("zoom-out", lambda: self._zoom_step(self.preview.zoom_out))
+        simple("zoom-reset", lambda: self._set_zoom_mode("1.0"))
         simple("sync", self.sync_to_cursor)
         simple("problems", lambda: self.problems_button.set_active(
             not self.problems_button.get_active()))
@@ -642,6 +838,12 @@ class MainWindow(Adw.ApplicationWindow):
         toggle("auto-compile", "auto_compile")
         toggle("sync-preview", "sync_preview")
         toggle("shell-escape", "shell_escape")
+        toggle("sidebar", "sidebar_visible")
+        toggle("overleaf-sync-on-save", "overleaf_sync_on_save")
+
+        recent = Gio.SimpleAction.new("open-recent-folder", GLib.VariantType.new("s"))
+        recent.connect("activate", lambda _a, value: self.open_folder(value.get_string()))
+        self.add_action(recent)
 
         engine_action = Gio.SimpleAction.new_stateful(
             "engine", GLib.VariantType.new("s"),
@@ -663,12 +865,12 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
         def set_zoom(action, value):
-            action.set_state(value)
             raw = value.get_string()
-            self.preview.set_zoom(raw if raw in (FIT_WIDTH, FIT_PAGE) else float(raw))
-            self.config["zoom"] = raw
-            self.config.save()
-            self.zoom_button.set_label(self.preview.zoom_label())
+            try:
+                self.preview.set_zoom(raw if raw in (FIT_WIDTH, FIT_PAGE) else float(raw))
+            except ValueError:
+                return
+            self._zoom_settled()
 
         zoom_action.connect("activate", set_zoom)
         self.add_action(zoom_action)
@@ -691,6 +893,16 @@ class MainWindow(Adw.ApplicationWindow):
         app = self.get_application()
         for action, keys in {
             "win.open": ["<Control>o"],
+            "win.open-folder": ["<Control><Shift>o"],
+            "win.sidebar": ["F9"],
+            # Git, through Git Manager. Ctrl+Alt because every Ctrl+letter an
+            # editor could want is taken, and niri keeps to Super.
+            "win.git-show": ["<Control><Alt>g"],
+            "win.git-commit": ["<Control><Alt>c"],
+            "win.git-pull": ["<Control><Alt>u"],
+            "win.git-push": ["<Control><Alt>p"],
+            "win.git-sync": ["<Control><Alt>s"],
+            "win.overleaf-web": ["<Control><Alt>o"],
             # Ctrl+Page Up/Down are already the preview's page keys and stay
             # that way, so the tabs take Ctrl+Tab alone rather than fighting
             # them for a binding that would then do two things.
@@ -706,12 +918,15 @@ class MainWindow(Adw.ApplicationWindow):
             "win.sync": ["F7"],
             "win.zoom-in": ["<Control>plus", "<Control>equal", "<Control>KP_Add"],
             "win.zoom-out": ["<Control>minus", "<Control>KP_Subtract"],
+            "win.zoom-reset": ["<Control>0", "<Control>KP_0"],
             "win.next-page": ["<Control>Page_Down"],
             "win.previous-page": ["<Control>Page_Up"],
         }.items():
             app.set_accels_for_action(action, keys)
 
     def _on_toggle_changed(self, key, value):
+        if key == "sidebar_visible":
+            self.tree.set_visible(value)
         if key == "auto_compile" and value:
             self._schedule_compile()
         if key == "shell_escape" and value:
@@ -723,22 +938,31 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _zoom_step(self, function):
         function()
-        self.config["zoom"] = (
-            self.preview.zoom if isinstance(self.preview.zoom, str)
-            else str(self.preview.zoom)
-        )
+        self._zoom_settled()
+
+    def _zoom_settled(self):
+        """The front preview's zoom changed: its label, the action, the setting.
+
+        One place for all of it, whichever way the zoom came — the menu, the
+        box, a key, the wheel, or a pinch the preview handled by itself.
+        """
+        zoom = self.preview.zoom
+        raw = zoom if isinstance(zoom, str) else str(zoom)
+        self.config["zoom"] = raw
         self.config.save()
         self.zoom_button.set_label(self.preview.zoom_label())
-        self.lookup_action("zoom-mode").set_state(
-            GLib.Variant.new_string(str(self.config["zoom"]))
-        )
+        self.lookup_action("zoom-mode").set_state(GLib.Variant.new_string(raw))
+
+    def document_zoom_changed(self, document):
+        if document is self.active:
+            self._zoom_settled()
 
     def zoom_from_config(self):
         raw = str(self.config["zoom"])
         if raw in (FIT_WIDTH, FIT_PAGE):
             return raw
         try:
-            return float(raw)
+            return max(ZOOM_MIN, min(ZOOM_MAX, float(raw)))
         except ValueError:
             return FIT_WIDTH
 
@@ -755,6 +979,11 @@ class MainWindow(Adw.ApplicationWindow):
             if last and os.path.exists(last):
                 remembered = [last]
 
+        # The blank tab _build_ui made so the chrome had a document to be
+        # built from. It goes once a remembered one takes its place, rather
+        # than sitting in front of them as an empty Untitled.tex.
+        placeholder = self.active
+
         for path in remembered:
             try:
                 with open(path, encoding="utf-8", errors="replace") as fh:
@@ -763,6 +992,18 @@ class MainWindow(Adw.ApplicationWindow):
                 continue  # unreadable now: not worth a dialog at start-up
             document = self.open_document(path=path, text=text, focus=False)
             self._update_title(document)
+
+        if (placeholder is not None and placeholder.path is None
+                and not placeholder.modified and any(d.path for d in self.documents)):
+            page = self._page_for(placeholder)
+            if page is not None:
+                self.tabs.close_page(page)
+
+        # The folder before the blank template: a project whose tabs were all
+        # closed should come back to its main document, not to an empty one.
+        folder = self.config["open_folder"]
+        if folder and os.path.isdir(folder):
+            self.open_folder(folder, restoring=True)
 
         if not self.documents:
             document = self.open_document()
@@ -773,7 +1014,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.tabs.set_selected_page(first)
         self._on_tab_selected()
         self._update_title()
-        self.compile_now()
+        if self.active.result is None and not self.active.compiling:
+            self.compile_now()
 
         jobs.run(packages.catalogue_status, self._on_package_status)
         return GLib.SOURCE_REMOVE
@@ -782,7 +1024,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._package_status = status
 
     def select_path_arg(self, path: str):
-        if os.path.isfile(path):
+        if os.path.isdir(path):
+            self.open_folder(os.path.abspath(path))
+        elif os.path.isfile(path):
             self.load_file(os.path.abspath(path))
 
     # ---------------------------------------------------------- file state
@@ -796,25 +1040,26 @@ class MainWindow(Adw.ApplicationWindow):
             # The bullet is the tab's unsaved marker as well as the title's.
             page.set_title(("• " if document.modified else "") + document.name)
             page.set_tooltip(document.path or document.name)
-        if document is not self.active:
+        if document is not self.active or self._web_front is not None:
             return
         self.title_widget.set_title(("•  " if document.modified else "") + document.name)
         self.title_widget.set_subtitle(
             document.folder.replace(os.path.expanduser("~"), "~"))
         self.save_button.set_sensitive(document.modified or document.path is None)
 
-    def load_file(self, path: str):
+    def load_file(self, path: str, focus: bool = True):
         """Open a file in a tab of its own, and bring it to the front."""
+        already = self._document_at(path)
+        if already is not None:
+            if focus:
+                self.tabs.set_selected_page(self._page_for(already))
+            return already
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
         except OSError as exc:
             widgets.error_toast(self, exc)
-            return
-        already = next((d for d in self.documents if d.is_at(path)), None)
-        if already is not None:
-            self.tabs.set_selected_page(self._page_for(already))
-            return
+            return None
 
         # An untouched, never-saved first tab is scaffolding, not a document:
         # opening a file replaces it rather than leaving an empty tab behind.
@@ -822,18 +1067,60 @@ class MainWindow(Adw.ApplicationWindow):
         if (spare is not None and spare.path is None and not spare.modified
                 and len(self.documents) == 1):
             document = spare
-            document.path = path
+            document.set_path(path)
             document.editor.set_text(text)
+            self.tree.set_current(path)
         else:
-            document = self.open_document(path=path, text=text)
+            document = self.open_document(path=path, text=text, focus=focus)
         document.edited_since_load = False
         self._remember_open_files()
         self._update_title(document)
-        self.compile_now(document)
+        # Bringing a new tab to the front has already started its compile.
+        if not document.compiling:
+            self.compile_now(document)
+        return document
 
-    def _remember_open_files(self):
-        """The tabs to put back next time, in the order they are in now."""
-        paths = [d.path for d in self.documents if d.path]
+    def _document_at(self, path: str | None):
+        """The open document for `path`, if it has a tab."""
+        if not path:
+            return None
+        return next((d for d in self.documents if d.is_at(path)), None)
+
+    def open_path(self, path: str):
+        """A file chosen in the folder view: a tab if it is text, else its app.
+
+        PDFs, images and the like go to whatever the desktop opens them
+        with; anything that reads as text — .tex, .bib, .cls, a Makefile —
+        comes here, where it can be edited.
+        """
+        if os.path.isdir(path):
+            return
+        if project.looks_like_text(path):
+            self.load_file(path)
+            return
+        launcher = Gtk.FileLauncher.new(Gio.File.new_for_path(path))
+
+        def done(source, result, *_):
+            try:
+                source.launch_finish(result)
+            except GLib.Error as exc:
+                widgets.error_toast(self, exc)
+
+        launcher.launch(self, None, done)
+
+    def _remember_open_files(self, closing=False):
+        """The tabs to put back next time, in the order they are in now.
+
+        The list is the application's to work out, not this window's: with
+        more than one open, a window that wrote only its own tabs would leave
+        whichever closed last having forgotten all the others. See
+        LaRendererApp.remember_session.
+        """
+        app = self.get_application()
+        if app is not None and hasattr(app, "remember_session"):
+            paths = app.remember_session(closing=self if closing else None)
+        else:
+            paths = [d.path for d in self.documents if d.path]
         self.config["open_files"] = paths
         self.config["last_file"] = self.active.path if self.active and self.active.path else ""
         self.config.save()
@@ -885,6 +1172,7 @@ class MainWindow(Adw.ApplicationWindow):
                     path += ".tex"
                 self.path = path
                 self._write(path)
+                self.tree.set_current(path)
                 self.config["last_file"] = path
                 self.config.save()
                 self.compile_now()
@@ -894,7 +1182,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _write(self, path: str) -> bool:
         return self._write_document(self.active, path)
 
-    def _write_document(self, document, path: str) -> bool:
+    def _write_document(self, document, path: str, quiet: bool = False) -> bool:
         try:
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
@@ -905,7 +1193,9 @@ class MainWindow(Adw.ApplicationWindow):
             return False
         document.editor.mark_saved()
         self._update_title(document)
-        widgets.toast(self, f"Saved {os.path.basename(path)}")
+        if not quiet:
+            widgets.toast(self, f"Saved {os.path.basename(path)}")
+        self._after_save(path)
         return True
 
     def reload_from_disk(self):
@@ -930,10 +1220,12 @@ class MainWindow(Adw.ApplicationWindow):
             widgets.toast(self, "There is no PDF yet — compile first.")
             return
         dialog = Gtk.FileDialog(title="Export the PDF")
-        stem = os.path.splitext(os.path.basename(self.path))[0] if self.path else "untitled"
+        # A part of a larger document exports the whole, named after it.
+        named = self._result.root or self.path
+        stem = os.path.splitext(os.path.basename(named))[0] if named else "untitled"
         dialog.set_initial_name(stem + ".pdf")
-        if self.path:
-            dialog.set_initial_folder(Gio.File.new_for_path(os.path.dirname(self.path)))
+        if named:
+            dialog.set_initial_folder(Gio.File.new_for_path(os.path.dirname(named)))
 
         def done(dlg, result):
             try:
@@ -961,7 +1253,7 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.save(self, None, done)
 
     def clean_build(self):
-        compiler.clear_build(self.path)
+        compiler.clear_build(self.active.compiled_root or self.path)
         widgets.toast(self, "Build files deleted. The next compile starts fresh.")
 
     # ------------------------------------------------------------ compiling
@@ -989,6 +1281,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _schedule_compile(self, document=None):
         document = document or self.active
+        if document is None:
+            return
         if document.compile_timer:
             GLib.source_remove(document.compile_timer)
         delay = max(120, int(self.config["compile_delay_ms"]))
@@ -1019,16 +1313,29 @@ class MainWindow(Adw.ApplicationWindow):
             document.pending = True
             return
 
-        text = document.editor.get_text()
-        if not text.strip():
+        # A part of a larger document compiles the whole of it; see project.py.
+        root = self._root_for(document)
+        if root is None or document.is_at(root):
+            if not document.is_tex:
+                self._set_status(f"{document.name} is not a LaTeX document, so there "
+                                 "is nothing to compile", "", document)
+                return
+            text = document.editor.get_text()
+        else:
+            owner = self._document_at(root)
+            text = owner.editor.get_text() if owner is not None else None
+        if text is not None and not text.strip():
             document.preview.clear()
             self._set_status("Nothing to compile", "", document)
             return
+        overlays = self._overlays(root)
+        document.compiled_root = root
 
         document.compiling = True
         document.job = compiler.Job()
         job = document.job
-        self._set_status("Compiling…", "compiling", document)
+        through = "" if root is None or document.is_at(root) else f" {os.path.basename(root)}"
+        self._set_status(f"Compiling{through}…", "compiling", document)
         if document is self.active:
             self.compile_button.set_sensitive(False)
 
@@ -1036,19 +1343,70 @@ class MainWindow(Adw.ApplicationWindow):
         if engine not in compiler.available_engines():
             engine = (compiler.available_engines() or ["pdflatex"])[0]
 
-        path = document.path
         options = dict(
             engine=engine,
             shell_escape=bool(self.config["shell_escape"]),
             timeout=int(self.config["timeout_seconds"]),
             bibliography=bool(self.config["bibliography"]),
+            overlays=overlays,
         )
 
+        def work():
+            # The main file of a part that isn't open is read here, off the
+            # main loop, rather than every keystroke paying for it there.
+            source = text if text is not None else project.read(root)
+            return compiler.compile_document(source, root, job=job, **options)
+
         jobs.run(
-            lambda: compiler.compile_document(text, path, job=job, **options),
+            work,
             lambda result: self._on_compiled(result, document),
             lambda exc: self._on_compile_failed(exc, document),
         )
+
+    def _root_for(self, document) -> str | None:
+        """The file to compile for `document`: itself, or what it is part of.
+
+        The order is project.py's: a `% !TEX root` line, then a
+        \\documentclass of its own, then the open folder's main document,
+        then a document nearby that \\inputs it.
+        """
+        path = document.path
+        if path is None:
+            return None
+        text = document.editor.get_text()
+        directive = project.root_directive(text)
+        if directive:
+            named = os.path.normpath(os.path.join(os.path.dirname(path), directive))
+            if not os.path.splitext(named)[1]:
+                named += ".tex"
+            if os.path.isfile(named) or self._document_at(named) is not None:
+                return named
+        if document.is_tex and project.is_standalone(text):
+            return path
+        if self.folder and project.inside(path, self.folder):
+            main = self.project_main()
+            if main and not project.same(main, path):
+                return main
+        if document.nearby_root is None:
+            document.nearby_root = project.find_including_root(path) or ""
+        return document.nearby_root or path
+
+    def _overlays(self, root: str | None) -> dict[str, str] | None:
+        """The unsaved buffers of the root's other files, by relative path.
+
+        Only modified ones: a saved buffer is the same as its file, which the
+        engine finds by itself, and leaving it out keeps the build directory
+        from holding copies that could go stale.
+        """
+        if not root:
+            return None
+        here = os.path.dirname(os.path.abspath(root))
+        overlays = {}
+        for document in self.documents:
+            if (document.path and document.modified and not document.is_at(root)
+                    and project.inside(document.path, here)):
+                overlays[os.path.relpath(document.path, here)] = document.editor.get_text()
+        return overlays
 
     def _on_compile_failed(self, exc, document):
         document.compiling = False
@@ -1077,6 +1435,22 @@ class MainWindow(Adw.ApplicationWindow):
         if result.cancelled:
             return
 
+        self._apply_result(document, result)
+        # Every open part of the same document shows the same pages, so the
+        # compile one tab asked for brings the others up to date as well —
+        # its overlays had their buffers in it.
+        if result.root:
+            for other in self.documents:
+                if (other is not document and not other.compiling and other.compiled_root
+                        and project.same(other.compiled_root, result.root)):
+                    self._apply_result(other, result)
+
+        if self.config["sync_preview"] and document.edited_since_load:
+            if document is self.active:
+                self.sync_to_cursor(quiet=True)
+
+    def _apply_result(self, document, result: compiler.Result):
+        """Show a compile's pages, problems and summary in one document's tab."""
         document.result = result
 
         if result.failure:
@@ -1095,8 +1469,8 @@ class MainWindow(Adw.ApplicationWindow):
             hint = packages.install_hint([n + ".sty" for n in result.missing_packages])
         document.problems.set_messages(result.messages, hint)
         document.editor.set_problem_lines(
-            [m.line for m in result.errors if m.is_current_file],
-            [m.line for m in result.warnings if m.is_current_file],
+            self._lines_in(document, result, result.errors),
+            self._lines_in(document, result, result.warnings),
         )
 
         errors = len(result.errors)
@@ -1105,25 +1479,71 @@ class MainWindow(Adw.ApplicationWindow):
         if document is self.active:
             self.problems_button.set_label(document.problems_label)
 
+        # A part says which document it was compiled as, so "3 pages" is not
+        # read as the length of the chapter on screen.
+        through = ""
+        if result.root and document.path and not project.same(result.root, document.path):
+            through = f"{os.path.basename(result.root)}: "
         if errors:
             noun = "error" if errors == 1 else "errors"
             extra = f", {warnings} warning{'s' if warnings != 1 else ''}" if warnings else ""
             # Say so when the pane is showing an older render rather than this
             # compile's output, so a stale page is never mistaken for current.
             stale = " · preview is the last good render" if result.stale_pdf else ""
-            self._set_status(f"{errors} {noun}{extra}{stale}", "bad", document)
+            self._set_status(f"{through}{errors} {noun}{extra}{stale}", "bad", document)
             self._show_problems(True, document)
         else:
             pages = f"{result.pages} page{'s' if result.pages != 1 else ''}"
             passes = f", {result.passes} passes" if result.passes > 1 else ""
             warned = f" · {warnings} warning{'s' if warnings != 1 else ''}" if warnings else ""
             self._set_status(
-                f"Compiled {pages} in {result.seconds:.2f}s{passes}{warned}", "ok", document
-            )
+                f"{through}Compiled {pages} in {result.seconds:.2f}s{passes}{warned}", "ok",
+                document)
 
-        if self.config["sync_preview"] and document.edited_since_load:
-            if document is self.active:
-                self.sync_to_cursor(quiet=True)
+    def _lines_in(self, document, result, messages) -> list[int]:
+        """The lines of `document` that `messages` complain about."""
+        lines = []
+        for message in messages:
+            if not message.line:
+                continue
+            if document.path is None or result.root is None:
+                if message.is_current_file:
+                    lines.append(message.line)
+                continue
+            source = compiler.message_source(result, message)
+            if source and project.same(source, document.path):
+                lines.append(message.line)
+        return lines
+
+    def open_message(self, document, message):
+        """A row in the problems list was clicked: go to where it points.
+
+        In a document made of several files that may well be another file,
+        which is opened in its own tab — but only one inside the document's
+        folder, not a class file somewhere in the TeX distribution.
+        """
+        if not message.line:
+            return
+        result = document.result
+        if result is None or result.root is None or document.path is None:
+            if message.is_current_file:
+                document.editor.goto_line(message.line)
+            return
+        source = compiler.message_source(result, message)
+        if source and project.same(source, document.path):
+            document.editor.goto_line(message.line)
+            return
+        if not source or not os.path.isfile(source):
+            widgets.toast(self, f"Could not find {message.file or 'that file'} on disk.")
+            return
+        home = os.path.dirname(result.root)
+        if not (project.inside(source, home) or project.inside(source, self.folder)):
+            widgets.toast(self, f"That is in {os.path.basename(source)}, outside this "
+                                "document's folder.")
+            return
+        target = self.load_file(source)
+        if target is not None:
+            target.editor.goto_line(message.line)
 
     def _problems_label(self, errors, warnings) -> str:
         if errors and warnings:
@@ -1145,7 +1565,9 @@ class MainWindow(Adw.ApplicationWindow):
         if document is not None:
             document.status_text = text
             document.status_css = css
-            if document is not self.active:
+            # Kept for when its tab comes back to the front, and not shown
+            # over an Overleaf tab meanwhile.
+            if document is not self.active or self._web_front is not None:
                 return
         self.status_label.set_label(text)
         strip = self.status_label.get_parent()
@@ -1177,7 +1599,14 @@ class MainWindow(Adw.ApplicationWindow):
                 widgets.toast(self, "Nothing to sync to yet — compile first.")
             return
         line, column = self.editor.cursor_position()
-        name = compiler.job_name(self.path) + ".tex"
+        path = self.path
+        if result.root and path and not project.same(result.root, path):
+            # A part: the engine knew it by its path relative to the main file
+            # when it came from the build directory, and absolutely otherwise.
+            relative = os.path.relpath(path, os.path.dirname(result.root))
+            name = path if relative.startswith(os.pardir) else relative
+        else:
+            name = compiler.job_name(result.root or path) + ".tex"
 
         def look():
             return compiler.forward_search(result.pdf, name, line, column)
@@ -1191,6 +1620,878 @@ class MainWindow(Adw.ApplicationWindow):
             self.preview.flash_position(page, x, y)
 
         jobs.run(look, landed)
+
+    # ------------------------------------------------------------- folders
+
+    def open_folder_dialog(self):
+        dialog = Gtk.FileDialog(title="Open a folder")
+        start = self.folder or (os.path.dirname(self.path) if self.path else None)
+        if start:
+            dialog.set_initial_folder(Gio.File.new_for_path(start))
+
+        def done(dlg, result):
+            try:
+                file = dlg.select_folder_finish(result)
+            except GLib.Error:
+                return
+            if file and file.get_path():
+                self.open_folder(file.get_path())
+
+        dialog.select_folder(self, None, done)
+
+    def open_folder(self, folder: str, restoring: bool = False):
+        """Show `folder` in the side bar and treat it as one project.
+
+        Its main document is found (or remembered, if one was chosen), and
+        opened when none of the folder's files is open yet — the way an IDE
+        opens a project at the file you would start from. An Overleaf project
+        also fetches what collaborators did since it was last open.
+        """
+        folder = os.path.abspath(os.path.expanduser(folder))
+        if not os.path.isdir(folder):
+            widgets.toast(self, f"{folder} is not a folder.")
+            return
+        self.folder = folder
+        self.tree.set_folder(folder)
+        if not self.tree.get_visible():
+            self.activate_action("win.sidebar", None)
+
+        self.config["open_folder"] = folder
+        recent = [folder] + [f for f in self.config["recent_folders"]
+                             if isinstance(f, str) and not project.same(f, folder)]
+        self.config["recent_folders"] = recent[:8]
+        self.config.save()
+        self._refresh_recent_folders()
+        self._update_title()
+
+        def found(main):
+            if self.folder != folder:
+                return
+            self._found_main[folder] = main
+            self.tree.set_main(self.project_main())
+            opened_here = any(d.path and project.inside(d.path, folder) for d in self.documents)
+            chosen = self.project_main()
+            # Coming back at start-up, the tabs that were open win; only a
+            # session that ended with none of them brings up the main file.
+            restored_tabs = restoring and any(d.path for d in self.documents)
+            if chosen and not opened_here and not restored_tabs:
+                self.load_file(chosen)
+            elif self.active is not None and self.active.path and \
+                    project.inside(self.active.path, folder):
+                # A part that compiled as itself before the main was known
+                # now compiles as what it belongs to.
+                self.compile_now()
+
+        if folder in self._found_main:
+            found(self._found_main[folder])
+        else:
+            jobs.run(lambda: project.find_main(folder), found)
+
+        if self.git.used:
+            self._schedule_git_refresh(0)
+        if self.config["overleaf_pull_on_open"] and project.overleaf_remote(folder):
+            self._git_op("Pull from Overleaf", "pull", network=True, path=folder,
+                         on_done=lambda _payload: self._reload_changed_files(folder),
+                         quiet=True)
+
+    def close_folder(self):
+        """Take the folder out of the side bar. Its tabs stay open."""
+        self.folder = None
+        self.tree.set_folder(None)
+        self.config["open_folder"] = ""
+        self.config.save()
+        self._update_title()
+        if self.git.used:
+            self._schedule_git_refresh(0)
+
+    def project_main(self) -> str | None:
+        """The open folder's main document: chosen by hand, else found."""
+        if not self.folder:
+            return None
+        chosen = self.config["project_mains"].get(self.folder)
+        if isinstance(chosen, str) and os.path.isfile(chosen):
+            return chosen
+        found = self._found_main.get(self.folder)
+        return found if found and os.path.isfile(found) else None
+
+    def set_project_main(self, path: str):
+        if not self.folder:
+            return
+        mains = dict(self.config["project_mains"])
+        mains[self.folder] = path
+        self.config["project_mains"] = mains
+        self.config.save()
+        self.tree.set_main(path)
+        widgets.toast(self, f"{os.path.basename(path)} is now the main document")
+        if self.active is not None:
+            self.compile_now()
+
+    def _refresh_recent_folders(self):
+        self._recent_menu.remove_all()
+        home = os.path.expanduser("~")
+        for folder in self.config["recent_folders"][:8]:
+            if not isinstance(folder, str) or not os.path.isdir(folder):
+                continue
+            label = folder.replace(home, "~", 1) if folder.startswith(home) else folder
+            item = Gio.MenuItem.new(label.replace("_", "__"), None)
+            item.set_action_and_target_value("win.open-recent-folder",
+                                             GLib.Variant.new_string(folder))
+            self._recent_menu.append_item(item)
+
+    def _on_tree_request(self, kind, payload):
+        if kind == "open-folder":
+            if payload:
+                self.open_folder(payload)
+            else:
+                self.open_folder_dialog()
+        elif kind == "close-folder":
+            self.close_folder()
+        elif kind == "main":
+            self.set_project_main(payload)
+        elif kind == "renamed":
+            self._path_renamed(*payload)
+        elif kind == "trashed":
+            self._path_trashed(payload)
+        elif kind == "hidden":
+            self.config["show_hidden_files"] = bool(payload)
+            self.config.save()
+
+    def _path_renamed(self, old: str, new: str):
+        """A file or folder was renamed in the tree: its tabs follow it."""
+        def moved(path):
+            if project.same(path, old):
+                return new
+            return os.path.join(new, os.path.relpath(path, old))
+
+        for document in self.documents:
+            if document.path and project.inside(document.path, old):
+                document.set_path(moved(document.path))
+                self._update_title(document)
+        # So does the main document, whether it was chosen or found.
+        mains = dict(self.config["project_mains"])
+        for folder, main in list(mains.items()):
+            if isinstance(main, str) and project.inside(main, old):
+                mains[folder] = moved(main)
+        self.config["project_mains"] = mains
+        self.config.save()
+        for folder, main in list(self._found_main.items()):
+            if main and project.inside(main, old):
+                self._found_main[folder] = moved(main)
+        self.tree.set_main(self.project_main())
+        self.tree.set_current(self.path)
+        self._remember_open_files()
+
+    def _path_trashed(self, path: str):
+        """A file went to the trash. Its tab stays, with its text, unsaved.
+
+        Closing it then asks first, as it would for any unsaved work — the
+        buffer is the only copy outside the trash now.
+        """
+        for document in self.documents:
+            if document.path and project.inside(document.path, path):
+                document.editor.buffer.set_modified(True)
+                self._update_title(document)
+
+    # ----------------------------------------------------------------- git
+    #
+    # Nothing here runs git. Each action asks Git Manager through self.git,
+    # which starts one in the background the first time; until then the
+    # window shows no git state at all, because it has not asked.
+
+    def _git_target(self) -> str | None:
+        """What git acts on: the open folder, else the document's folder."""
+        if self.folder:
+            return self.folder
+        if self.path:
+            return os.path.dirname(self.path)
+        return None
+
+    def _on_active_changed(self, *_):
+        if self.is_active() and self.git.used:
+            self._schedule_git_refresh()
+
+    def _schedule_git_refresh(self, delay_ms: int = 700):
+        if self._git_refresh_timer:
+            GLib.source_remove(self._git_refresh_timer)
+
+        def fire():
+            self._git_refresh_timer = 0
+            self.refresh_git()
+            return GLib.SOURCE_REMOVE
+
+        self._git_refresh_timer = GLib.timeout_add(delay_ms, fire)
+
+    def refresh_git(self):
+        """Ask Git Manager where the target repository stands."""
+        target = self._git_target()
+        if not target:
+            self._git_status = None
+            self._show_git_status()
+            return
+
+        def done(status):
+            self._git_status = status
+            self._show_git_status()
+
+        def failed(error):
+            self._git_status = {"error": str(error), "kind": error.kind}
+            self._show_git_status()
+
+        self.git.call("status", done, failed, path=target)
+
+    def _show_git_status(self):
+        status = self._git_status or {}
+        repo = status.get("repo")
+        self.tree.set_git(repo, status.get("files") if repo else None)
+        if self._git_busy:
+            self.git_button.set_label(f"{self._git_busy}…")
+        elif repo:
+            self.git_button.set_label(_git_summary(status, short=True))
+        else:
+            self.git_button.set_label("Git")
+        if self._git_popover_widget.get_visible():
+            self._fill_git_popover()
+
+    def _git_popover(self) -> Gtk.Popover:
+        self._git_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                                margin_top=8, margin_bottom=6, margin_start=6, margin_end=6)
+        self._git_box.set_size_request(300, -1)
+        self._git_popover_widget = Gtk.Popover(child=self._git_box)
+        self._git_popover_widget.connect("show", lambda *_: self._on_git_popover_shown())
+        return self._git_popover_widget
+
+    def _on_git_popover_shown(self):
+        # Opening the menu counts as using git: this is where Git Manager
+        # gets started, if nothing has started it yet.
+        self._fill_git_popover()
+        self.refresh_git()
+
+    def _fill_git_popover(self):
+        box = self._git_box
+        while (child := box.get_first_child()) is not None:
+            box.remove(child)
+
+        status = self._git_status
+        target = self._git_target()
+        repo = status.get("repo") if status else None
+
+        def note(text, css=("dim-label", "git-summary")):
+            label = Gtk.Label(label=text, xalign=0, wrap=True, margin_start=6, margin_end=6,
+                              css_classes=list(css))
+            label.set_max_width_chars(44)
+            box.append(label)
+
+        if not target:
+            note("Open a folder, or save the document, and git can act on its folder.")
+            return
+        if status is None:
+            note("Asking Git Manager…" if self.git.state != "ready" else "Reading the repository…")
+        elif status.get("error"):
+            note(status["error"])
+        elif not repo:
+            note(f"{os.path.basename(target) or target} is not in a git repository.")
+            box.append(self._git_action("Start a repository here", "win.git-init"))
+            return
+        else:
+            name = os.path.basename(repo) or repo
+            heading = Gtk.Label(label=name, xalign=0, margin_start=6,
+                                css_classes=["git-heading"],
+                                ellipsize=Pango.EllipsizeMode.END)
+            box.append(heading)
+            note(_git_summary(status))
+            overleaf = project.overleaf_remote(repo)
+            if overleaf:
+                note("Kept in step with Overleaf: Sync sends your edits and brings in "
+                     "your collaborators'.", css=("dim-label", "overleaf-note"))
+            files = status.get("files") or []
+            for entry in files[:8]:
+                box.append(self._git_file_row(repo, entry))
+            if len(files) > 8:
+                note(f"and {len(files) - 8} more — Git Manager shows them all")
+
+        box.append(Gtk.Separator(margin_top=6, margin_bottom=4))
+        for label, action, keys in (
+            ("Commit all…", "win.git-commit", "Ctrl+Alt+C"),
+            ("Pull", "win.git-pull", "Ctrl+Alt+U"),
+            ("Push", "win.git-push", "Ctrl+Alt+P"),
+            ("Sync: commit, pull, push", "win.git-sync", "Ctrl+Alt+S"),
+            ("Open in Git Manager", "win.git-show", "Ctrl+Alt+G"),
+        ):
+            box.append(self._git_action(label, action, keys))
+
+    def _git_action(self, label, action, keys=""):
+        button = Gtk.Button(css_classes=["flat"])
+        inner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        inner.append(Gtk.Label(label=label, xalign=0, hexpand=True))
+        if keys:
+            inner.append(Gtk.Label(label=keys, css_classes=["dim-label", "caption"]))
+        button.set_child(inner)
+        button.set_action_name(action)
+        button.connect("clicked", lambda _b: self._git_popover_widget.popdown())
+        return button
+
+    def _git_file_row(self, repo, entry):
+        path = os.path.join(repo, entry.get("path", ""))
+        letter = entry.get("label") or "M"
+        button = Gtk.Button(css_classes=["flat"])
+        inner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        badge = Gtk.Label(label=letter, css_classes=["git-badge",
+                                                     filetree.GIT_CSS.get(letter, "git-modified")])
+        inner.append(badge)
+        inner.append(Gtk.Label(label=entry.get("path", ""), xalign=0, hexpand=True,
+                               ellipsize=Pango.EllipsizeMode.START))
+        button.set_child(inner)
+        button.set_tooltip_text(path)
+
+        def clicked(_button):
+            self._git_popover_widget.popdown()
+            if os.path.isfile(path):
+                self.open_path(path)
+
+        button.connect("clicked", clicked)
+        return button
+
+    def _git_op(self, label, operation, on_done=None, network=False, quiet=False, **arguments):
+        """Run one Git Manager operation, with its progress in the status strip.
+
+        A remote that wants a sign-in gets one asked for and the operation
+        tried again with it; a pull that stops on a conflict says what that
+        means rather than passing git's words along.
+        """
+        if self._git_busy:
+            if not quiet:
+                widgets.toast(self, f"{self._git_busy} is still running.")
+            return
+        path = arguments.get("path")
+        overleaf = bool(project.overleaf_remote(path)) if path else False
+        if network and overleaf and self._overleaf_token and "token" not in arguments:
+            arguments["token"] = self._overleaf_token
+        self._git_busy = label
+        self._show_git_status()
+
+        def done(payload):
+            self._git_busy = None
+            self._show_git_status()
+            if on_done:
+                on_done(payload)
+            self.refresh_git()
+
+        def failed(error):
+            self._git_busy = None
+            self._show_git_status()
+            if error.kind == "auth" and network:
+                def retry(token):
+                    if overleaf:
+                        self._overleaf_token = token
+                    self._git_op(label, operation, on_done, network, quiet,
+                                 **{**arguments, "token": token})
+
+                self._ask_for_token(str(error), overleaf, retry)
+            elif error.kind == "conflict":
+                self._conflict(label, str(error), path)
+            elif error.kind == "nothing" and quiet:
+                pass
+            else:
+                widgets.toast(self, f"{label}: {error}", timeout=8)
+            self.refresh_git()
+
+        self.git.call(operation, done, failed, network=network, **arguments)
+
+    def _ask_for_token(self, why, overleaf, retry):
+        if overleaf:
+            heading = "Sign in to Overleaf"
+            body = (f"{why}\n\nOverleaf's git bridge takes a Git authentication token "
+                    "instead of your password. Make one under Account settings → "
+                    "Git integration. Git keeps it once it works, the way it keeps "
+                    "your other sign-ins.")
+        else:
+            heading = "Sign in"
+            body = (f"{why}\n\nEnter a token (or password) for this remote. Git keeps it "
+                    "once it works.")
+        widgets.ask_text(self, heading, body, "", "Sign in", retry, secret=True)
+
+    def _conflict(self, label, message, path):
+        dialog = Adw.AlertDialog(heading=f"{label} stopped on a conflict", body=message)
+        dialog.add_response("close", "Fix it here")
+        dialog.add_response("manager", "Open in Git Manager")
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+
+        def answered(dlg, result):
+            if dlg.choose_finish(result) == "manager":
+                self.git_show()
+
+        dialog.choose(self, None, answered)
+        # The files now hold both versions between conflict markers; show
+        # them as they are on disk, so fixing them here is possible.
+        top = project.git_top(path)
+        if top:
+            self._reload_changed_files(top)
+
+    def _save_all_in(self, top: str) -> int:
+        """Save every modified tab inside `top`. Returns how many were saved."""
+        saved = 0
+        for document in self.documents:
+            if document.path and document.modified and project.inside(document.path, top):
+                if self._write_document(document, document.path, quiet=True):
+                    saved += 1
+        return saved
+
+    def _unsaved_in(self, top: str) -> list:
+        return [d for d in self.documents
+                if d.path and d.modified and project.inside(d.path, top)]
+
+    def _reload_changed_files(self, top: str):
+        """After a pull: bring every tab inside `top` in line with the disk.
+
+        A tab with unsaved edits is left alone and named, since overwriting
+        it would lose work and merging it is not something to do silently.
+        """
+        kept = []
+        for document in self.documents:
+            if not document.path or not project.inside(document.path, top):
+                continue
+            try:
+                on_disk = project.read(document.path)
+            except OSError:
+                continue
+            if on_disk == document.editor.get_text():
+                continue
+            if document.modified:
+                kept.append(document.name)
+                continue
+            line, _column = document.editor.cursor_position()
+            document.editor.set_text(on_disk)
+            document.editor.goto_line(line, focus=False)
+            document.edited_since_load = False
+            self._update_title(document)
+        if kept:
+            widgets.toast(self, f"Changed on disk too, kept as you have it: {', '.join(kept)}",
+                          timeout=8)
+        if self.active is not None:
+            self.compile_now()
+
+    def _after_save(self, path: str):
+        if self.git.used:
+            self._schedule_git_refresh()
+        if (self.config["overleaf_sync_on_save"] and not self._closing
+                and project.overleaf_remote(path)):
+            self._schedule_overleaf_sync(project.git_top(path))
+
+    def _schedule_overleaf_sync(self, top):
+        """Sync a moment after saving, so saving three tabs is one sync."""
+        if self._overleaf_timer:
+            GLib.source_remove(self._overleaf_timer)
+
+        def fire():
+            self._overleaf_timer = 0
+            if self._git_busy:
+                self._schedule_overleaf_sync(top)
+                return GLib.SOURCE_REMOVE
+            self._git_op("Sync with Overleaf", "sync", network=True, quiet=True, path=top,
+                         on_done=lambda payload: self._after_sync(payload, top, quiet=True))
+            return GLib.SOURCE_REMOVE
+
+        self._overleaf_timer = GLib.timeout_add(1500, fire)
+
+    def _need_repo(self, then):
+        """Run then(top) for the target's repository, or say why not."""
+        target = self._git_target()
+        if not target:
+            widgets.toast(self, "Open a folder, or save the document, first.")
+            return
+        top = project.git_top(target)
+        if not top:
+            widgets.toast(self, f"{os.path.basename(target) or target} is not in a git "
+                                "repository. Start one from the Git menu.", timeout=6)
+            return
+        then(top)
+
+    def git_show(self):
+        target = self._git_target()
+        if not target:
+            widgets.toast(self, "Open a folder, or save the document, first.")
+            return
+
+        def failed(error):
+            widgets.toast(self, f"Git Manager: {error}", timeout=8)
+
+        self.git.call("show", None, failed, path=target)
+        widgets.toast(self, "Opening Git Manager…")
+
+    def git_commit(self):
+        def with_repo(top):
+            def after_status(status):
+                repo = status.get("repo") or top
+                unsaved = self._unsaved_in(repo)
+                files = status.get("files") or []
+                if not files and not unsaved:
+                    widgets.toast(self, "Nothing to commit: everything is committed.")
+                    return
+                names = [f.get("path", "") for f in files][:4]
+                body = ""
+                if files:
+                    more = f" and {len(files) - 4} more" if len(files) > 4 else ""
+                    count = f"{len(files)} changed file{'s' if len(files) != 1 else ''}"
+                    body = f"{count}: {', '.join(names)}{more}."
+                if unsaved:
+                    body += (f"\n{len(unsaved)} tab{'s' if len(unsaved) != 1 else ''} with "
+                             "unsaved changes will be saved first.")
+
+                def commit(message):
+                    self._save_all_in(repo)
+                    self._git_op("Commit", "commit", path=repo, message=message,
+                                 on_done=lambda _p: widgets.toast(self, "Committed"))
+
+                widgets.ask_text(self, "Commit all changes", body.strip(), "", "Commit",
+                                 commit)
+
+            self.git.call("status", after_status,
+                          lambda error: widgets.toast(self, f"Commit: {error}", timeout=8),
+                          path=top)
+
+        self._need_repo(with_repo)
+
+    def git_pull(self):
+        def with_repo(top):
+            self._git_op("Pull", "pull", network=True, path=top,
+                         on_done=lambda payload: self._after_pull(payload, top))
+
+        self._need_repo(with_repo)
+
+    def _after_pull(self, payload, top):
+        if payload.get("changed"):
+            widgets.toast(self, "Pulled: new changes came in")
+            self._reload_changed_files(top)
+        else:
+            widgets.toast(self, "Pulled: already up to date")
+
+    def git_push(self):
+        def with_repo(top):
+            unsaved = self._unsaved_in(top)
+            if unsaved:
+                widgets.toast(self, f"{len(unsaved)} unsaved tab{'s' if len(unsaved) != 1 else ''}"
+                                    " — push only sends what is committed.", timeout=6)
+            self._git_op("Push", "push", network=True, path=top,
+                         on_done=lambda _p: widgets.toast(self, "Pushed"))
+
+        self._need_repo(with_repo)
+
+    def git_sync(self):
+        """Commit everything, pull, push — one step, for Overleaf especially.
+
+        An Overleaf project commits without asking for a message: its history
+        is Overleaf's own, where a commit message is never read. Any other
+        repository gets asked, when there is something to commit.
+        """
+        def with_repo(top):
+            overleaf = project.overleaf_remote(top)
+            label = "Sync with Overleaf" if overleaf else "Sync"
+
+            def go(message=""):
+                self._save_all_in(top)
+                self._git_op(label, "sync", network=True, path=top, message=message,
+                             on_done=lambda payload: self._after_sync(payload, top))
+
+            if overleaf:
+                go()
+                return
+
+            def after_status(status):
+                if status.get("files") or self._unsaved_in(top):
+                    widgets.ask_text(self, "Sync", "Commit everything with this message, "
+                                     "then pull and push.", "", "Sync", go)
+                else:
+                    go()
+
+            self.git.call("status", after_status,
+                          lambda error: widgets.toast(self, f"Sync: {error}", timeout=8),
+                          path=top)
+
+        self._need_repo(with_repo)
+
+    def _after_sync(self, payload, top, quiet=False):
+        if payload.get("pulled"):
+            self._reload_changed_files(top)
+        parts = []
+        if payload.get("committed"):
+            parts.append("committed")
+        if payload.get("pulled"):
+            parts.append("brought in new changes")
+        if payload.get("pushed"):
+            parts.append("sent")
+        if payload.get("no_remote"):
+            parts.append("nothing to send it to: there is no remote")
+        if parts:
+            widgets.toast(self, "Synced: " + ", ".join(parts))
+        elif not quiet:
+            widgets.toast(self, "Already in step: nothing to send or bring in")
+
+    def git_init(self):
+        target = self._git_target()
+        if not target:
+            widgets.toast(self, "Open a folder, or save the document, first.")
+            return
+        self._git_op("Start a repository", "init", path=target,
+                     on_done=lambda _p: widgets.toast(self, "Started a git repository"))
+
+    # ------------------------------------------------------------ overleaf
+    #
+    # Two ways to work on an Overleaf project. Live, in a tab showing
+    # Overleaf's own editor — real-time with collaborators, any plan — or on
+    # a copy here through the git bridge, with LaRenderer's editor and
+    # preview. The two meet when a live tab closes: its project's copy, if
+    # that is the open folder, pulls what was done in it.
+
+    # Actions that belong to the document in front, and have no meaning while
+    # an Overleaf tab is. Disabled rather than merely hidden, so their keys —
+    # Ctrl+S above all — reach Overleaf's editor instead.
+    DOCUMENT_ACTIONS = (
+        "save", "save-as", "export", "reload", "compile", "raw-log", "clean",
+        "zoom-in", "zoom-out", "zoom-reset", "zoom-mode", "sync", "problems",
+        "next-page", "previous-page", "page-theme", "engine",
+    )
+
+    def open_overleaf_web(self, uri: str | None = None):
+        """Overleaf's editor in a tab: the open project's, or the project list."""
+        if not overleafweb.available():
+            widgets.toast(self, "Overleaf's editor needs WebKitGTK 6.0 (the webkitgtk-6.0 "
+                                "package), which is not installed.", timeout=8)
+            return None
+        uri = uri or self._overleaf_web_target()
+        wanted = overleafweb.project_id_of(uri)
+        for page, view in self._web_tabs.items():
+            same = (wanted and view.project_id() == wanted) or \
+                view.uri.rstrip("/") == uri.rstrip("/")
+            if same:
+                self.tabs.set_selected_page(page)
+                return view
+        try:
+            view = overleafweb.OverleafView(uri, on_new_tab=self.open_overleaf_web,
+                                            open_external=self._open_external_uri)
+        except Exception as exc:  # noqa: BLE001 - a WebKit that will not start
+            widgets.error_toast(self, exc)
+            return None
+        page = self.tabs.append(view)
+        self._web_tabs[page] = view
+        page.set_title("Overleaf")
+        page.set_tooltip(uri)
+        view.on_title = lambda title, page=page: self._web_title_changed(page, title)
+        self.tabs.set_selected_page(page)
+        return view
+
+    def _overleaf_web_target(self) -> str:
+        """The editor for the open folder's Overleaf project, if it is one."""
+        for path in (self.folder, self.path):
+            url = overleafweb.web_url_for_remote(project.overleaf_remote(path)) if path else None
+            if url:
+                return url
+        return overleafweb.DASHBOARD
+
+    def _open_external_uri(self, uri: str):
+        overleafweb.launch_external(self, uri)
+
+    def _web_title_changed(self, page, title):
+        view = self._web_tabs.get(page)
+        if view is None:
+            return
+        page.set_title(title)
+        page.set_tooltip(view.uri)
+        if self._web_front is view:
+            self.title_widget.set_title(title)
+
+    def _set_web_mode(self, web):
+        """Step the document chrome aside for an Overleaf tab, or bring it back."""
+        was = self._web_front
+        self._web_front = web
+        on = web is not None
+        for name in self.DOCUMENT_ACTIONS:
+            action = self.lookup_action(name)
+            if action is not None:
+                action.set_enabled(not on)
+        for widget in self._document_chrome:
+            widget.set_visible(not on)
+        strip = self.status_label.get_parent()
+        if on:
+            self.title_widget.set_title(web.title())
+            self.title_widget.set_subtitle("Overleaf, live")
+            self.status_label.set_label(
+                "Overleaf's own editor: every change is saved on Overleaf as it is "
+                "typed, and collaborators see it live.")
+            for name in ("ok", "bad", "compiling"):
+                strip.remove_css_class(name)
+        elif was is not None and self.active is not None:
+            self._adopt_active()
+
+    def _after_live_editing(self, view, throttle: bool = False):
+        """Bring what was done in a live tab into the local copy, if one is open.
+
+        Only for the project that tab was showing, only when the open folder
+        is that project's git clone, and at most every twenty seconds when it
+        is only a switch of tabs rather than a close.
+        """
+        project_id = view.project_id() if view is not None else None
+        folder = self.folder
+        if not project_id or not folder:
+            return
+        remote = project.overleaf_remote(folder)
+        if not remote or project_id not in remote:
+            return
+        now = time.monotonic()
+        if throttle and now - self._last_live_pull < 20:
+            return
+        self._last_live_pull = now
+        self._git_op("Pull from Overleaf", "pull", network=True, quiet=True, path=folder,
+                     on_done=lambda _payload: self._reload_changed_files(folder))
+
+    def overleaf_open_dialog(self):
+        """Clone an Overleaf project through its git bridge, then open it.
+
+        From then on the project is an ordinary folder here, and Sync
+        (Ctrl+Alt+S) is how edits cross in either direction.
+        """
+        dialog = Adw.Dialog(title="Open an Overleaf project", content_width=560)
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        clone = Gtk.Button(label="Open", css_classes=["suggested-action"])
+        header.pack_end(clone)
+        toolbar.add_top_bar(header)
+
+        page = Adw.PreferencesPage()
+        group = Adw.PreferencesGroup(
+            description="Open works on a copy of the project, kept in step with Overleaf "
+                        "through its git bridge (a paid-plan feature): LaRenderer's own "
+                        "editor and preview, and Sync (Ctrl+Alt+S) to send and receive. "
+                        "Edit live instead opens Overleaf's own editor in a tab — "
+                        "real-time with collaborators, on any plan.")
+        link = Adw.EntryRow(title="Project link, as in overleaf.com/project/…")
+        group.add(link)
+        name = Adw.EntryRow(title="Folder name (the project id if left empty)")
+        group.add(name)
+
+        base = {"dir": str(self.config["overleaf_dir"])}
+        where = Adw.ActionRow(title="Saved in")
+        where.set_subtitle(base["dir"].replace(os.path.expanduser("~"), "~", 1))
+        change = Gtk.Button(label="Change…", valign=Gtk.Align.CENTER)
+        where.add_suffix(change)
+        group.add(where)
+
+        token = Adw.PasswordEntryRow(title="Git authentication token (first time only)")
+        group.add(token)
+        hint = Adw.ActionRow(
+            subtitle="Overleaf → Account settings → Git integration → Generate token. "
+                     "Git keeps it after the first clone, the same way it keeps your other "
+                     "sign-ins, so this stays empty from then on.")
+        group.add(hint)
+        page.add(group)
+
+        status = Gtk.Label(xalign=0, wrap=True, margin_start=12, margin_end=12,
+                           margin_bottom=12, css_classes=["dim-label"])
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(page)
+        box.append(status)
+        toolbar.set_content(box)
+        dialog.set_child(toolbar)
+
+        def choose_base(_button):
+            chooser = Gtk.FileDialog(title="Where Overleaf projects go")
+            if os.path.isdir(base["dir"]):
+                chooser.set_initial_folder(Gio.File.new_for_path(base["dir"]))
+
+            def picked(dlg, result):
+                try:
+                    file = dlg.select_folder_finish(result)
+                except GLib.Error:
+                    return
+                if file and file.get_path():
+                    base["dir"] = file.get_path()
+                    where.set_subtitle(base["dir"].replace(os.path.expanduser("~"), "~", 1))
+                    self.config["overleaf_dir"] = base["dir"]
+                    self.config.save()
+
+            chooser.select_folder(self, None, picked)
+
+        change.connect("clicked", choose_base)
+
+        def say(text, bad=False):
+            status.set_label(text)
+            if bad:
+                status.remove_css_class("dim-label")
+                status.add_css_class("error")
+            else:
+                status.remove_css_class("error")
+                status.add_css_class("dim-label")
+
+        def start(*_):
+            parsed = project.overleaf_git_url(link.get_text())
+            if not parsed:
+                say("That doesn't look like an Overleaf project: the link should have the "
+                    "project's 24-character id in it, as in "
+                    "overleaf.com/project/64b1…", bad=True)
+                link.grab_focus()
+                return
+            url, project_id = parsed
+            folder_name = name.get_text().strip() or project_id
+            if "/" in folder_name or os.sep in folder_name or folder_name in (".", ".."):
+                say("The folder name can't contain a slash.", bad=True)
+                return
+            dest = os.path.join(base["dir"], folder_name)
+
+            # Already here: open it rather than refuse to clone over it.
+            if os.path.isdir(dest) and any(project_id in u for u in project.remote_urls(dest)):
+                dialog.close()
+                self.open_folder(dest)
+                return
+
+            secret = token.get_text().strip()
+            if secret:
+                self._overleaf_token = secret
+            clone.set_sensitive(False)
+            say("Cloning from Overleaf…")
+
+            def done(_payload):
+                dialog.close()
+                widgets.toast(self, f"Cloned {folder_name} from Overleaf")
+                self.open_folder(dest)
+
+            def failed(error):
+                clone.set_sensitive(True)
+                if error.kind == "auth":
+                    say("Overleaf asked for a Git authentication token"
+                        + (" and did not accept that one." if secret else ".")
+                        + " Paste one from Account settings → Git integration.", bad=True)
+                    token.grab_focus()
+                else:
+                    say(str(error), bad=True)
+
+            self.git.call("clone", done, failed, network=True, url=url, dest=dest,
+                          token=secret or self._overleaf_token)
+
+        def live(*_):
+            text = link.get_text().strip()
+            parsed = project.overleaf_git_url(text) if text else None
+            if text and not parsed:
+                say("That doesn't look like an Overleaf project link.", bad=True)
+                return
+            dialog.close()
+            if parsed and parsed[0].startswith("https://git.overleaf.com/"):
+                self.open_overleaf_web(f"{overleafweb.OVERLEAF}/project/{parsed[1]}")
+            elif parsed:
+                self.open_overleaf_web(overleafweb.web_url_for_remote(parsed[0]))
+            else:
+                self.open_overleaf_web(overleafweb.DASHBOARD)
+
+        live_button = Gtk.Button(label="Edit live instead")
+        live_button.set_tooltip_text("Overleaf's own editor in a tab: real-time with "
+                                     "collaborators, on any Overleaf plan (Ctrl+Alt+O)")
+        live_button.connect("clicked", live)
+        header.pack_start(live_button)
+
+        clone.connect("clicked", start)
+        link.connect("entry-activated", start)
+        token.connect("entry-activated", start)
+        dialog.present(self)
+        link.grab_focus()
 
     # ------------------------------------------------------------- dialogs
 
@@ -1289,7 +2590,8 @@ class MainWindow(Adw.ApplicationWindow):
             size = int(row.get_value())
             self.config["editor_font_size"] = size
             self.config.save()
-            self.editor.set_font_size(size)
+            if self.active is not None:
+                self.editor.set_font_size(size)
 
         font_row.connect("notify::value", font_changed)
         looks.add(font_row)
@@ -1299,14 +2601,16 @@ class MainWindow(Adw.ApplicationWindow):
             subtitle="Dark inverts the rendered pages, keeping the colours' hues",
         )
         theme_row.set_model(Gtk.StringList.new([THEME_LABEL[t] for t in THEMES]))
-        theme_row.set_selected(THEMES.index(self.preview.page_theme))
+        current = str(self.config["pdf_theme"])
+        theme_row.set_selected(THEMES.index(current) if current in THEMES else 0)
 
         def theme_changed(row, _param):
             name = THEMES[row.get_selected()]
             self.config["pdf_theme"] = name
             self.config.save()
             self.lookup_action("page-theme").set_state(GLib.Variant.new_string(name))
-            self.preview.set_page_theme(name)
+            if self.active is not None:
+                self.preview.set_page_theme(name)
 
         theme_row.connect("notify::selected", theme_changed)
         looks.add(theme_row)
@@ -1321,6 +2625,40 @@ class MainWindow(Adw.ApplicationWindow):
         looks.add(sync_row)
         page.add(looks)
 
+        folders = Adw.PreferencesGroup(title="Folders and Overleaf")
+        hidden_row = Adw.SwitchRow(
+            title="Show hidden files",
+            subtitle="Dotfiles and .git in the folder view",
+            active=bool(self.config["show_hidden_files"]),
+        )
+
+        def hidden_changed(row, _param):
+            self.config["show_hidden_files"] = row.get_active()
+            self.config.save()
+            self.tree.set_show_hidden(row.get_active())
+
+        hidden_row.connect("notify::active", hidden_changed)
+        folders.add(hidden_row)
+
+        pull_row = Adw.SwitchRow(
+            title="Pull when an Overleaf project opens",
+            subtitle="Brings in what collaborators did since you last had it open",
+            active=bool(self.config["overleaf_pull_on_open"]),
+        )
+        pull_row.connect("notify::active", lambda r, _p: self._set_option(
+            "overleaf_pull_on_open", r.get_active()))
+        folders.add(pull_row)
+
+        push_row = Adw.SwitchRow(
+            title="Sync with Overleaf after every save",
+            subtitle="Commit, pull and push a moment after each Ctrl+S",
+            active=bool(self.config["overleaf_sync_on_save"]),
+        )
+        push_row.connect("notify::active", lambda r, _p: self._set_option(
+            "overleaf_sync_on_save", r.get_active(), action="overleaf-sync-on-save"))
+        folders.add(push_row)
+        page.add(folders)
+
         dialog.add(page)
         dialog.present(self)
 
@@ -1333,6 +2671,8 @@ class MainWindow(Adw.ApplicationWindow):
     def show_shortcuts(self):
         rows = [
             ("Ctrl+O", "Open a document"),
+            ("Ctrl+Shift+O", "Open a folder"),
+            ("F9", "Show or hide the folder"),
             ("Ctrl+T  /  Ctrl+N", "New tab"),
             ("Ctrl+W", "Close the tab"),
             ("Ctrl+Tab  /  Ctrl+Shift+Tab", "Next or previous tab"),
@@ -1343,12 +2683,21 @@ class MainWindow(Adw.ApplicationWindow):
             ("F7", "Jump the preview to the cursor"),
             ("F8", "Show or hide the problems list"),
             ("Ctrl+ +  /  Ctrl+ −", "Zoom the preview"),
+            ("Ctrl+0", "Zoom the preview to 100%"),
+            ("Click the zoom size", "Type an exact zoom"),
             ("Ctrl+Page Up / Down", "Previous or next page"),
-            ("Ctrl+scroll over the preview", "Zoom the preview"),
-            ("Ctrl+scroll over the text", "Resize the editor text"),
+            ("Pinch, or Ctrl+scroll, over the preview", "Zoom the preview"),
+            ("Pinch, or Ctrl+scroll, over the text", "Resize the editor text"),
             ("Ctrl+/", "Comment or uncomment the selection"),
             ("Tab  /  Shift+Tab", "Indent or unindent the selection"),
             ("Enter after \\begin{…}", "Close the environment automatically"),
+            ("F2  /  Delete in the folder", "Rename, or move to the trash"),
+            ("Ctrl+Alt+C", "Git: commit all changes"),
+            ("Ctrl+Alt+U", "Git: pull"),
+            ("Ctrl+Alt+P", "Git: push"),
+            ("Ctrl+Alt+S", "Git: sync — commit, pull, push (and Overleaf)"),
+            ("Ctrl+Alt+G", "Open the repository in Git Manager"),
+            ("Ctrl+Alt+O", "Overleaf's own editor, live, in a tab"),
             ("Ctrl+Q", "Quit"),
         ]
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0,
@@ -1374,7 +2723,7 @@ class MainWindow(Adw.ApplicationWindow):
             application_name="LaRenderer",
             application_icon="text-x-generic",
             developer_name="Robin",
-            version="1.0",
+            version=__version__,
             comments=(
                 "A LaTeX editor with a live preview.\n\n"
                 f"Engines on this machine: {engines}.\n"
@@ -1425,7 +2774,16 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_close(self, *_):
         self._remember_geometry()
-        self._remember_open_files()
+        self._remember_open_files(closing=True)
+        if self._git_busy and not self._warned_busy:
+            # Git Manager finishes what it started even once we are gone, but
+            # nothing would then say whether it worked. Ask once; a second
+            # close goes through.
+            self._warned_busy = True
+            widgets.toast(self, f"{self._git_busy} is still running. Close again to quit "
+                                "anyway.", timeout=6)
+            return True
+        self._closing = True
 
         # Any tab with unsaved work, not just the one in front — the others
         # are out of sight and are exactly the ones worth asking about.
@@ -1550,5 +2908,33 @@ class MainWindow(Adw.ApplicationWindow):
         # the one whose layout the user just chose.
         if self.active is not None:
             self.config["split_position"] = self.paned.get_position()
+            fraction = self.active.split_fraction()
+            if fraction is not None:
+                self.config["split_fraction"] = round(fraction, 4)
             self.config["editor_font_size"] = self.editor.get_font_size()
+        if self.tree.get_visible():
+            self.config["sidebar_width"] = self.side_paned.get_position()
         self.config.save()
+
+
+def _git_summary(status: dict, short: bool = False) -> str:
+    """Branch, distance from upstream and changes, for the strip or the menu."""
+    branch = status.get("branch") or ("detached HEAD" if status.get("detached") else "no branch")
+    parts = [branch]
+    ahead, behind = status.get("ahead") or 0, status.get("behind") or 0
+    if ahead:
+        parts.append(f"↑{ahead}")
+    if behind:
+        parts.append(f"↓{behind}")
+    changed = len(status.get("files") or [])
+    if status.get("state"):
+        parts.append(f"{status['state']} in progress")
+    if short:
+        if changed:
+            parts.append(f"· {changed} changed")
+        return " ".join(parts)
+    where = f" of {status['upstream']}" if status.get("upstream") and (ahead or behind) else ""
+    tail = f"{changed} changed file{'s' if changed != 1 else ''}" if changed else "nothing to commit"
+    if not status.get("upstream"):
+        tail += " · not tracking a remote branch"
+    return " ".join(parts) + where + " · " + tail

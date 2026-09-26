@@ -32,7 +32,7 @@ import gi  # noqa: E402
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gitmanager import gitcmd, ignore, scanner, widgets, winenv  # noqa: E402
+from gitmanager import gitcmd, ignore, scanner, service, widgets, winenv  # noqa: E402
 
 # A subject and a filename that a locale-encoded pipe would ruin: the em dash
 # means something else in cp1252, and none of the rest exists there at all.
@@ -382,6 +382,213 @@ def test_widgets_build_without_a_repository():
     assert isinstance(widgets.DiffView(), Gtk.Widget)
 
 
+# --------------------------------------------------------------- service ----
+#
+# What LaRenderer asks for over the bus. The bus itself is GLib's; what is
+# worth testing is that the operations do what their callers are told they
+# do, against a "remote" that is only a bare repository on disk.
+
+def _identify(repo):
+    for key, value in (("user.name", "Test"), ("user.email", "test@example.com"),
+                       ("commit.gpgsign", "false")):
+        gitcmd.git(repo, "config", key, value)
+
+
+def _remote_and_two_clones():
+    seed = new_repo()
+    bare = os.path.join(scratch, "remote%d.git" % _made)
+    gitcmd.git(scratch, "init", "--bare", "--initial-branch", "main", bare)
+    gitcmd.add_remote(seed, "origin", bare)
+    gitcmd.push(seed, "origin", "main", set_upstream=True)
+    clones = []
+    for name in ("mine", "theirs"):
+        dest = os.path.join(scratch, "%s%d" % (name, _made))
+        assert service.run("clone", {"url": bare, "dest": dest}) == {"repo": dest}
+        _identify(dest)
+        clones.append(dest)
+    return clones
+
+
+def test_service_status_reads_a_repository():
+    repo = new_repo()
+    write(repo, "a.txt", "changed\n")
+    st = service.run("status", {"path": os.path.join(repo, "a.txt")})
+    assert st["repo"] == gitcmd.toplevel(repo) and st["branch"] == "main"
+    assert [(f["path"], f["label"]) for f in st["files"]] == [("a.txt", "M")], st["files"]
+    # Outside any repository is an answer, not an error.
+    outside = os.path.join(scratch, "not-a-repo")
+    os.makedirs(outside, exist_ok=True)
+    assert service.run("status", {"path": outside}) == {"repo": None}
+
+
+def test_service_commit_takes_everything_or_says_why_not():
+    repo = new_repo()
+    write(repo, "b.txt", "new\n")
+    write(repo, "a.txt", "changed\n")
+    service.run("commit", {"path": repo, "message": "both"})
+    assert not gitcmd.status(repo).dirty
+    for arguments, kind in (({"path": repo, "message": "again"}, "nothing"),
+                            ({"path": repo, "message": "  "}, "failed")):
+        try:
+            service.run("commit", arguments)
+        except service.ServiceError as exc:
+            assert exc.kind == kind, (exc.kind, str(exc))
+        else:
+            raise AssertionError(f"committed {arguments}")
+
+
+def test_service_sync_commits_pulls_and_pushes():
+    mine, theirs = _remote_and_two_clones()
+    write(theirs, "theirs.txt", "from them\n")
+    assert service.run("sync", {"path": theirs})["pushed"]
+    write(mine, "mine.txt", "from me\n")
+    result = service.run("sync", {"path": mine, "message": "mine"})
+    assert result["committed"] and result["pulled"] and result["pushed"], result
+    assert os.path.exists(os.path.join(mine, "theirs.txt"))
+    assert service.run("pull", {"path": theirs})["changed"]
+    assert os.path.exists(os.path.join(theirs, "mine.txt"))
+    # In step already: nothing to do, and it says so rather than failing.
+    again = service.run("sync", {"path": mine})
+    assert not (again["committed"] or again["pushed"]), again
+
+
+def test_service_reports_a_conflict_as_one():
+    mine, theirs = _remote_and_two_clones()
+    write(theirs, "a.txt", "their line\n")
+    service.run("sync", {"path": theirs})
+    write(mine, "a.txt", "my line\n")
+    try:
+        service.run("sync", {"path": mine})
+    except service.ServiceError as exc:
+        assert exc.kind == "conflict" and "a.txt" in str(exc), (exc.kind, str(exc))
+    else:
+        raise AssertionError("a conflicting sync went through")
+    assert gitcmd.status(mine).state == "merge"
+
+
+def test_service_refuses_what_it_does_not_know():
+    for operation, arguments in (("nonsense", {}), ("status", {"bogus": 1})):
+        try:
+            service.run(operation, arguments)
+        except service.ServiceError as exc:
+            assert exc.kind in ("unknown", "failed"), exc.kind
+        else:
+            raise AssertionError(operation)
+    # A clone that fails leaves nothing behind for the retry to trip over.
+    dest = os.path.join(scratch, "failed-clone")
+    try:
+        service.run("clone", {"url": os.path.join(scratch, "no-such.git"), "dest": dest})
+    except service.ServiceError:
+        pass
+    assert not os.path.exists(dest)
+
+
+def test_a_credential_goes_through_the_environment():
+    assert service.credential_env("") is None
+    env = service.credential_env("secret-token")
+    assert env["GIT_CONFIG_KEY_0"] == "credential.helper"
+    # The token itself is only ever in the environment, never in the helper
+    # command line that `ps` can show.
+    assert "secret-token" not in env["GIT_CONFIG_VALUE_0"]
+    assert env["GITMANAGER_TOKEN"] == "secret-token" and env["GITMANAGER_USER"] == "git"
+    if not winenv.WINDOWS:
+        import subprocess
+        out = subprocess.run(
+            [gitcmd.GIT, "credential", "fill"], input="protocol=https\nhost=example.invalid\n\n",
+            capture_output=True, text=True, env={**os.environ, **env,
+                                                 "GIT_CONFIG_NOSYSTEM": "1",
+                                                 "HOME": scratch, "XDG_CONFIG_HOME": scratch},
+        ).stdout
+        assert "username=git" in out and "password=secret-token" in out, out
+
+
+# ----------------------------------------------------------------- windows --
+
+_TEST_APP = None
+
+
+def _test_app():
+    """A GitManagerApp of its own, registered but never run.
+
+    Registering emits ::startup, which is what installs the actions and lets
+    the application hold windows. The id and flags are changed first so this
+    never reaches the real Git Manager that may be running on this desktop,
+    and it is built once, because a second application exporting the same
+    object path is an error.
+    """
+    global _TEST_APP
+    if _TEST_APP is None:
+        from gi.repository import Gio
+
+        from gitmanager.app import GitManagerApp
+
+        app = GitManagerApp()
+        app.set_application_id("com.robin.GitManagerTests")
+        app.set_flags(Gio.ApplicationFlags.NON_UNIQUE
+                      | Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        app.register(None)
+        _TEST_APP = app
+    return _TEST_APP
+
+
+def test_the_new_window_flag_never_reaches_the_paths():
+    from gitmanager.app import split_new_window_flag
+
+    for argv, expected in (
+        (["-n", "/tmp"], (True, ["/tmp"])),
+        (["--new-window", "/tmp"], (True, ["/tmp"])),
+        (["--new-window"], (True, [])),
+        (["/tmp"], (False, ["/tmp"])),
+        ([], (False, [])),
+        # --background is not a window flag and must survive untouched, or the
+        # service mode LaRenderer depends on would open a window instead.
+        (["--background"], (False, ["--background"])),
+    ):
+        got = split_new_window_flag(list(argv))
+        assert got == expected, f"{argv} gave {got}, wanted {expected}"
+
+
+def test_two_windows_open_at_once_and_share_nothing():
+    from gitmanager.window import MainWindow
+
+    app = _test_app()
+    before = len([w for w in app.get_windows() if isinstance(w, MainWindow)])
+    first = app.new_window()
+    second = app.new_window()
+
+    mains = [w for w in app.get_windows() if isinstance(w, MainWindow)]
+    assert len(mains) == before + 2, f"expected two more windows, got {len(mains)}"
+    assert first is not second
+    assert first.cfg is not second.cfg
+    # Each window runs its own git commands in its own order.
+    assert first.queue is not second.queue
+    # Found by existence, not by focus: nothing here has ever been focused.
+    assert app.front_window() in mains
+
+    for window in (first, second):
+        window.destroy()
+
+
+def test_the_unhandled_error_handler_belongs_to_the_application():
+    """It has one slot, so a window must not be allowed to own it.
+
+    A window that claimed it would keep it after being closed, and every
+    later background failure would be reported on a window that is gone.
+    """
+    from gitmanager import jobs
+    from gitmanager.window import MainWindow
+
+    app = _test_app()
+    assert jobs.on_unhandled is not None, "nothing would report a worker failure"
+    claimed = jobs.on_unhandled
+
+    window = app.new_window()
+    assert jobs.on_unhandled is claimed, "a window took the application's handler"
+    window.destroy()
+    assert jobs.on_unhandled is claimed, "a closed window left the handler dangling"
+    assert isinstance(window, MainWindow)
+
+
 def main():
     print("plumbing")
     check("a fresh repository reads back clean", test_status_clean)
@@ -398,6 +605,18 @@ def main():
     check("a stash goes away and comes back", test_stash_goes_away_and_comes_back)
     check("the repository predicates answer for real paths", test_repo_predicates)
     check("a failed command carries a readable message", test_a_failed_command_carries_a_message)
+
+    print("the service LaRenderer uses")
+    check("status reads a repository, or says there is none",
+          test_service_status_reads_a_repository)
+    check("commit takes everything, or says why not",
+          test_service_commit_takes_everything_or_says_why_not)
+    check("sync commits, pulls and pushes", test_service_sync_commits_pulls_and_pushes)
+    check("a conflict is reported as a conflict", test_service_reports_a_conflict_as_one)
+    check("unknown operations and failed clones are handled",
+          test_service_refuses_what_it_does_not_know)
+    check("a credential goes through the environment",
+          test_a_credential_goes_through_the_environment)
 
     print("paths and settings")
     check("paths compare by meaning, not spelling", test_paths_compare_by_meaning_not_spelling)
@@ -418,6 +637,14 @@ def main():
     widgets.install_css()
     check("an error leads with its first line", test_describe_error_leads_with_the_first_line)
     check("widgets build without a repository", test_widgets_build_without_a_repository)
+
+    print("windows")
+    check("the new-window flag never reaches the paths",
+          test_the_new_window_flag_never_reaches_the_paths)
+    check("two windows open at once and share nothing",
+          test_two_windows_open_at_once_and_share_nothing)
+    check("the unhandled-error handler belongs to the application",
+          test_the_unhandled_error_handler_belongs_to_the_application)
 
     print("all good")
 

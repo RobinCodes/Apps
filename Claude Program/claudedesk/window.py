@@ -93,13 +93,17 @@ class SessionRow(Gtk.ListBoxRow):
 
 
 class MainWindow(Adw.ApplicationWindow):
-    def __init__(self, app, cfg):
+    def __init__(self, app, cfg, manager=None):
         super().__init__(application=app, title="Claude Desk",
                          default_width=1120, default_height=740)
         self.cfg = cfg
-        self.manager = Manager(cfg)
-        self.manager.on_changed = self._on_manager_changed
-        self.manager.on_notice = self._on_manager_notice
+        # One Manager for the application, not one per window. It owns the
+        # live Claude processes and rations them against a budget, so a
+        # second one would run a second set of children over the same
+        # sessions, double the budget, and save the same file from both.
+        self.manager = manager if manager is not None else Manager(cfg)
+        self._watch = self.manager.watch(self._on_manager_changed,
+                                         self._on_manager_notice)
         self.rows = {}
         self.views = {}
         self.view_order = []
@@ -133,6 +137,7 @@ class MainWindow(Adw.ApplicationWindow):
                                               self.new_session))
 
         menu = Gio.Menu()
+        menu.append("New Window", "app.new-window")
         menu.append("Preferences", "win.preferences")
         menu.append("About Claude Desk", "win.about")
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
@@ -565,5 +570,18 @@ class MainWindow(Adw.ApplicationWindow):
     # --------------------------------------------------------------- closing --
 
     def _on_close(self, _window):
-        self.manager.shutdown()
+        # Stop listening first: whatever happens next must not be delivered
+        # into widgets that are on their way out.
+        self.manager.unwatch(*self._watch)
+
+        # The sessions belong to the application, not to this window. Closing
+        # one of several must not stop the children the others are showing --
+        # only the last window out shuts them down.
+        app = self.get_application()
+        others = [w for w in (app.get_windows() if app is not None else [])
+                  if isinstance(w, MainWindow) and w is not self]
+        if not others:
+            self.manager.shutdown()
+        else:
+            self.manager.save()
         return False

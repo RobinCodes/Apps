@@ -49,6 +49,9 @@ $Apps = @(
     @{ Name = 'Fathom'; Kind = 'python'; Folder = 'Fathom'; Entry = 'fathom.py'
        Icon = 'fathom.ico'; Svg = 'Fathom\fathom.svg'
        Comment = 'See what is taking up the disk, as a tree and as a map' }
+    @{ Name = 'Notedown'; Kind = 'python'; Folder = 'Notedown'; Entry = 'notedown.py'
+       Icon = 'notedown.ico'; Svg = 'Notedown\notedown.svg'
+       Comment = 'Write Markdown on the left, watch the page appear on the right' }
     @{ Name = 'Lyndon'; Kind = 'exe'; Folder = 'Lyndon Browser'; Entry = 'dist\lyndon.exe'
        Icon = 'lyndon.ico'; Svg = 'Lyndon Browser\data\icons\org.lyndon.Browser.svg'
        Comment = 'A small, fast, private native browser' }

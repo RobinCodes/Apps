@@ -13,9 +13,29 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 
 from . import backend, config, widgets  # noqa: E402
+from .manager import Manager  # noqa: E402
 from .window import MainWindow  # noqa: E402
 
 APP_ID = "com.robin.ClaudeDesk"
+
+NEW_WINDOW_FLAGS = ("--new-window", "-n")
+
+
+def split_new_window_flag(args):
+    """Pull the new-window flag out of a command line.
+
+    Kept out of the application object so it can be tested without a display,
+    and so the flag is gone before anything downstream can mistake it for a
+    folder to start a session in.
+    """
+    wants_new = False
+    rest = []
+    for arg in args:
+        if arg in NEW_WINDOW_FLAGS:
+            wants_new = True
+        else:
+            rest.append(arg)
+    return wants_new, rest
 
 
 class ClaudeDeskApp(Adw.Application):
@@ -23,6 +43,7 @@ class ClaudeDeskApp(Adw.Application):
         super().__init__(application_id=APP_ID,
                          flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
         self.cfg = None
+        self.manager = None
         self.connect("command-line", self._on_command_line)
 
     def do_startup(self):
@@ -36,23 +57,69 @@ class ClaudeDeskApp(Adw.Application):
         self.add_action(quit_action)
         self.set_accels_for_action("app.quit", ["<Control>q"])
 
-    def do_activate(self):
+        new_window = Gio.SimpleAction.new("new-window", None)
+        new_window.connect("activate", lambda *_: self.new_window().present())
+        self.add_action(new_window)
+        # Ctrl+N is already a new session, which is the far commoner thing to
+        # want; a whole window is the shifted version of it.
+        self.set_accels_for_action("app.new-window", ["<Control><Shift>n"])
+
+    def _ensure_backend(self):
+        """The settings and the sessions, made once and shared by every window.
+
+        The Manager owns the live Claude processes and rations them against a
+        budget. One per window would mean a second set of children over the
+        same sessions, twice the budget, and two writers of one file.
+        """
         if self.cfg is None:
             self.cfg = config.Config()
-        window = self.props.active_window or MainWindow(self, self.cfg)
+        if self.manager is None:
+            self.manager = Manager(self.cfg)
+        return self.cfg, self.manager
+
+    def new_window(self):
+        """Another window onto the same sessions.
+
+        The sessions are the application's, so both windows list all of them
+        and either can drive any one; what a window keeps to itself is which
+        session it is showing.
+        """
+        cfg, manager = self._ensure_backend()
+        return MainWindow(self, cfg, manager)
+
+    def front_window(self):
+        """The window a request should land in, or None when there is none.
+
+        Not props.active_window on its own: that is None whenever nothing of
+        ours holds the focus, which is the ordinary state of this app at the
+        moment a terminal hands it a folder. Reading that as "no window open"
+        is how a second one appears on every invocation.
+        """
+        window = self.props.active_window
+        if isinstance(window, MainWindow):
+            return window
+        for candidate in self.get_windows():
+            if isinstance(candidate, MainWindow):
+                return candidate
+        return None
+
+    def do_activate(self):
+        window = self.front_window() or self.new_window()
         window.present()
 
     def _quit(self):
-        window = self.props.active_window
-        if window is not None:
-            window.manager.shutdown()
+        # One shutdown for the one Manager, however many windows are showing
+        # it: every child is stopped and the transcripts are flushed once.
+        if self.manager is not None:
+            self.manager.shutdown()
         self.quit()
 
     def _on_command_line(self, _app, command_line):
-        args = command_line.get_arguments()[1:]
-        self.activate()
-        window = self.props.active_window
-        if window is None or not args:
+        wants_new, args = split_new_window_flag(command_line.get_arguments()[1:])
+        window = self.new_window() if wants_new else (self.front_window()
+                                                      or self.new_window())
+        window.present()
+        if not args:
             return 0
         path = os.path.abspath(args[0])
         if os.path.isfile(path):
@@ -88,7 +155,34 @@ def _report_missing_cli(message):
     app.run([])
 
 
+USAGE = """Claude Desk — several Claude Code sessions in one native window.
+
+Usage:
+  claude-desk [FOLDER]
+  claude-desk -n, --new-window [FOLDER]    in a window of its own
+
+With a folder, a session is started in it. A second `claude-desk` hands what
+it was given to the window already open; -n gives it one of its own, which is
+how you get two sessions on screen at once. Ctrl+Shift+N does the same from
+inside (Ctrl+N is a new session in the window you are in). The sessions
+themselves are shared: both windows list all of them, and either can drive any
+one of them.
+"""
+
+
 def main():
+    # GApplication hands unknown options to the running instance, which would
+    # otherwise take --help for a folder and start a session in it.
+    for flag in sys.argv[1:]:
+        if flag in ("-h", "--help"):
+            print(USAGE.strip())
+            return 0
+        if flag in ("-V", "--version"):
+            from . import __version__
+
+            print(f"Claude Desk {__version__}")
+            return 0
+
     if backend.resolve_bin() is None:
         _report_missing_cli(
             f"Claude Desk needs the `{backend.CLAUDE_BIN}` command on your PATH.\n"

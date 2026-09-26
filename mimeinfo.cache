@@ -1,0 +1,9 @@
+[MIME Cache]
+application/pdf=Lyndon Browser-data-org.lyndon.Browser.desktop;
+application/xhtml+xml=Lyndon Browser-data-org.lyndon.Browser.desktop;
+text/html=Lyndon Browser-data-org.lyndon.Browser.desktop;
+text/x-tex=LaRenderer-larenderer.desktop;
+text/xml=Lyndon Browser-data-org.lyndon.Browser.desktop;
+x-scheme-handler/about=Lyndon Browser-data-org.lyndon.Browser.desktop;
+x-scheme-handler/http=Lyndon Browser-data-org.lyndon.Browser.desktop;
+x-scheme-handler/https=Lyndon Browser-data-org.lyndon.Browser.desktop;

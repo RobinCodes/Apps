@@ -115,10 +115,11 @@ deps:
 run: $(APP)
 	@./$(APP)
 
-check: tests/test-abp tests/test-util tests/test-store
+check: tests/test-abp tests/test-util tests/test-store tests/test-engine
 	@./tests/test-abp
 	@./tests/test-util
 	@./tests/test-store
+	@./tests/test-engine
 
 tests/test-abp: tests/test-abp.c src/abp.c
 	@echo "  CC    $@"
@@ -144,6 +145,16 @@ tests/test-store: tests/test-store.c src/store.c
 	  $(shell pkg-config --cflags gtk4 libadwaita-1 webkitgtk-6.0) \
 	  $(shell pkg-config --cflags --libs glib-2.0 gio-2.0 sqlite3)
 
+# engine.c is the one test that needs the toolkit for real: it creates a
+# WebKitUserContentManager and watches what happens to it. config.c and util.c
+# come along because the engine is built from a config, and the compiled-in
+# resources because it reads its stylesheets out of them.
+tests/test-engine: tests/test-engine.c src/engine.c src/config.c src/util.c build/lyndon-resources.c
+	@echo "  CC    $@"
+	@$(CC) $(STD) $(WARN) -O1 -g -Isrc -Ibuild \
+	  -DLYNDON_VERSION=\"$(VERSION)\" -DLYNDON_APP_ID=\"$(APP_ID)\" -o $@ $^ \
+	  $(shell pkg-config --cflags --libs $(PKGS))
+
 install: $(APP)
 	install -Dm755 $(APP) $(DESTDIR)$(BINDIR)/$(APP)
 	install -d $(DESTDIR)$(DATADIR)/applications
@@ -163,7 +174,7 @@ uninstall:
 	      $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
 
 clean:
-	rm -rf build $(APP) tests/test-abp tests/test-util tests/test-store
+	rm -rf build $(APP) tests/test-abp tests/test-util tests/test-store tests/test-engine
 
 help:
 	@echo "make            build"

@@ -87,6 +87,7 @@ class MainWindow(Adw.ApplicationWindow):
         section = Gio.Menu()
         section.append("Scan a folder…", "win.open")
         section.append("Scan again", "win.rescan")
+        section.append("New Window", "app.new-window")
         menu.append_section(None, section)
         view = Gio.Menu()
         view.append("Size on disk", "win.basis::alloc")

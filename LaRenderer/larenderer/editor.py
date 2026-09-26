@@ -95,6 +95,9 @@ class Editor(Gtk.Box):
         self._current_line = -1
         self._font_size = 11
         self._loading = False
+        # Off for files that aren't LaTeX — a .py or a Makefile opened from the
+        # folder view — where colouring every backslash would be noise.
+        self.latex = True
 
         self.buffer = Gtk.TextBuffer()
         self.view = Gtk.TextView(
@@ -144,6 +147,15 @@ class Editor(Gtk.Box):
         scroll.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         scroll.connect("scroll", self._on_ctrl_scroll)
         self.scroller.add_controller(scroll)
+        self._scroll_carry = 0.0
+
+        # A pinch over the text resizes it, as Ctrl+scroll does.
+        pinch = Gtk.GestureZoom()
+        pinch.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        pinch.connect("begin", lambda *_: setattr(self, "_pinch_from", self._font_size))
+        pinch.connect("scale-changed", self._on_pinch)
+        self.scroller.add_controller(pinch)
+        self._pinch_from = self._font_size
 
         Adw.StyleManager.get_default().connect("notify::dark", lambda *_: self._retheme())
 
@@ -412,8 +424,20 @@ class Editor(Gtk.Box):
         """Ctrl+scroll over the text resizes the text, not the preview."""
         if not (controller.get_current_event_state() & Gdk.ModifierType.CONTROL_MASK):
             return False
+        if controller.get_unit() == Gdk.ScrollUnit.SURFACE:
+            # A touchpad sends pixels, dozens of events a swipe. One point of
+            # text size per 24 of them, rather than one per event.
+            self._scroll_carry += dy
+            steps = int(self._scroll_carry / 24)
+            if steps:
+                self._scroll_carry -= steps * 24
+                self.set_font_size(self._font_size - steps)
+            return True
         self.set_font_size(self._font_size + (-1 if dy > 0 else 1))
         return True
+
+    def _on_pinch(self, _gesture, scale):
+        self.set_font_size(round(self._pinch_from * scale))
 
     def _on_enter(self) -> bool:
         buf = self.buffer
@@ -507,11 +531,22 @@ class Editor(Gtk.Box):
         if self.on_cursor:
             self.on_cursor()
 
+    def set_latex(self, latex: bool):
+        """Whether to read the text as LaTeX: highlighting, \\end{} closing."""
+        self.latex = latex
+        self._highlight_now()
+
     def _highlight_now(self):
         self._highlight_source = 0
         buf = self.buffer
         table = buf.get_tag_table()
         total = buf.get_char_count()
+
+        if not self.latex:
+            start, end = buf.get_bounds()
+            for name in TAG_NAMES:
+                buf.remove_tag(table.lookup(name), start, end)
+            return GLib.SOURCE_REMOVE
 
         if total <= FULL_HIGHLIGHT_LIMIT:
             start, end = buf.get_bounds()

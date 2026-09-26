@@ -10,9 +10,13 @@ Categories=Network;WebBrowser;GTK;
 Keywords=web;browser;internet;www;privacy;adblock;
 StartupNotify=true
 StartupWMClass=lyndon
-Actions=new-window;
+Actions=new-window;private-window;
 MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/about;application/pdf;
 
 [Desktop Action new-window]
 Name=New Window
-Exec=lyndon
+Exec=lyndon --new-window
+
+[Desktop Action private-window]
+Name=New Private Window
+Exec=lyndon --private

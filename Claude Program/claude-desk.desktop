@@ -10,3 +10,8 @@ Categories=Development;IDE;
 Keywords=claude;ai;agent;code;assistant;
 StartupNotify=true
 StartupWMClass=com.robin.ClaudeDesk
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/home/robin/.local/bin/claude-desk --new-window

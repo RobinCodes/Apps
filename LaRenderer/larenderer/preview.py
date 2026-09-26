@@ -9,9 +9,17 @@ arrive, so the preview never blinks white while you are typing.
 
 Dark pages are a colour matrix on the way to the screen rather than a second
 rasterisation, so turning them on costs nothing and the cache stays valid.
+
+Zooming by touch — a pinch, or Ctrl and two fingers on the touchpad — is live:
+the pages already on screen are stretched to the new size as the fingers
+move, the point under them stays under them, and poppler is only asked for
+sharp pixels once the gesture stops. Rasterising at every intermediate size
+would be dozens of pdftoppm runs a second for pages nobody looks at.
 """
 
 from __future__ import annotations
+
+import math
 
 import gi
 
@@ -29,8 +37,18 @@ SCROLL_SETTLE_MS = 70
 RESIZE_SETTLE_MS = 130
 PRELOAD = 1                 # pages either side of the viewport
 CACHE_LIMIT = 60            # textures; a page is ~1-3 MB at 110 dpi
-ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
+# And no more than this many bytes of them. The count alone was enough while
+# zoom came in a dozen fixed steps; with a pinch able to land anywhere up to
+# 400%, where one A4 page is ~50 MB, sixty of them would be most of this
+# machine's memory.
+CACHE_BYTES = 192 * 1024 * 1024
+ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0]
+ZOOM_MIN, ZOOM_MAX = ZOOM_STEPS[0], ZOOM_STEPS[-1]
 MIN_DPI, MAX_DPI = 24, 600
+# Touchpad scrolling arrives as pixels. This many pixels of Ctrl+scroll is a
+# factor of e, which makes one comfortable two-finger swipe about a doubling.
+TOUCHPAD_ZOOM_PIXELS = 220.0
+LIVE_ZOOM_SETTLE_MS = 180   # after the last touchpad event, render sharp pages
 
 FIT_WIDTH = "fit-width"
 FIT_PAGE = "fit-page"
@@ -205,6 +223,16 @@ class Preview(Gtk.Box):
         self._resize_timer = 0
         self._current = 1
         self._dpi = 96
+        self._cache_bytes = 0
+
+        # Called when the preview changes its own zoom — a pinch, a touchpad
+        # swipe, Ctrl+wheel — so the window can update its label and settings.
+        self.on_zoom_changed = None
+        self._live_start = None          # the scale a live zoom started from
+        self._live_timer = 0
+        self._pending_scroll = None      # (h, v, expected h upper, expected v upper)
+        self._pending_timer = 0
+        self._pointer = None             # last pointer position over the pages
 
         self.column = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
@@ -246,6 +274,27 @@ class Preview(Gtk.Box):
         scroll.connect("scroll", self._on_ctrl_scroll)
         self.scroller.add_controller(scroll)
 
+        # A pinch on the touchpad (or two fingers on a touch screen).
+        pinch = Gtk.GestureZoom()
+        pinch.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        pinch.connect("begin", lambda *_: self.begin_live_zoom())
+        pinch.connect("scale-changed", self._on_pinch)
+        pinch.connect("end", lambda *_: self.end_live_zoom())
+        pinch.connect("cancel", lambda *_: self.end_live_zoom())
+        self.scroller.add_controller(pinch)
+
+        # Where the pointer is, so Ctrl+scroll zooms around it.
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", lambda _c, x, y: setattr(self, "_pointer", (x, y)))
+        motion.connect("leave", lambda *_: setattr(self, "_pointer", None))
+        self.scroller.add_controller(motion)
+
+        # A zoom changes the content's size, and the scroll position that keeps
+        # the right spot in view can only be set once the adjustments have
+        # caught up with it.
+        self.scroller.get_hadjustment().connect("changed", self._apply_pending_scroll)
+        self.scroller.get_vadjustment().connect("changed", self._apply_pending_scroll)
+
         # Fit-width follows the viewport, and GTK4 has no plain "resized"
         # signal on a widget, so the width is polled instead.
         self._last_width = 0
@@ -264,8 +313,7 @@ class Preview(Gtk.Box):
         self.page_count = result.pages
         self.page_pt = result.page_pt
 
-        self._cache.clear()
-        self._order.clear()
+        self._forget_textures()
         self._queue.bump()
 
         # Mark every page as needing a fresh render. Without this the "already
@@ -288,8 +336,7 @@ class Preview(Gtk.Box):
     def clear(self):
         self.pdf = None
         self.page_count = 0
-        self._cache.clear()
-        self._order.clear()
+        self._forget_textures()
         self._queue.bump()
         while (child := self.column.get_first_child()) is not None:
             self.column.remove(child)
@@ -355,6 +402,10 @@ class Preview(Gtk.Box):
         return int(max(MIN_DPI, min(MAX_DPI, round(dpi))))
 
     def set_zoom(self, zoom):
+        """Fit width, fit page, or a scale (1.0 is 100%), kept within 25–400%."""
+        if not isinstance(zoom, str):
+            self.zoom_to(float(zoom))
+            return
         self.zoom = zoom
         self._resize_pages()
         self._render_visible()
@@ -363,22 +414,151 @@ class Preview(Gtk.Box):
         current = self._effective_scale()
         for step in ZOOM_STEPS:
             if step > current + 0.001:
-                self.set_zoom(step)
+                self.zoom_to(step, self._pointer)
                 return
-        self.set_zoom(ZOOM_STEPS[-1])
+        self.zoom_to(ZOOM_STEPS[-1], self._pointer)
 
     def zoom_out(self):
         current = self._effective_scale()
         for step in reversed(ZOOM_STEPS):
             if step < current - 0.001:
-                self.set_zoom(step)
+                self.zoom_to(step, self._pointer)
                 return
-        self.set_zoom(ZOOM_STEPS[0])
+        self.zoom_to(ZOOM_STEPS[0], self._pointer)
+
+    def effective_scale(self) -> float:
+        """The scale the pages are at, whatever the mode: fit width is a size too."""
+        return self._effective_scale()
 
     def _effective_scale(self) -> float:
         if isinstance(self.zoom, str):
             return self._compute_dpi() / 96.0
         return float(self.zoom)
+
+    def zoom_to(self, scale: float, anchor=None, render: bool = True):
+        """Zoom to `scale`, keeping the point at `anchor` where it is on screen.
+
+        `anchor` is (x, y) in the pane; None means its middle. With `render`
+        false only the page sizes change — the old textures are stretched —
+        which is what a live gesture wants on every step.
+        """
+        scale = max(ZOOM_MIN, min(ZOOM_MAX, float(scale)))
+        spot = self._document_point(anchor)
+        self.zoom = round(scale, 4)
+        self._resize_pages()
+        if spot is not None:
+            self._keep_in_view(spot)
+        if render:
+            self._schedule_render()
+
+    # -- live zoom: pinch and touchpad ---------------------------------------
+
+    def begin_live_zoom(self):
+        self._live_start = self._effective_scale()
+
+    def live_zoom(self, factor: float, anchor=None):
+        """One step of a gesture: `factor` times the scale it started from."""
+        if self._live_start is None:
+            self.begin_live_zoom()
+        self.zoom_to(self._live_start * factor, anchor, render=False)
+
+    def end_live_zoom(self):
+        if self._live_start is None:
+            return
+        self._live_start = None
+        self._schedule_render()
+        if self.on_zoom_changed:
+            self.on_zoom_changed()
+
+    def _on_pinch(self, gesture, scale):
+        found, x, y = gesture.get_bounding_box_center()
+        self.live_zoom(scale, (x, y) if found else self._pointer)
+
+    def _settle_live_zoom(self):
+        self._live_timer = 0
+        self.end_live_zoom()
+        return GLib.SOURCE_REMOVE
+
+    # -- keeping the right spot in view ---------------------------------------
+
+    def _page_px(self) -> tuple[int, int]:
+        """A page's size on screen, rounded the way _resize_pages rounds it."""
+        page_w, page_h = self.page_pt
+        return (int(round(page_w / 72.0 * self._dpi)),
+                int(round(page_h / 72.0 * self._dpi)))
+
+    def _column_left(self, view_w: float) -> float:
+        """Where the pages' left edge is, in content coordinates."""
+        column = self._page_px()[0] + 2 * PAGE_MARGIN
+        return max(0.0, (view_w - column) / 2) + PAGE_MARGIN
+
+    def _document_point(self, anchor):
+        """The page and position in points under `anchor`, before a zoom."""
+        if not self._pages:
+            return None
+        view_w, view_h = self._viewport_size()
+        x, y = anchor if anchor is not None else (view_w / 2, view_h / 2)
+        hadj, vadj = self.scroller.get_hadjustment(), self.scroller.get_vadjustment()
+        px_per_pt = self._dpi / 72.0
+        stride = self._page_px()[1] + PAGE_GAP
+        content_y = vadj.get_value() + y - PAGE_MARGIN
+        index = max(0, min(len(self._pages) - 1, int(content_y // stride)))
+        y_pt = (content_y - index * stride) / px_per_pt
+        x_pt = (hadj.get_value() + x - self._column_left(view_w)) / px_per_pt
+        return index, x_pt, y_pt, x, y
+
+    def _keep_in_view(self, spot):
+        index, x_pt, y_pt, x, y = spot
+        view_w, _view_h = self._viewport_size()
+        px_per_pt = self._dpi / 72.0
+        page_w, page_h = self._page_px()
+        n = len(self._pages)
+        content_h = 2 * PAGE_MARGIN + n * page_h + (n - 1) * PAGE_GAP
+        content_w = page_w + 2 * PAGE_MARGIN
+        v = PAGE_MARGIN + index * (page_h + PAGE_GAP) + y_pt * px_per_pt - y
+        h = self._column_left(view_w) + x_pt * px_per_pt - x
+        self._pending_scroll = (h, v, content_w, content_h)
+        # Should the size never land exactly where it was predicted — a pane
+        # resized mid-gesture — go there anyway rather than jump later.
+        if self._pending_timer:
+            GLib.source_remove(self._pending_timer)
+        self._pending_timer = GLib.timeout_add(400, self._force_pending_scroll)
+        self._apply_pending_scroll()
+
+    def _force_pending_scroll(self):
+        self._pending_timer = 0
+        self._apply_pending_scroll(force=True)
+        return GLib.SOURCE_REMOVE
+
+    def _apply_pending_scroll(self, *_args, force: bool = False):
+        """Scroll to where a zoom wants to be, once the size has caught up."""
+        if self._pending_scroll is None:
+            return
+        h, v, content_w, content_h = self._pending_scroll
+        hadj, vadj = self.scroller.get_hadjustment(), self.scroller.get_vadjustment()
+        # Until layout runs, the adjustments still describe the old size, and
+        # a value set now would be clamped to it. Sideways only matters when
+        # the pages are wider than the pane; otherwise they are centred.
+        if not force:
+            if abs(vadj.get_upper() - content_h) > 3:
+                return
+            if content_w > hadj.get_page_size() + 1 and abs(hadj.get_upper() - content_w) > 3:
+                return
+        self._pending_scroll = None
+        hadj.set_value(max(0.0, min(h, hadj.get_upper() - hadj.get_page_size())))
+        vadj.set_value(max(0.0, min(v, vadj.get_upper() - vadj.get_page_size())))
+        self._update_current_page()
+
+    def _schedule_render(self):
+        """Render sharp pages once the scroll position has settled.
+
+        Anything still queued was asked for at a size the pages are no longer
+        at, and would only delay the ones that are.
+        """
+        self._queue.bump()
+        if self._scroll_timer:
+            GLib.source_remove(self._scroll_timer)
+        self._scroll_timer = GLib.timeout_add(SCROLL_SETTLE_MS * 2, self._after_scroll)
 
     def zoom_label(self) -> str:
         if self.zoom == FIT_WIDTH:
@@ -399,10 +579,24 @@ class Preview(Gtk.Box):
         state = controller.get_current_event_state()
         if not (state & Gdk.ModifierType.CONTROL_MASK):
             return False
+        # A touchpad sends a stream of small pixel deltas, where a mouse wheel
+        # sends one notch at a time. Treated as notches, a single two-finger
+        # swipe would race through every zoom step there is.
+        if controller.get_unit() == Gdk.ScrollUnit.SURFACE:
+            if self._live_start is None:
+                self.begin_live_zoom()
+            current = self._effective_scale() / self._live_start
+            self.live_zoom(current * math.exp(-dy / TOUCHPAD_ZOOM_PIXELS), self._pointer)
+            if self._live_timer:
+                GLib.source_remove(self._live_timer)
+            self._live_timer = GLib.timeout_add(LIVE_ZOOM_SETTLE_MS, self._settle_live_zoom)
+            return True
         if dy < 0:
             self.zoom_in()
         elif dy > 0:
             self.zoom_out()
+        if self.on_zoom_changed:
+            self.on_zoom_changed()
         return True
 
     # -- what is on screen -------------------------------------------------
@@ -431,7 +625,10 @@ class Preview(Gtk.Box):
 
     def _after_scroll(self):
         self._scroll_timer = 0
-        self._render_visible()
+        # Mid-gesture the size is still moving; whatever was rendered now
+        # would be for a size the fingers are about to leave.
+        if self._live_start is None:
+            self._render_visible()
         return GLib.SOURCE_REMOVE
 
     def _update_current_page(self):
@@ -516,10 +713,29 @@ class Preview(Gtk.Box):
             self._pages[index].set_texture(texture, dpi)
 
     def _remember(self, key, texture):
+        if key in self._cache:
+            self._drop(key)
         self._cache[key] = texture
         self._order.append(key)
-        while len(self._order) > CACHE_LIMIT:
-            self._cache.pop(self._order.pop(0), None)
+        self._cache_bytes += _texture_bytes(texture)
+        # Oldest first, and never the one just rendered, however big it is.
+        while len(self._order) > 1 and (len(self._order) > CACHE_LIMIT
+                                        or self._cache_bytes > CACHE_BYTES):
+            self._drop(self._order[0])
+
+    def _drop(self, key):
+        texture = self._cache.pop(key, None)
+        if texture is not None:
+            self._cache_bytes -= _texture_bytes(texture)
+        try:
+            self._order.remove(key)
+        except ValueError:
+            pass
+
+    def _forget_textures(self):
+        self._cache.clear()
+        self._order.clear()
+        self._cache_bytes = 0
 
     # -- navigation --------------------------------------------------------
 
@@ -554,3 +770,7 @@ class Preview(Gtk.Box):
         if not (adjustment.get_value() < target < adjustment.get_value() + view - 40):
             adjustment.set_value(max(0, target - view * 0.35))
         self._update_current_page()
+
+
+def _texture_bytes(texture) -> int:
+    return texture.get_width() * texture.get_height() * 4

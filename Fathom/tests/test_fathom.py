@@ -431,6 +431,88 @@ def test_a_folder_deleted_from_the_window_takes_its_subtree(app):
     window.destroy()
 
 
+# ----------------------------------------------------------------- windows --
+
+
+def test_the_new_window_flag_never_reaches_the_paths():
+    from fathom.app import split_new_window_flag
+
+    for argv, expected in (
+        (["-n", "/tmp"], (True, ["/tmp"])),
+        (["--new-window", "/tmp"], (True, ["/tmp"])),
+        (["--new-window"], (True, [])),
+        (["/tmp"], (False, ["/tmp"])),
+        ([], (False, [])),
+        # A folder that happens to be spelled like the flag is still a folder
+        # once the flag has been taken out; what matters is that "-n" itself
+        # never survives to be scanned.
+        (["-n", "-n", "/tmp"], (True, ["/tmp"])),
+    ):
+        got = split_new_window_flag(list(argv))
+        assert got == expected, f"{argv} gave {got}, wanted {expected}"
+
+
+_TEST_APP = None
+
+
+def _test_app():
+    """A FathomApp of its own, registered but never run.
+
+    Registering is what emits ::startup, and ::startup is what adds the
+    actions and makes the application able to hold windows at all. The id and
+    the flags are changed first so this never touches the real Fathom that may
+    well be running on this desktop — and it is made once, because a second
+    application exporting the same object path is an error.
+    """
+    global _TEST_APP
+    if _TEST_APP is None:
+        from gi.repository import Gio as _Gio
+
+        from fathom.app import FathomApp
+
+        app = FathomApp()
+        app.set_application_id("com.robin.FathomTests")
+        app.set_flags(_Gio.ApplicationFlags.NON_UNIQUE
+                      | _Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        app.register(None)
+        _TEST_APP = app
+    return _TEST_APP
+
+
+def test_two_windows_open_at_once_and_share_nothing():
+    from fathom.window import MainWindow
+
+    app = _test_app()
+    before = len(app.get_windows())
+    first = app.new_window()
+    second = app.new_window()
+
+    mains = [w for w in app.get_windows() if isinstance(w, MainWindow)]
+    assert len(mains) == before + 2, f"expected two more windows, got {len(mains)}"
+    assert first is not second
+
+    # Nothing a scan touches may be shared, or the second window would redraw
+    # the first one's map the moment it finished its own.
+    assert first.config is not second.config
+    assert first.result is second.result is None
+    first.config["last_path"] = "/one"
+    second.config["last_path"] = "/two"
+    assert first.config["last_path"] == "/one"
+
+    # The window a request lands in must be found by existence, not by focus:
+    # nothing here has ever been focused.
+    assert app.front_window() in mains
+
+    for window in (first, second):
+        window.destroy()
+
+
+def test_the_new_window_action_is_there_with_its_accelerator():
+    app = _test_app()
+    assert app.lookup_action("new-window") is not None, "no app.new-window action"
+    assert app.get_accels_for_action("app.new-window") == ["<Control>n"]
+
+
 def main():
     print("the numbers")
     check("a tree adds up to what is in it", test_a_tree_adds_up_to_what_is_in_it)
@@ -487,6 +569,12 @@ def main():
 
     def run_window_tests():
         for name, fn in (
+            ("the new-window flag never reaches the paths",
+             lambda _a: test_the_new_window_flag_never_reaches_the_paths()),
+            ("two windows open at once and share nothing",
+             lambda _a: test_two_windows_open_at_once_and_share_nothing()),
+            ("the new-window action is there with its accelerator",
+             lambda _a: test_the_new_window_action_is_there_with_its_accelerator()),
             ("the views build and take a scan", test_the_views_build_and_take_a_scan),
             ("deleting from the window updates the numbers",
              test_deleting_from_the_window_updates_the_numbers),

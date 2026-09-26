@@ -144,6 +144,23 @@ which is why this app has the shortest `winenv.py` of the four.
 | `Delete` | Move it to Trash |
 | `Shift+Delete` | Delete it permanently |
 | `Ctrl+E` | Export the current view as CSV |
+| `Ctrl+N` | New window |
+
+## More than one window
+
+`Ctrl+N` opens another window, and so does **New Window** on the launcher
+icon's right-click menu. Two windows share nothing but the settings file: a
+scan, its tree and the map drawn from it all belong to the window that started
+them, which is the point — one disk in each, side by side.
+
+From outside, one instance serves the lot. A second `fathom` does not start a
+second copy; it hands what it was given to the window already open:
+
+```bash
+fathom              # show it, or start it
+fathom FOLDER       # scan that, in the window already open
+fathom -n FOLDER    # scan that, in a window of its own
+```
 
 ## Under a tiling compositor
 

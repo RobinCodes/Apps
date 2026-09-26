@@ -99,6 +99,34 @@ conversation you started here.
 | `Esc` | Close the command menu — or, with none open, interrupt the turn and take the queue back |
 | `Ctrl+Q` | Quit |
 
+## More than one window
+
+`Ctrl+Shift+N` opens another window — shifted, because `Ctrl+N` starts a new
+session and that is the commoner thing to want. **New Window** on the launcher
+icon's right-click menu does the same.
+
+What is shared here is more than in the other apps, and deliberately: the
+sessions belong to the application, so both windows list all of them and
+either can drive any one. What a window keeps to itself is which session it is
+showing. Two windows means watching one session work while typing into
+another, not two separate sets of sessions.
+
+That is also why this one needed the most care. The `Manager` — which owns the
+live `claude` children and rations them against the budget described above —
+used to be built per window. Two of them would have meant two sets of children
+over the same sessions, each rationing itself without knowing about the other,
+and both writing the same file. There is one Manager now, owned by the
+application, and its `on_changed`/`on_notice` slots became lists the way a
+`Session`'s listeners already were, so the second window to open does not
+silently take the first one's place. Closing a window stops it listening;
+only the last one out shuts the children down.
+
+```bash
+claude-desk              # show it, or start it
+claude-desk FOLDER       # start a session there, in the window already open
+claude-desk -n FOLDER    # start it in a window of its own
+```
+
 ## Markdown, and maths without a browser
 
 Claude replies in Markdown and writes maths in LaTeX, so both are rendered

@@ -7,6 +7,9 @@ __pycache__/
 /Lyndon Browser/build/
 /Lyndon Browser/lyndon
 /Lyndon Browser/tests/test-abp
+/Lyndon Browser/tests/test-util
+/Lyndon Browser/tests/test-store
+/Lyndon Browser/tests/test-engine
 
 # Lyndon Browser, Windows build
 /Lyndon Browser/build-win/

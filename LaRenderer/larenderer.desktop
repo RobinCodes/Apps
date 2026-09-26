@@ -11,3 +11,8 @@ MimeType=text/x-tex;
 Keywords=latex;tex;pdf;document;maths;typeset;
 StartupNotify=true
 StartupWMClass=com.robin.LaRenderer
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/home/robin/.local/bin/larenderer --new-window

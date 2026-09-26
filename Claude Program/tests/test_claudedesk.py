@@ -251,7 +251,7 @@ def test_usage_is_announced_in_bands():
     """The headers repeat every turn; the toasts must not."""
     manager, session = fresh_session()
     heard = []
-    manager.on_notice = heard.append
+    manager.watch(on_notice=heard.append)
 
     def usage(five=None, week=None, five_reset=1000, week_reset=9000, **info):
         windows = {}
@@ -384,6 +384,95 @@ def test_command_menu():
 
 # ----------------------------------------------------------- the whole app --
 
+def test_the_new_window_flag_never_reaches_the_paths():
+    from claudedesk.app import split_new_window_flag
+
+    for argv, expected in (
+        (["-n", "/tmp"], (True, ["/tmp"])),
+        (["--new-window", "/tmp"], (True, ["/tmp"])),
+        (["--new-window"], (True, [])),
+        (["/tmp"], (False, ["/tmp"])),
+        ([], (False, [])),
+    ):
+        got = split_new_window_flag(list(argv))
+        assert got == expected, f"{argv} gave {got}, wanted {expected}"
+
+
+def test_two_windows_share_one_manager(app):
+    """The invariant the whole thing rests on.
+
+    A Manager per window would mean two sets of live Claude processes over the
+    same sessions, each rationing itself against the budget without knowing
+    about the other, and both writing the same file.
+    """
+    from claudedesk.window import MainWindow
+
+    first = app.front_window() or app.new_window()
+    second = app.new_window()
+    try:
+        assert first is not second
+        assert second.manager is first.manager, "a window built a Manager of its own"
+        assert second.manager is app.manager
+        assert second.cfg is first.cfg
+        # The sessions are the application's, so both windows see all of them.
+        assert second.manager.sessions is first.manager.sessions
+        # What a window keeps to itself is the view onto them.
+        assert second.views is not first.views
+        assert app.front_window() in [w for w in app.get_windows()
+                                      if isinstance(w, MainWindow)]
+    finally:
+        second.destroy()
+
+
+def test_both_windows_hear_about_a_change(app):
+    """One slot would mean the second window silently replacing the first."""
+    first = app.front_window() or app.new_window()
+    second = app.new_window()
+    try:
+        heard = []
+        first_watch = app.manager.watch(lambda s: heard.append("first"))
+        second_watch = app.manager.watch(lambda s: heard.append("second"))
+        app.manager.session_changed(app.manager.sessions[0])
+        assert "first" in heard and "second" in heard, heard
+
+        # And a window that has gone must stop hearing, or every later change
+        # is delivered into widgets that are not there.
+        app.manager.unwatch(*second_watch)
+        heard.clear()
+        app.manager.session_changed(app.manager.sessions[0])
+        assert heard == ["first"], heard
+        app.manager.unwatch(*first_watch)
+    finally:
+        second.destroy()
+
+
+def test_closing_one_window_leaves_the_sessions_running(app):
+    """Only the last window out stops the children."""
+    first = app.front_window() or app.new_window()
+    second = app.new_window()
+    assert not app.manager.closing
+
+    # Closing one of two is not the end of anything.
+    second.close()
+    assert not app.manager.closing, "closing one window stopped the other's sessions"
+    assert first in app.get_windows()
+
+
+def test_the_new_window_action_does_not_steal_the_new_session_key(app):
+    from gi.repository import Gtk
+
+    assert app.lookup_action("new-window") is not None, "no app.new-window action"
+
+    def parsed(accels):
+        return {Gtk.accelerator_parse(a)[1:] for a in accels}
+
+    # Ctrl+N is a new session; a whole window is the shifted version.
+    assert parsed(app.get_accels_for_action("app.new-window")) == \
+        parsed(["<Control><Shift>n"]), app.get_accels_for_action("app.new-window")
+    assert parsed(app.get_accels_for_action("app.new-window")).isdisjoint(
+        parsed(["<Control>n"])), "a new window would steal the new-session key"
+
+
 def test_window(app):
     window = app.props.active_window
     session = window.manager.sessions[0]
@@ -463,10 +552,21 @@ def main():
         try:
             test_window(app)
             print("  ok  cards, commands and Escape, in the real window")
+            test_the_new_window_flag_never_reaches_the_paths()
+            print("  ok  the new-window flag never reaches the paths")
+            test_two_windows_share_one_manager(app)
+            print("  ok  two windows share one manager")
+            test_both_windows_hear_about_a_change(app)
+            print("  ok  both windows hear about a change")
+            test_closing_one_window_leaves_the_sessions_running(app)
+            print("  ok  closing one window leaves the sessions running")
+            test_the_new_window_action_does_not_steal_the_new_session_key(app)
+            print("  ok  the new-window action does not steal the new-session key")
         except BaseException as exc:  # noqa: BLE001 - reported after the loop
             failure.append(exc)
         finally:
-            app.props.active_window.manager.shutdown()
+            if app.manager is not None:
+                app.manager.shutdown()
             app.quit()
         return GLib.SOURCE_REMOVE
 

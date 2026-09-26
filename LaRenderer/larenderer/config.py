@@ -26,11 +26,31 @@ DEFAULTS = {
     "window_height": 940,
     "window_maximized": False,
     "split_position": 620,
+    # The editor's share of the editor+preview width. The pixel position
+    # above stays for a first start from an older config; this is what is
+    # used, because a split kept in pixels squeezes the preview to nothing
+    # as soon as the folder side bar takes 250 of them.
+    "split_fraction": 0.0,
     "last_file": "",
     # The tabs that were open when the window last closed, reopened in order
     # on the next start. Files that have since been deleted are skipped
     # silently rather than opening an empty tab named after a missing one.
     "open_files": [],
+
+    # The folder in the side bar, reopened with the tabs.
+    "open_folder": "",
+    "recent_folders": [],
+    "sidebar_visible": True,
+    "sidebar_width": 250,
+    "show_hidden_files": True,
+    # Main documents chosen by hand ("Use as the main document"), by folder.
+    # A folder not in here gets the one project.find_main picks.
+    "project_mains": {},
+
+    # Overleaf, through its git bridge. Projects are cloned under this folder.
+    "overleaf_dir": os.path.join(os.path.expanduser("~"), "Projects", "Overleaf"),
+    "overleaf_pull_on_open": True,   # fetch collaborators' edits when a project opens
+    "overleaf_sync_on_save": False,  # commit, pull and push after every save
 }
 
 

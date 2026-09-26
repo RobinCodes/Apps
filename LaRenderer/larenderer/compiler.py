@@ -8,19 +8,28 @@ user's .tex unless they explicitly export.
 
 Because the buffer is written verbatim as the jobname.tex the engine reads,
 line numbers in the log are the editor's line numbers. No mapping needed.
+
+A document made of several files is compiled from its main file, and the
+other files' open buffers are written into the build directory beside it,
+at the same relative paths. The build directory comes first on TEXINPUTS, so
+\\input{chapters/intro} finds the copy with your unsaved edits in it rather
+than the one on disk — which is what lets a chapter's preview follow its
+typing the way a single file's does.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 
-from . import winenv
+from . import project, winenv
 
 CACHE = winenv.cache_home("larenderer")
 BUILD_ROOT = os.path.join(CACHE, "build")
@@ -75,6 +84,11 @@ class Result:
     # earlier compile. Worth showing — a blank pane while you fix a typo is
     # worse than a slightly old page — but the status strip must say so.
     stale_pdf: bool = False
+    # The file that was compiled (None for an untitled buffer) and the
+    # directory it was compiled in: together they turn the names in the log
+    # back into files on disk. See message_source.
+    root: str | None = None
+    build: str = ""
 
     @property
     def errors(self) -> list[Message]:
@@ -126,6 +140,69 @@ def job_name(source_path: str | None) -> str:
 
 def clear_build(source_path: str | None) -> None:
     shutil.rmtree(build_dir(source_path), ignore_errors=True)
+
+
+# Two tabs of one project compile the same main file into the same build
+# directory. Two engines writing one .aux at once corrupt it, so each build
+# directory takes one compile at a time; different documents still build in
+# parallel.
+_build_locks: dict[str, threading.Lock] = {}
+_build_locks_guard = threading.Lock()
+
+
+def _build_lock(bdir: str) -> threading.Lock:
+    with _build_locks_guard:
+        return _build_locks.setdefault(bdir, threading.Lock())
+
+
+OVERLAY_MANIFEST = ".larenderer-overlays.json"
+
+
+def _write_overlays(bdir: str, overlays: dict[str, str] | None) -> None:
+    """Put the project's other open buffers where the engine looks first.
+
+    `overlays` maps paths relative to the main file's folder to text. What
+    was written for the last compile and isn't wanted now is removed — a tab
+    that was closed must stop shadowing its file on disk, or the preview
+    would go on showing a version of it that no longer exists anywhere.
+    """
+    manifest = os.path.join(bdir, OVERLAY_MANIFEST)
+    try:
+        with open(manifest, encoding="utf-8") as fh:
+            previous = json.load(fh)
+        if not isinstance(previous, list):
+            previous = []
+    except (OSError, ValueError):
+        previous = []
+
+    wanted: dict[str, str] = {}
+    for rel, text in (overlays or {}).items():
+        rel = os.path.normpath(rel)
+        # Only what lies under the main file's folder can be mirrored here;
+        # "../shared/macros.tex" would land outside the build directory.
+        if os.path.isabs(rel) or rel == os.curdir or rel.split(os.sep)[0] == os.pardir:
+            continue
+        wanted[rel] = text
+
+    for rel in previous:
+        if isinstance(rel, str) and rel not in wanted:
+            try:
+                os.remove(os.path.join(bdir, rel))
+            except OSError:
+                pass
+    for rel, text in wanted.items():
+        target = os.path.join(bdir, rel)
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError:
+            continue
+    try:
+        with open(manifest, "w", encoding="utf-8") as fh:
+            json.dump(sorted(wanted), fh)
+    except OSError:
+        pass
 
 
 def _environment(source_dir: str) -> dict:
@@ -203,17 +280,35 @@ def compile_document(
     timeout: int = DEFAULT_TIMEOUT,
     bibliography: bool = True,
     job: Job | None = None,
+    overlays: dict[str, str] | None = None,
 ) -> Result:
-    """Write the buffer to its build directory and run the engine over it."""
+    """Write the buffer to its build directory and run the engine over it.
+
+    `overlays` are the open buffers of the document's other files, keyed by
+    their path relative to `source_path`'s folder. See _write_overlays.
+    """
     job = job or Job()
-    started = time.monotonic()
     result = Result(engine=engine)
+    result.root = os.path.abspath(source_path) if source_path else None
 
     if not winenv.which(engine):
         result.failure = f"{engine} is not installed on this machine."
         return result
 
     bdir = build_dir(source_path)
+    result.build = bdir
+    with _build_lock(bdir):
+        # A newer compile may have been asked for while this one waited.
+        if job.cancelled:
+            result.cancelled = True
+            return result
+        return _compile_locked(text, source_path, bdir, result, engine, shell_escape,
+                               timeout, bibliography, job, overlays)
+
+
+def _compile_locked(text, source_path, bdir, result, engine, shell_escape, timeout,
+                    bibliography, job, overlays) -> Result:
+    started = time.monotonic()
     name = job_name(source_path)
     tex = os.path.join(bdir, name + ".tex")
     source_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else ""
@@ -224,6 +319,12 @@ def compile_document(
     except OSError as exc:
         result.failure = f"Cannot write the build copy: {exc}"
         return result
+    _write_overlays(bdir, overlays)
+    for folder in project.included_dirs(text):
+        try:
+            os.makedirs(os.path.join(bdir, folder), exist_ok=True)
+        except OSError:
+            pass
 
     pdf_path = os.path.join(bdir, name + ".pdf")
     try:
@@ -288,6 +389,29 @@ def compile_document(
     # recovers from most mistakes and the page tells you more than the log.
     result.ok = result.pdf is not None and not result.errors and not result.stale_pdf
     return result
+
+
+def message_source(result: Result, message: Message) -> str | None:
+    """The file on disk a complaint is about, or None when it can't be said.
+
+    The log names files the way the engine opened them: the document itself
+    by its job name (Message.file is then ""), a part whose buffer was
+    written into the build directory by its relative path there, and a part
+    found through TEXINPUTS by its absolute path in the source folder. All
+    three come back here as a path in the source folder.
+    """
+    if not result.root:
+        return None
+    source_dir = os.path.dirname(result.root)
+    name = message.file
+    if not name:
+        return result.root
+    if os.path.isabs(name):
+        build = result.build
+        if build and project.inside(name, build):
+            return os.path.normpath(os.path.join(source_dir, os.path.relpath(name, build)))
+        return os.path.normpath(name)
+    return os.path.normpath(os.path.join(source_dir, name))
 
 
 def _read_log(bdir: str, name: str) -> str:
@@ -515,9 +639,19 @@ def _synctex_names(pdf: str, tex_name: str) -> list[str]:
     all. The buffer is always written beside the PDF, so the absolute form is
     known; try the likelier one for this platform first and keep the other as
     a fallback rather than branching on the distribution.
+
+    A part of a larger document arrives as its path relative to the main
+    file ("chapters/intro.tex"), which the engine recorded with a "./" in
+    front when it found the build directory's copy; a part that was never
+    written there arrives absolute, and is only ever recorded that way.
     """
+    if os.path.isabs(tex_name):
+        return [tex_name]
     absolute = os.path.join(os.path.dirname(os.path.abspath(pdf)), tex_name)
-    return [absolute, tex_name] if winenv.WINDOWS else [tex_name, absolute]
+    dotted = os.curdir + os.sep + tex_name
+    if winenv.WINDOWS:
+        return [absolute, tex_name, dotted]
+    return [tex_name, dotted, absolute]
 
 
 def forward_search(pdf: str, tex_name: str, line: int, column: int = 1):

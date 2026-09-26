@@ -16,9 +16,13 @@ main (int argc, char **argv)
       return 0;
     }
     if (g_strcmp0 (argv[i], "--help") == 0 || g_strcmp0 (argv[i], "-h") == 0) {
-      g_print ("Usage: lyndon [URL…]\n\n"
-               "  -v, --version   print the version and exit\n"
-               "  -h, --help      show this message\n\n"
+      g_print ("Usage: lyndon [OPTION…] [URL…]\n\n"
+               "  -n, --new-window  open a new window\n"
+               "  -p, --private     open a new private window\n"
+               "  -v, --version     print the version and exit\n"
+               "  -h, --help        show this message\n\n"
+               "With neither -n nor -p, a second lyndon hands its URLs to the\n"
+               "window already open rather than starting a browser of its own.\n\n"
                "Settings live in ~/.config/lyndon/config.ini\n");
       return 0;
     }

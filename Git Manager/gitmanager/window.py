@@ -118,10 +118,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.split.set_sidebar(self._build_sidebar())
         self.split.set_content(self._build_content())
 
-        # Anything failing on a worker thread without a handler of its own
-        # still has to reach the user.
-        jobs.on_unhandled = lambda exc: widgets.error_toast(self, exc, context="Background task failed")
-
         self._install_narrow_breakpoint()
 
         self._install_actions()
@@ -184,6 +180,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         menu = Gio.Menu()
         repo_section = Gio.Menu()
+        repo_section.append("New Window", "app.new-window")
         repo_section.append("Clone from GitHub…", "win.clone")
         repo_section.append("Connect a folder to GitHub…", "win.connect-github")
         repo_section.append("Add existing folder…", "win.add-folder")
@@ -503,6 +500,16 @@ class MainWindow(Adw.ApplicationWindow):
             self._apply_repos([s.ref for s in sorted(self.states, key=lambda s: s.name.lower())])
             if state.row:
                 self.repo_list.select_row(state.row)
+
+    def repo_changed_elsewhere(self, path):
+        """Another app moved this repository through the service; catch up."""
+        state = next((s for s in self.states if winenv.same_path(s.path, path)), None)
+        if state is None:
+            return
+        if state is self.selected:
+            self.refresh_selected(force=True)
+        else:
+            self._queue_status(state)
 
     def _on_repo_selected(self, _list, row):
         if row is None:

@@ -18,6 +18,11 @@ struct _LyApp {
 
   GtkCssProvider *base_css;
   GtkCssProvider *tuned_css;   /* regenerated whenever opacity changes */
+
+  /* Tabs belonging to windows that have already closed during this run, and
+   * how many window slots have been handed out. See ly_app_save_session. */
+  GPtrArray *session_closed;   /* LyStoreRow* */
+  int        session_windows;
 };
 
 G_DEFINE_FINAL_TYPE (LyApp, ly_app, ADW_TYPE_APPLICATION)
@@ -62,6 +67,32 @@ windows_present_all (LyApp *app)
   for (GList *l = windows; l != NULL; l = l->next)
     if (LY_IS_WINDOW (l->data))
       gtk_window_present (GTK_WINDOW (l->data));
+}
+
+/* The window a request from outside should land in, or NULL when the browser
+ * has none open yet.
+ *
+ * Not gtk_application_get_active_window alone: that answers NULL whenever
+ * nothing of ours holds the keyboard focus, which is the ordinary state of a
+ * browser at the moment another application hands it a URL, or a launcher
+ * asks it for a window. Taking that for "no windows open" restores the saved
+ * session on top of the windows already showing it — which is exactly the
+ * sort of thing that only happens on someone else's machine, because it
+ * depends on what had focus. The window list is the fact; focus is a hint.
+ */
+static LyWindow *
+front_window (LyApp *app)
+{
+  GtkWindow *active = gtk_application_get_active_window (GTK_APPLICATION (app));
+  if (LY_IS_WINDOW (active))
+    return LY_WINDOW (active);
+
+  /* Most recently focused first. */
+  for (GList *l = gtk_application_get_windows (GTK_APPLICATION (app)); l != NULL; l = l->next)
+    if (LY_IS_WINDOW (l->data))
+      return LY_WINDOW (l->data);
+
+  return NULL;
 }
 
 static GtkWidget *
@@ -351,9 +382,6 @@ static const struct { const char *action; const char *accels[4]; } ACCELS[] = {
   { "win.reload-hard",       { "<Control><Shift>r", "<Control>F5", NULL } },
   { "win.back",              { "<Alt>Left", NULL } },
   { "win.forward",           { "<Alt>Right", NULL } },
-  { "win.find",              { "<Control>f", NULL } },
-  { "win.find-next",         { "<Control>g", NULL } },
-  { "win.find-prev",         { "<Control><Shift>g", NULL } },
   { "win.escape",            { "Escape", NULL } },
   { "win.zoom-in",           { "<Control>plus", "<Control>equal", "<Control>KP_Add", NULL } },
   { "win.zoom-out",          { "<Control>minus", "<Control>KP_Subtract", NULL } },
@@ -365,15 +393,11 @@ static const struct { const char *action; const char *accels[4]; } ACCELS[] = {
   { "app.new-window",        { "<Control>n", NULL } },
   { "app.private-window",    { "<Control><Shift>n", NULL } },
   { "app.clear-cache",       { "<Control><Shift>BackSpace", "<Control><Shift>k", NULL } },
-  { "win.print",             { "<Control>p", NULL } },
   { "win.fullscreen",        { "F11", NULL } },
   { "win.home",              { "<Alt>Home", NULL } },
   { "win.reopen-tab",        { "<Control><Shift>t", NULL } },
   { "win.duplicate-tab",     { "<Control><Shift>d", NULL } },
-  { "win.view-source",       { "<Control>u", NULL } },
-  { "win.save-page",         { "<Control>s", NULL } },
   { "win.caret-browsing",    { "F7", NULL } },
-  { "win.site-info",         { "<Control>i", NULL } },
   /* Ctrl+1..9, the way every other browser numbers tabs. */
   { "win.select-tab(1)",     { "<Control>1", NULL } },
   { "win.select-tab(2)",     { "<Control>2", NULL } },
@@ -384,18 +408,25 @@ static const struct { const char *action; const char *accels[4]; } ACCELS[] = {
   { "win.select-tab(7)",     { "<Control>7", NULL } },
   { "win.select-tab(8)",     { "<Control>8", NULL } },
   { "win.select-tab(9)",     { "<Control>9", NULL } },
-  { "win.bookmark",          { "<Control>d", NULL } },
-  { "win.history",           { "<Control>h", NULL } },
   { "app.preferences",       { "<Control>comma", NULL } },
   { "app.clear-data",        { "<Control><Shift>Delete", NULL } },
   { "app.quit",              { "<Control>q", NULL } },
 };
+
+/* The shortcuts above are the browser's, and nothing on a page can have them.
+ * The ones a page can -- Ctrl+S and the rest of what a text editor expects --
+ * are not here at all: they are dispatched in window.c, which can ask whether
+ * the keyboard focus is sitting in a text field first. See PAGE_SHORTCUTS. */
 
 /* -------------------------------------------------------------- windows */
 
 LyWindow *
 ly_app_new_window (LyApp *app)
 {
+  /* Opening a window is a fresh start on what is worth remembering: tabs
+   * banked from windows closed earlier in this run stop counting, or they
+   * would keep coming back for the rest of it. */
+  ly_app_forget_closed_session (app);
   return ly_window_new (app);
 }
 
@@ -405,8 +436,33 @@ ly_app_new_private_window (LyApp *app)
   return ly_window_new_private (app);
 }
 
+static LyStoreRow *
+session_row_copy (const LyStoreRow *row)
+{
+  LyStoreRow *copy = g_new0 (LyStoreRow, 1);
+  copy->url    = g_strdup (row->url);
+  copy->title  = g_strdup (row->title);
+  copy->window = row->window;
+  copy->index  = row->index;
+  return copy;
+}
+
+/* Write down the tabs to put back next time.
+ *
+ * The union is the point of it. Windows close one at a time, and the last one
+ * out is always the smallest -- so a save that only looked at what was still
+ * standing would overwrite everything the earlier windows had open. Worse,
+ * closing the last window by hand leaves nothing standing at all: the window
+ * is destroyed before shutdown runs, so the save there sees an empty list and
+ * clears the session outright. Quitting with Ctrl+Q happened to work, because
+ * that ends the loop with every window still alive, which is exactly the sort
+ * of difference nobody notices until their tabs are gone.
+ *
+ * So each window banks its tabs on the way out (`closing`), and every save
+ * writes those together with whatever is still open.
+ */
 void
-ly_app_save_session (LyApp *app)
+ly_app_save_session (LyApp *app, LyWindow *closing)
 {
   if (app->store == NULL || !app->cfg->restore_session)
     return;
@@ -414,16 +470,37 @@ ly_app_save_session (LyApp *app)
   g_autoptr (GPtrArray) rows =
     g_ptr_array_new_with_free_func ((GDestroyNotify) ly_store_row_free);
 
-  int index = 0;
+  for (guint i = 0; i < app->session_closed->len; i++)
+    g_ptr_array_add (rows, session_row_copy (g_ptr_array_index (app->session_closed, i)));
+
+  /* Window numbers only have to tell the windows apart -- the restore starts
+   * a new one each time the number changes -- so the live ones carry on from
+   * where the banked ones left off. */
+  int index = app->session_windows;
   GList *windows = gtk_application_get_windows (GTK_APPLICATION (app));
   for (GList *l = windows; l != NULL; l = l->next) {
-    if (!LY_IS_WINDOW (l->data))
-      continue;
+    if (!LY_IS_WINDOW (l->data) || LY_WINDOW (l->data) == closing)
+      continue;   /* `closing` is still on the list; it is added below */
     ly_window_collect_session (LY_WINDOW (l->data), rows, index);
     index++;
   }
+  if (closing != NULL)
+    ly_window_collect_session (closing, rows, index);
 
   ly_store_save_session (app->store, rows);
+
+  /* Banked after the save, so the window counts once either way. */
+  if (closing != NULL) {
+    ly_window_collect_session (closing, app->session_closed, app->session_windows);
+    app->session_windows++;
+  }
+}
+
+void
+ly_app_forget_closed_session (LyApp *app)
+{
+  g_ptr_array_set_size (app->session_closed, 0);
+  app->session_windows = 0;
 }
 
 /* Returns TRUE when at least one tab came back. */
@@ -494,6 +571,9 @@ ly_app_startup (GApplication *application)
 
   G_APPLICATION_CLASS (ly_app_parent_class)->startup (application);
 
+  app->session_closed =
+    g_ptr_array_new_with_free_func ((GDestroyNotify) ly_store_row_free);
+
   app->cfg = ly_config_new ();
   ly_config_load (app->cfg);
 
@@ -539,9 +619,9 @@ ly_app_activate (GApplication *application)
 {
   LyApp *app = LY_APP (application);
 
-  GtkWindow *existing = gtk_application_get_active_window (GTK_APPLICATION (app));
+  LyWindow *existing = front_window (app);
   if (existing != NULL) {
-    gtk_window_present (existing);
+    gtk_window_present (GTK_WINDOW (existing));
     return;
   }
 
@@ -553,20 +633,111 @@ ly_app_activate (GApplication *application)
   gtk_window_present (GTK_WINDOW (window));
 }
 
+/* Where something asked for from outside the browser should land. */
+typedef enum {
+  LY_TARGET_EXISTING = 0,   /* the window already in front, if there is one */
+  LY_TARGET_NEW,
+  LY_TARGET_PRIVATE,
+} LyTarget;
+
+static LyWindow *
+window_for_target (LyApp *app, LyTarget target)
+{
+  if (target == LY_TARGET_PRIVATE)
+    return ly_app_new_private_window (app);
+  if (target == LY_TARGET_NEW)
+    return ly_app_new_window (app);
+
+  LyWindow *existing = front_window (app);
+  return existing != NULL ? existing : ly_app_new_window (app);
+}
+
+/* Open `uris` as tabs in one window, or an empty tab when there are none.
+ * The first tab comes to the front and the rest load behind it. FALSE only
+ * when there was no window to open them in. */
+static gboolean
+open_in_window (LyApp *app, const char *const *uris, int n_uris, LyTarget target)
+{
+  LyWindow *window = window_for_target (app, target);
+  if (window == NULL)
+    return FALSE;   /* an ephemeral session could not be made */
+
+  for (int i = 0; i < n_uris; i++)
+    ly_window_open_tab (window, uris[i], i > 0);
+  if (n_uris == 0)
+    ly_window_open_tab (window, NULL, FALSE);
+
+  gtk_window_present (GTK_WINDOW (window));
+  return TRUE;
+}
+
 static void
 ly_app_open (GApplication *application, GFile **files, int n_files, const char *hint)
 {
   LyApp *app = LY_APP (application);
 
-  GtkWindow *existing = gtk_application_get_active_window (GTK_APPLICATION (app));
-  LyWindow *window = LY_IS_WINDOW (existing) ? LY_WINDOW (existing) : ly_app_new_window (app);
+  g_autoptr (GPtrArray) uris = g_ptr_array_new_with_free_func (g_free);
+  for (int i = 0; i < n_files; i++)
+    g_ptr_array_add (uris, g_file_get_uri (files[i]));
 
-  for (int i = 0; i < n_files; i++) {
-    g_autofree char *uri = g_file_get_uri (files[i]);
-    ly_window_open_tab (window, uri, i > 0);
+  open_in_window (app, (const char *const *) uris->pdata, (int) uris->len,
+                  LY_TARGET_EXISTING);
+}
+
+/* Everything typed at a shell or spelled out in a .desktop Exec line arrives
+ * here, in the first instance rather than the one that was launched — which
+ * is the whole point: a second `lyndon` is how a person asks the browser they
+ * already have for another window. */
+static int
+ly_app_command_line (GApplication *application, GApplicationCommandLine *cmdline)
+{
+  LyApp *app = LY_APP (application);
+  GVariantDict *options = g_application_command_line_get_options_dict (cmdline);
+
+  LyTarget target = LY_TARGET_EXISTING;
+  if (g_variant_dict_contains (options, "private"))
+    target = LY_TARGET_PRIVATE;
+  else if (g_variant_dict_contains (options, "new-window"))
+    target = LY_TARGET_NEW;
+
+  int argc = 0;
+  g_auto (GStrv) argv = g_application_command_line_get_arguments (cmdline, &argc);
+
+  /* Nothing asked for and nothing to open: a plain launch, or a second one
+   * that means "show me the browser". That is what activate already does. */
+  if (target == LY_TARGET_EXISTING && argc < 2) {
+    g_application_activate (application);
+    return 0;
   }
 
-  gtk_window_present (GTK_WINDOW (window));
+  /* Opening something before there is a window to put it in — a launcher's
+   * New Window, or another application handing over a URL with the browser
+   * shut. The session is written back at shutdown from whatever is on screen,
+   * so a launch that skipped the restore would quietly overwrite the windows
+   * from last time with the single one it had just opened. Restoring costs
+   * nothing when there is nothing to restore, and what was asked for goes on
+   * top either way. */
+  if (front_window (app) == NULL)
+    restore_session (app);
+
+  /* Relative paths are resolved against the directory the command was run in,
+   * which is not this process's. */
+  g_autoptr (GPtrArray) uris = g_ptr_array_new_with_free_func (g_free);
+  for (int i = 1; i < argc; i++) {
+    g_autoptr (GFile) file =
+      g_application_command_line_create_file_for_arg (cmdline, argv[i]);
+    g_ptr_array_add (uris, g_file_get_uri (file));
+  }
+
+  /* A private window is the one request that can fail outright, and someone
+   * who asked for one at a shell should hear about it rather than watch the
+   * command succeed silently having done nothing. */
+  if (!open_in_window (app, (const char *const *) uris->pdata, (int) uris->len, target)) {
+    g_application_command_line_printerr (cmdline,
+      "lyndon: could not open a private window: no ephemeral session\n");
+    return 1;
+  }
+  return 0;
 }
 
 /* Clearing on exit has to finish before the process goes away, so the call is
@@ -589,7 +760,7 @@ ly_app_shutdown (GApplication *application)
 {
   LyApp *app = LY_APP (application);
 
-  ly_app_save_session (app);
+  ly_app_save_session (app, NULL);
 
   /* Quitting (Ctrl+Q, or the session manager) ends the loop without any
    * window being asked to close, so the shape of the one still on screen is
@@ -622,6 +793,7 @@ ly_app_shutdown (GApplication *application)
 
   g_clear_pointer (&app->passwords, ly_passwords_free);
   g_clear_pointer (&app->store, ly_store_free);
+  g_clear_pointer (&app->session_closed, g_ptr_array_unref);
   g_clear_pointer (&app->downloads, ly_downloads_free);
   g_clear_pointer (&app->blocker, ly_blocker_free);
   g_clear_pointer (&app->engine, ly_engine_free);
@@ -639,6 +811,7 @@ ly_app_class_init (LyAppClass *klass)
   application_class->startup  = ly_app_startup;
   application_class->activate = ly_app_activate;
   application_class->open     = ly_app_open;
+  application_class->command_line = ly_app_command_line;
   application_class->shutdown = ly_app_shutdown;
 }
 
@@ -647,11 +820,30 @@ ly_app_init (LyApp *app)
 {
 }
 
+/* NULL arg_data puts each of these in the options dict that reaches
+ * ly_app_command_line, which is what lets them cross to the first instance. */
+static const GOptionEntry OPTIONS[] = {
+  { "new-window", 'n', 0, G_OPTION_ARG_NONE, NULL,
+    "Open a new window", NULL },
+  { "private", 'p', 0, G_OPTION_ARG_NONE, NULL,
+    "Open a new private window", NULL },
+  { NULL }
+};
+
 LyApp *
 ly_app_new (void)
 {
-  return g_object_new (LY_TYPE_APP,
-                       "application-id", LYNDON_APP_ID,
-                       "flags", G_APPLICATION_HANDLES_OPEN,
-                       NULL);
+  LyApp *app = g_object_new (LY_TYPE_APP,
+                             "application-id", LYNDON_APP_ID,
+                             /* HANDLES_COMMAND_LINE is what carries the
+                              * options below to the running instance; without
+                              * it a second launch could only ever mean
+                              * "present what is already open". OPEN stays for
+                              * the D-Bus route a file manager may take. */
+                             "flags", G_APPLICATION_HANDLES_OPEN |
+                                      G_APPLICATION_HANDLES_COMMAND_LINE,
+                             NULL);
+
+  g_application_add_main_option_entries (G_APPLICATION (app), OPTIONS);
+  return app;
 }

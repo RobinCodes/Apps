@@ -10,3 +10,8 @@ Categories=Utility;System;Filesystem;
 Keywords=disk;space;usage;size;storage;treemap;cleanup;full;
 StartupNotify=true
 StartupWMClass=com.robin.Fathom
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/home/robin/.local/bin/fathom --new-window

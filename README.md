@@ -1,6 +1,6 @@
 # Apps
 
-Five desktop applications, written for Linux and now also running on Windows.
+Six desktop applications, written for Linux and now also running on Windows.
 
 | | What it is | Windows |
 |---|---|---|
@@ -9,12 +9,13 @@ Five desktop applications, written for Linux and now also running on Windows.
 | [Git Manager](Git%20Manager/) | Every git repository on the machine, and the GitHub account behind them | GTK4 via MSYS2 |
 | [LaRenderer](LaRenderer/) | A LaTeX editor with the compiled pages beside the text | GTK4 via MSYS2 |
 | [Lyndon Browser](Lyndon%20Browser/) | A small, fast, private browser | Win32 + WebView2 |
+| [Notedown](Notedown/) | A Markdown editor with the rendered page beside the text | GTK4 via MSYS2 |
 
 Each folder has its own README; this one only covers what is common.
 
 ## On Windows
 
-The four Python apps are GTK4 and libadwaita, and the only GTK4 that exists
+The five Python apps are GTK4 and libadwaita, and the only GTK4 that exists
 for Windows comes from MSYS2 — PyGObject publishes no Windows wheels, so
 `pip install pygobject` cannot work. Install
 [MSYS2](https://www.msys2.org/), then in an **MSYS2 MINGW64** shell:
@@ -76,7 +77,9 @@ edits; what did not move was everything around it:
 
 The Python apps answer all of that in one `winenv.py` each, so no other module
 knows which operating system it is on. Fathom shells out to nothing, so its
-copy is the short one: where files go, and what counts as a drive.
+copy is the short one: where files go, and what counts as a drive. Notedown's
+is nearly as short — it renders everything itself, and the only tool it ever
+looks for is pandoc.
 
 ## On Linux
 
@@ -116,6 +119,7 @@ What each suite covers:
 | Git Manager | The porcelain parsers against throwaway repositories built for the purpose: status, renames, conflicts, log, branches, stashes, diffs. Then paths, settings and the ignore rules. No network. |
 | LaRenderer | The engine-log parser against captured text, which needs nothing installed, and a real compile where there is an engine to do it. |
 | Fathom | A small filesystem built for the purpose — hardlink, symlink loop, unreadable folder, empty folder — and the totals that come back off it, checked against `du` where there is a `du`. Then the treemap as geometry, and a real window that deletes real files in its own scratch directory. |
+| Notedown | The Markdown parser against documents built to break it — positions, tight and loose lists, tables, footnotes, front matter — then the editing courtesies against a real text buffer, the preview's widget reuse, and a window that opens and saves real files. Also that the window still fits a 455px tiling column. |
 | Lyndon Browser | The filter-list compiler on Linux, the request matcher on Windows, and on both the shared URL handling — address-or-search, first-party grouping, and the JavaScript escaping the password manager fills through. |
 
 ## Licence

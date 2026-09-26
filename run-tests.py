@@ -4,13 +4,13 @@
     python3 run-tests.py            everything available on this machine
     python3 run-tests.py --list     what it would run, and what it would skip
 
-Each app's suite still runs on its own — this only saves running five of them
+Each app's suite still runs on its own — this only saves running six of them
 by hand. A suite that needs something this machine hasn't got (a TeX
 distribution, a C compiler, the GTK bindings) is reported as skipped rather
 than failed, because "not installed here" and "broken" are different answers
 and only one of them is worth acting on.
 
-On Windows the four Python apps need MSYS2's Python, because that is where
+On Windows the five Python apps need MSYS2's Python, because that is where
 the GTK4 bindings are; run this with it — `C:\\msys64\\mingw64\\bin\\python.exe
 run-tests.py` — or the GTK suites will report themselves skipped.
 """
@@ -77,6 +77,7 @@ def suites():
         ("Git Manager", os.path.join("Git Manager", "tests", "test_gitmanager.py")),
         ("LaRenderer", os.path.join("LaRenderer", "tests", "test_larenderer.py")),
         ("Fathom", os.path.join("Fathom", "tests", "test_fathom.py")),
+        ("Notedown", os.path.join("Notedown", "tests", "test_notedown.py")),
     ):
         path = os.path.join(ROOT, script)
         if os.path.exists(path):
