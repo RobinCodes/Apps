@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import os
 
-from . import winenv
+from . import theme as theming, winenv
 
 DIR = winenv.config_home("fathom")
 PATH = os.path.join(DIR, "config.json")
 
 DEFAULTS = {
+    # -- the house style --------------------------------------------------
+    # The themes, the glass, and whether to follow the desktop between light
+    # and dark. The keys and their defaults come from theme.py, which every
+    # app here has the same copy of, so that adding a theme or changing the
+    # default pair is one edit rather than nine.
+    **theming.SETTINGS,
+
     # "alloc" — what the file costs the disk, which is what you get back by
     # deleting it and what `du` and `df` agree on. "size" is how long the file
     # is, which is bigger for a directory of tiny files and smaller for a
@@ -79,6 +86,8 @@ class Config(dict):
                 self[key] = merged
                 continue
             self[key] = _copy(value)
+        # The house-style keys have their own rules — see theming.take.
+        theming.take(self, data)
         return self
 
     def save(self):

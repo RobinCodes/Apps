@@ -21,7 +21,8 @@ G_BEGIN_DECLS
  *
  * skipped, when asked for, counts rows that held no usable login: a login
  * needs a site and a password, and export files are full of secure notes and
- * payment cards that have neither. */
+ * payment cards that have neither. A note column, when the file has one, is
+ * carried on the credential; storing it is passwords.c's business too. */
 GPtrArray *ly_pwfile_read (const char *path, guint *skipped, GError **error);
 
 /* name,url,username,password,note — the de-facto interchange format. */

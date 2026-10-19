@@ -27,7 +27,7 @@ from gi.repository import GLib, Gtk
 
 from . import markdown
 from .editor import Editor
-from .render import Preview
+from .render import Preview, set_page_font
 
 UNTITLED = "Untitled.md"
 
@@ -63,7 +63,6 @@ class Document:
             on_cursor=lambda: window.document_cursor_moved(self),
             on_scrolled=self._editor_scrolled,
         )
-        self.editor.set_font_size(self.config["editor_font_size"])
         self.editor.set_wrap(bool(self.config["wrap"]))
         self.editor.set_gutter_visible(bool(self.config["show_gutter"]))
         self.editor.set_focus_mode(bool(self.config["focus_mode"]))
@@ -75,7 +74,6 @@ class Document:
             on_task=self._preview_task_toggled,
             on_link=lambda url: window.open_url(self, url),
         )
-        self.preview.set_font_scale(float(self.config["preview_scale"]))
         self.preview.set_reading_width(int(self.config["reading_width"]))
         self.preview.load_remote_images = bool(self.config["load_remote_images"])
         self.preview.get_vadjustment().connect("value-changed", self._preview_scrolled)
@@ -91,6 +89,17 @@ class Document:
         self.paned.connect("notify::max-position", self._place_split)
 
         self.root = self.paned
+        self.apply_fonts()
+
+    def apply_fonts(self):
+        """The fonts from the config, to the text and to the page."""
+        self.editor.set_font(self.config["editor_font_family"],
+                             int(self.config["editor_font_size"]))
+        # The page's font is a stylesheet on the display, shared by every
+        # preview there is — which is what one setting in one file ought to
+        # mean. See render.set_page_font.
+        set_page_font(self.config["preview_font_family"],
+                      int(self.config["preview_font_size"]))
 
     # ------------------------------------------------------------- naming --
 

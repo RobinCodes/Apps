@@ -66,10 +66,10 @@ endif
 # -- sources ---------------------------------------------------------------
 # From src/, unchanged: everything that never names a GTK or WebKit type.
 SHARED     := src/abp.c src/config.c src/store.c src/util.c src/import.c \
-              src/credentials.c src/pwfile.c
+              src/credentials.c src/pwfile.c src/update.c
 WINSRC     := win32/block.c win32/tab.c win32/chrome.c win32/main.c \
               win32/ui.c win32/downloads.c win32/panel.c win32/prefs.c \
-              win32/passwords.c win32/scheme.c win32/login.c
+              win32/passwords.c win32/scheme.c win32/login.c win32/notice.c
 
 OBJDIR     := build-win
 OBJS       := $(patsubst %.c,$(OBJDIR)/%.o,$(SHARED) $(WINSRC))

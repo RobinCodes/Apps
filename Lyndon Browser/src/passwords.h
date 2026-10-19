@@ -23,6 +23,7 @@ typedef struct {
   char *origin;     /* scheme://host[:port] — the autofill matching key */
   char *username;
   char *password;   /* NULL only when the store could not give it up */
+  char *note;       /* NULL unless something asked for it; see the notes below */
 } LyCredential;
 
 LyCredential *ly_credential_new  (const char *origin, const char *username,
@@ -54,6 +55,21 @@ typedef void (*LyCredentialsFn) (GPtrArray *credentials, gpointer user_data);
 /* Every credential stored for this exact origin. */
 void ly_passwords_lookup (LyPasswords *passwords, const char *origin,
                           LyCredentialsFn callback, gpointer user_data);
+
+/* What autofill asks. The exact origin first; failing that, every saved login
+ * under the same registrable domain — which is how a password saved at
+ * https://example.com comes to fill the form at https://accounts.example.com,
+ * and what Chrome means by a public-suffix match. Only ever a fallback: an
+ * exact match, when there is one, is the whole answer, because a site that
+ * keeps separate logins per subdomain means it.
+ *
+ * The domain is ly_uri_base_domain's answer, which approximates the Public
+ * Suffix List rather than carrying it: close enough that co.uk and com.au are
+ * not treated as registrable, and not close enough for the hosting providers
+ * whose customers each own a subdomain. Those lose the fallback and keep the
+ * exact match, which is the safe way round to be wrong. */
+void ly_passwords_lookup_matching (LyPasswords *passwords, const char *origin,
+                                   LyCredentialsFn callback, gpointer user_data);
 /* Every credential stored, secrets included: exporting needs them, and the
  * settings page simply does not copy what it does not draw. */
 void ly_passwords_list   (LyPasswords *passwords,
@@ -78,6 +94,34 @@ gboolean ly_passwords_update (LyPasswords *passwords,
                               const char *old_origin, const char *old_username,
                               const char *origin, const char *username,
                               const char *password, GError **error);
+
+/* -- notes --------------------------------------------------------------
+ *
+ * A note is its own item in the same store, under its own schema, keyed by
+ * the same origin and username. It is not an attribute of the login, because
+ * attributes are the login's identity: adding one to the set would make every
+ * noted login a second row beside the one it was meant to annotate. It is not
+ * kept beside the history database either — a note on a login is as likely to
+ * hold a recovery code as the password field is, and that file is not
+ * encrypted.
+ *
+ * Implemented in the GTK build only. Windows Credential Manager has no second
+ * place to put one, and win32/prefs.c does not offer notes.
+ */
+
+/* NULL when there is no note, or when the store would not give it up. */
+char *ly_passwords_note (LyPasswords *passwords, const char *origin,
+                         const char *username);
+/* An empty or NULL note removes the item rather than storing a blank one. */
+gboolean ly_passwords_set_note (LyPasswords *passwords, const char *origin,
+                                const char *username, const char *note,
+                                GError **error);
+/* Follow a note to the identity its login has just been edited into. Called
+ * after ly_passwords_update has reported success, so that a login renamed or
+ * moved between sites keeps what was written about it. */
+void ly_passwords_move_note (LyPasswords *passwords,
+                             const char *old_origin, const char *old_username,
+                             const char *origin, const char *username);
 
 /* Origins the user said "never" for. */
 gboolean ly_passwords_is_blocked (LyPasswords *passwords, const char *origin);

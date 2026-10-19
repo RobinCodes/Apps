@@ -5,7 +5,9 @@
 #include "engine.h"
 #include "blocker.h"
 #include "downloads.h"
+#include "archive.h"
 #include "store.h"
+#include "update.h"
 #include "passwords.h"
 
 G_BEGIN_DECLS
@@ -16,6 +18,8 @@ LyConfig    *ly_app_config    (LyApp *app);
 LyEngine    *ly_app_engine    (LyApp *app);
 LyBlocker   *ly_app_blocker   (LyApp *app);
 LyDownloads *ly_app_downloads (LyApp *app);
+LyArchive   *ly_app_archive   (LyApp *app);
+LyUpdate    *ly_app_update    (LyApp *app);
 LyStore     *ly_app_store     (LyApp *app);
 LyPasswords *ly_app_passwords (LyApp *app);
 

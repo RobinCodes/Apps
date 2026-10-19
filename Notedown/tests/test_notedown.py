@@ -38,7 +38,7 @@ gi.require_version("Adw", "1")
 
 from notedown import app as app_module  # noqa: E402
 from notedown import export, highlight, markdown, search  # noqa: E402
-from notedown.config import Config  # noqa: E402
+from notedown.config import Config, DEFAULTS  # noqa: E402
 
 failures = []
 
@@ -367,6 +367,37 @@ def test_the_recent_list_has_no_duplicates_and_a_limit():
     assert "/c" not in config["recent_files"]
 
 
+def test_a_font_chosen_is_a_font_remembered():
+    config = Config()
+    config["editor_font_family"] = "IBM Plex Mono"
+    config["editor_font_size"] = 17
+    config["preview_font_family"] = "Georgia"
+    config["preview_font_size"] = 15
+    config.save()
+
+    again = Config()
+    assert again["editor_font_family"] == "IBM Plex Mono"
+    assert again["editor_font_size"] == 17
+    assert again["preview_font_family"] == "Georgia"
+    assert again["preview_font_size"] == 15
+
+    for key in ("editor_font_family", "editor_font_size",
+                "preview_font_family", "preview_font_size"):
+        again[key] = DEFAULTS[key]
+    again.save()
+
+
+def test_a_font_family_is_quoted_unless_the_word_is_the_choice():
+    from notedown.widgets import css_font_family
+
+    assert css_font_family("JetBrains Mono") == '"JetBrains Mono"'
+    # Not the name of a font: the word asks the desktop to pick one.
+    assert css_font_family("monospace") == "monospace"
+    assert css_font_family("  Serif ") == "serif"
+    assert css_font_family("") == ""
+    assert css_font_family('Ev"il') == '"Evil"'
+
+
 def test_the_new_window_flag_never_reaches_the_paths():
     wants, rest = app_module.split_new_window_flag(["-n", "a.md", "b.md"])
     assert wants and rest == ["a.md", "b.md"]
@@ -505,6 +536,29 @@ def test_the_comment_toggle_uses_html_because_markdown_has_none(editor):
     place(editor, 1, 1)
     editor.toggle_comment()
     assert editor.get_text() == "<!--\nsecret\n-->", repr(editor.get_text())
+
+
+def test_the_editor_draws_in_the_font_it_is_given(editor):
+    from gi.repository import Pango
+
+    from notedown.editor import MAX_FONT_SIZE
+
+    editor.set_font("IBM Plex Mono", 15)
+    assert editor.get_font_family() == "IBM Plex Mono"
+    assert editor.get_font_size() == 15
+
+    # The gutter draws its numbers itself rather than letting CSS do it, so
+    # the font it uses has to be the same one or the numbers stop lining up
+    # with the lines they count.
+    description = editor._font_description()
+    assert description.get_family() == "IBM Plex Mono"
+    assert description.get_size() / Pango.SCALE == 15
+
+    # A size out of reach is clamped, and the family it was chosen with stays.
+    editor.set_font_size(999)
+    assert editor.get_font_size() == MAX_FONT_SIZE
+    assert editor.get_font_family() == "IBM Plex Mono"
+    editor.set_font(DEFAULTS["editor_font_family"], DEFAULTS["editor_font_size"])
 
 
 def test_highlighting_survives_every_shape_of_document(editor):
@@ -762,6 +816,54 @@ def test_find_counts_what_it_highlights(window):
     assert len(window.find._matches) == 2, window.find._matches
     window.find.word.set_active(False)
     window.find.close()
+
+
+def test_the_page_is_drawn_in_the_font_the_settings_say(window):
+    from notedown import render
+
+    document = window.new_document(text="# Heading\n\nA paragraph.\n")
+    document.render_now()
+    pump(300)
+
+    def paragraph_font():
+        label = list(children(document.preview.column))[-1]
+        return label.get_pango_context().get_font_description()
+
+    window.config["preview_font_family"] = "Serif"
+    window.config["preview_font_size"] = 12
+    window._apply_fonts()
+    pump(300)
+    small = paragraph_font()
+
+    window.config["preview_font_size"] = 24
+    window._apply_fonts()
+    pump(300)
+    large = paragraph_font()
+
+    # The page is a tree of widgets and the font is one rule on the display;
+    # this is the check that the rule reaches the text rather than the box.
+    assert "serif" in small.get_family().lower(), small.to_string()
+    assert large.get_size() > small.get_size(), (small.to_string(), large.to_string())
+    assert render.page_font() == ("Serif", 24)
+
+    for key in ("preview_font_family", "preview_font_size"):
+        window.config[key] = DEFAULTS[key]
+    window._apply_fonts()
+
+
+def test_zooming_moves_both_halves_and_reset_puts_them_back(window):
+    from notedown import render
+
+    before = (window.config["editor_font_size"], window.config["preview_font_size"])
+    window.zoom(1)
+    assert window.config["editor_font_size"] == before[0] + 1
+    assert window.config["preview_font_size"] == before[1] + 1
+    assert window.active.editor.get_font_size() == before[0] + 1
+    assert render.page_font()[1] == before[1] + 1
+
+    window.zoom(0)
+    assert window.config["editor_font_size"] == DEFAULTS["editor_font_size"]
+    assert window.config["preview_font_size"] == DEFAULTS["preview_font_size"]
 
 
 def test_the_session_is_what_was_open_when_the_window_closed(window):

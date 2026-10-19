@@ -16,8 +16,10 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango  # noqa: E402
 
+from . import config, housestyle  # noqa: E402
+from .backend import BYPASS_MODE, PERMISSION_MODES, plain_text  # noqa: E402
 from .backend import QUESTION_TOOL  # noqa: E402
 
 # Wide windows are not the problem; wide *text* is. Prose stays inside this.
@@ -62,10 +64,13 @@ GENERIC_TOOL_ICON = "applications-utilities-symbolic"
 # ensure_icons() cannot vouch for it.
 UI_ICONS = (
     "dialog-password-symbolic", "dialog-warning-symbolic", "edit-copy-symbolic",
+    "folder-download-symbolic", "folder-open-symbolic",
     "folder-symbolic", "go-bottom-symbolic", "go-up-symbolic", "list-add-symbolic",
     "mail-send-symbolic",
-    "media-playback-stop-symbolic", "object-select-symbolic", "open-menu-symbolic",
-    "pan-down-symbolic", "pan-end-symbolic", "sidebar-show-symbolic",
+    "media-playback-stop-symbolic", "non-starred-symbolic", "object-select-symbolic",
+    "open-menu-symbolic",
+    "pan-down-symbolic", "pan-end-symbolic", "sidebar-show-symbolic", "starred-symbolic",
+    "view-list-symbolic",
     "view-more-symbolic", "weather-clear-night-symbolic", "window-close-symbolic",
 )
 APP_ICONS = tuple(sorted(set(UI_ICONS) | set(TOOL_ICONS.values()) | {GENERIC_TOOL_ICON}))
@@ -168,6 +173,66 @@ def _questions_summary(payload):
     return f"{first} (+{len(asked) - 1} more)" if len(asked) > 1 else first
 
 
+# Why an ask arrived, said the way a person would. The CLI decides most of
+# these *before* it looks at the permission mode, which is the whole reason
+# this exists: "Bypass all checks" and a question on screen read as the app
+# ignoring the setting, until something says which of these it was.
+ASK_REASONS = {
+    "safetyCheck": "a safety check will not sign this off without a person",
+    "hook": "a PreToolUse hook asked for you",
+    "sandboxOverride": "it reads outside the working folder",
+    "workingDir": "it touches a path outside the working folder",
+    "classifier": "the classifier would not decide it either way",
+    "subcommandResults": "one of the commands in that line needs a look",
+    "permissionPromptTool": "the permission prompt tool asked for you",
+    "asyncAgent": "a background agent cannot answer this for you",
+    "rule": "a permission rule covers this tool",
+    "mode": "the permission mode does not cover it",
+}
+
+
+def ask_reason(request):
+    """The most specific thing that can be said about one permission ask."""
+    rule = request.get("ask_rule") or {}
+    if rule:
+        where = plain_text(rule.get("source"), 40)
+        return ("a permissions.ask rule you wrote covers this"
+                + (f" ({where})" if where else ""))
+    if request.get("interactive"):
+        # The protocol is explicit that a plain Allow is the wrong surface for
+        # these; we have no card of the tool's own to put up instead, so the
+        # least we can do is not let Allow look like an answer.
+        return "this tool asks you itself — Allow only lets it ask"
+    if request.get("classifier_approvable") is False:
+        return ASK_REASONS["safetyCheck"]
+    kind = request.get("reason_type") or ""
+    if kind in ASK_REASONS:
+        return ASK_REASONS[kind]
+    server = plain_text(request.get("mcp_server"), 60)
+    if server:
+        return f"{server} asks before every call"
+    return ""
+
+
+def permission_reason(request, mode=""):
+    """One line for the card: why this is being asked, and why now.
+
+    Under "Bypass all checks" it leads with the mode, because that is the
+    question being asked of the app — not "may this run", but "why are you
+    asking me at all".
+    """
+    why = ask_reason(request)
+    if not why:
+        return ""
+    detail = plain_text(request.get("reason"))
+    if detail and detail.lower() not in why.lower():
+        why = f"{why} — {detail}"
+    if mode == BYPASS_MODE:
+        label = dict(PERMISSION_MODES).get(BYPASS_MODE, BYPASS_MODE)
+        return f"“{label}” does not cover this: {why}."
+    return f"Asked because {why}."
+
+
 def match_commands(prefix, commands):
     """The commands a half-typed name could still become, best first.
 
@@ -209,6 +274,10 @@ def command_hint(command):
 
 def shorten_path(path):
     home = os.path.expanduser("~")
+    # The home folder itself, not only what is under it: as the parent line in
+    # the folder picker it is the commonest one of all.
+    if path == home:
+        return "~"
     if path.startswith(home + os.sep):
         return "~" + path[len(home):]
     return path
@@ -265,6 +334,224 @@ def prompt(parent, heading, body, action_label, callback, text=""):
 
     dialog.choose(parent, None, answered)
     focus_soon(entry)
+
+
+class FolderRow(Gtk.ListBoxRow):
+    """One folder in the picker, or the row that opens the file chooser."""
+
+    def __init__(self, path, icon, title, subtitle):
+        super().__init__()
+        self.path = path  # None on the "Other location" row
+
+        box = Gtk.Box(spacing=12, margin_top=8, margin_bottom=8,
+                      margin_start=12, margin_end=12)
+        box.append(Gtk.Image(icon_name=icon, valign=Gtk.Align.CENTER))
+
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        text.append(Gtk.Label(label=title, xalign=0,
+                              ellipsize=Pango.EllipsizeMode.END))
+        if subtitle:
+            # Middle, not end: the tail of a path is what tells two folders of
+            # the same name apart, so that is the part to keep.
+            text.append(Gtk.Label(label=subtitle, xalign=0,
+                                  ellipsize=Pango.EllipsizeMode.MIDDLE,
+                                  css_classes=["session-meta", "monospace"]))
+        box.append(text)
+        box.append(Gtk.Image(icon_name="pan-end-symbolic", valign=Gtk.Align.CENTER,
+                             css_classes=["dim"]))
+        self.set_child(box)
+        self.set_tooltip_text(path or "Browse the filesystem")
+
+
+def folder_labels(path):
+    """How a folder names itself in the picker: its own name, then where it is.
+
+    The basename carries the identity — two checkouts both called `src` are
+    told apart by the line underneath, not the line above. A folder with no
+    parent to show, `/` being the one that matters here, gets no second line
+    rather than a line repeating itself.
+    """
+    parent = os.path.dirname(path)
+    return (
+        os.path.basename(path) or shorten_path(path),
+        shorten_path(parent) if parent and parent != path else "",
+    )
+
+
+def choose_folder(parent, paths, on_pick, on_browse, heading="Working folder"):
+    """Offer the folders already in use before offering the whole filesystem.
+
+    Choosing where a chat runs is nearly always choosing one of the handful of
+    folders you actually work in, and a file chooser makes that the slow path:
+    it opens somewhere, and everything else is navigation. Here each of those
+    folders is one click, and "Other location" still reaches the rest of the
+    disk for the genuinely new one.
+    """
+    dialog = Adw.AlertDialog(heading=heading)
+
+    listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE,
+                          css_classes=["boxed-list"])
+    for path in paths:
+        title, subtitle = folder_labels(path)
+        listbox.append(FolderRow(path, "folder-symbolic", title, subtitle))
+    listbox.append(FolderRow(None, "folder-open-symbolic", "Other location…",
+                             "Browse for a folder"))
+
+    # Tall enough for the shortlist, scrolling rather than growing past it, so
+    # the dialog cannot end up taller than the window it sits in.
+    frame = Gtk.ScrolledWindow(propagate_natural_height=True, max_content_height=330,
+                               hscrollbar_policy=Gtk.PolicyType.NEVER,
+                               child=listbox, margin_top=6)
+    dialog.set_extra_child(frame)
+    dialog.add_response("cancel", "Cancel")
+    dialog.set_close_response("cancel")
+
+    def activated(_box, row):
+        # Close first: both branches can put another dialog on screen, and two
+        # at once leaves the new one behind the old.
+        dialog.close()
+        if row.path is None:
+            on_browse()
+        else:
+            on_pick(row.path)
+
+    listbox.connect("row-activated", activated)
+    # Named, the way the other composite widgets name their parts: a
+    # ScrolledWindow puts a Viewport in between, and nothing should have to
+    # know that to reach the rows.
+    dialog.listbox = listbox
+
+    dialog.present(parent)
+    # So the list is immediately arrow-navigable and Enter picks the top folder.
+    focus_soon(listbox)
+    return dialog
+
+
+class GroupRow(Gtk.ListBoxRow):
+    """One of the three sections, ticked if this chat is already in it."""
+
+    def __init__(self, name, current, icon):
+        super().__init__()
+        self.group = name
+
+        box = Gtk.Box(spacing=10, margin_top=6, margin_bottom=6,
+                      margin_start=10, margin_end=10)
+        box.append(Gtk.Image(icon_name=icon, valign=Gtk.Align.CENTER))
+        box.append(Gtk.Label(label=config.group_label(name), xalign=0, hexpand=True,
+                             ellipsize=Pango.EllipsizeMode.END))
+        # A tick rather than a selected row: the list is a set of choices, and
+        # one of them is already true of this chat.
+        self.tick = Gtk.Image(icon_name="object-select-symbolic",
+                              valign=Gtk.Align.CENTER)
+        self.tick.set_opacity(1.0 if name == current else 0.0)
+        box.append(self.tick)
+        self.set_child(box)
+
+
+class TagRow(Gtk.ListBoxRow):
+    """One tag and whether this chat wears it, or the row that makes a new one.
+
+    The tick is drawn transparent rather than taken away, so ticking one does
+    not change the width of a menu you are still reading, and so the names
+    line up with the groups above whichever way round they are.
+    """
+
+    def __init__(self, name, worn=False):
+        super().__init__()
+        self.tag = name  # None on the "New tag…" row
+
+        box = Gtk.Box(spacing=10, margin_top=6, margin_bottom=6,
+                      margin_start=10, margin_end=10)
+        box.append(Gtk.Image(icon_name="list-add-symbolic" if name is None
+                             else "user-bookmarks-symbolic",
+                             valign=Gtk.Align.CENTER))
+        box.append(Gtk.Label(label="New tag…" if name is None else config.tag_label(name),
+                             xalign=0, hexpand=True,
+                             ellipsize=Pango.EllipsizeMode.END))
+        self.tick = Gtk.Image(icon_name="object-select-symbolic",
+                              valign=Gtk.Align.CENTER)
+        self.tick.set_opacity(1.0 if worn else 0.0)
+        box.append(self.tick)
+        self.set_child(box)
+
+    @property
+    def worn(self):
+        return self.tick.get_opacity() > 0.5
+
+    def flip(self):
+        self.tick.set_opacity(0.0 if self.worn else 1.0)
+
+
+def row_menu(tags, group, worn, on_group, on_tag, on_new):
+    """Everything the sidebar can do to one chat, in one menu.
+
+    Two halves, because they answer two different questions. Above: which of
+    the three sections the chat is filed in — one at a time, so picking one
+    is the end of the matter and the menu closes on it. Below: what it is
+    about, as many as apply, so a tag toggles in place and the menu stays
+    open for the next one. Favourites is up there rather than on a button of
+    its own; see SessionRow for why.
+    """
+    groups = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+    for name, icon in ((config.FAVOURITE_GROUP, "starred-symbolic"),
+                       ("", "view-list-symbolic"),
+                       (config.ARCHIVE_GROUP, "folder-download-symbolic")):
+        groups.append(GroupRow(name, group, icon))
+
+    taglist = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+    for name in tags:
+        taglist.append(TagRow(name, name in worn))
+    taglist.append(TagRow(None))
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    box.append(groups)
+    box.append(Gtk.Separator(margin_top=4, margin_bottom=4))
+    box.append(Gtk.Label(label="Tags", xalign=0, css_classes=["group-header"],
+                         margin_start=12, margin_end=12, margin_bottom=2))
+    box.append(taglist)
+
+    frame = Gtk.ScrolledWindow(propagate_natural_height=True, max_content_height=380,
+                               hscrollbar_policy=Gtk.PolicyType.NEVER, child=box)
+    popover = Gtk.Popover(child=frame, css_classes=["menu"])
+
+    def group_activated(_box, row):
+        # Down first: filing a chat rebuilds the sidebar under this popover,
+        # and a popover whose row has been destroyed takes the keyboard with
+        # it on the way out.
+        popover.popdown()
+        on_group(row.group)
+
+    def tag_activated(_box, row):
+        if row.tag is None:
+            # A dialog follows, and a popover still open underneath it takes
+            # the keyboard focus with it.
+            popover.popdown()
+            on_new()
+            return
+        row.flip()
+        on_tag(row.tag)
+
+    groups.connect("row-activated", group_activated)
+    taglist.connect("row-activated", tag_activated)
+    # Named, the way the folder picker names its own: a ScrolledWindow puts a
+    # Viewport in between, and nothing should have to know that to reach them.
+    popover.listbox = groups
+    popover.taglist = taglist
+    return popover
+
+
+def tag_chip(label, active, on_click, tooltip=""):
+    """One tag in the filter above the sidebar.
+
+    A Button and not a ToggleButton: the row of them is rebuilt whenever the
+    filter changes, and a toggle that is restyled by being rebuilt would emit
+    its own signal on the way in.
+    """
+    button = Gtk.Button(label=label, tooltip_text=tooltip,
+                        css_classes=["tag-chip", "tag-chip-on"] if active
+                        else ["tag-chip"])
+    button.connect("clicked", lambda _b: on_click())
+    return button
 
 
 def focus_soon(widget):
@@ -430,6 +717,7 @@ CSS = """
 }
 .perm-title { font-weight: bold; }
 .perm-detail { font-family: monospace; font-size: 0.85em; opacity: 0.8; }
+.perm-why { font-size: 0.86em; opacity: 0.72; }
 .ask-chip {
   font-size: 0.75em;
   padding: 1px 9px;
@@ -469,6 +757,45 @@ CSS = """
 /* --------------------------------------------------------- sidebar ----- */
 .session-name { font-weight: bold; }
 .session-meta { font-size: 0.8em; opacity: 0.6; }
+.group-header {
+  font-size: 0.78em;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.5;
+}
+/* Faint until the pointer is on them: the sidebar should read as a list of
+   names, with the buttons there when you go looking for them. */
+.row-action {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  margin: 0;
+  opacity: 0.35;
+}
+.row-action:hover { opacity: 1; }
+.row-action-on { opacity: 0.95; }
+.archive-row { opacity: 0.75; }
+
+/* Tags: the line under a chat's name, and the filter above the list. The
+   chips are small and quiet until one is on, because the filter is a thing
+   you reach for occasionally and read past the rest of the time. */
+.session-tags { font-size: 0.78em; opacity: 0.72; }
+.tag-bar { padding: 0 10px 6px 10px; }
+.tag-chip {
+  font-size: 0.78em;
+  min-height: 0;
+  padding: 1px 9px;
+  border: none;
+  box-shadow: none;
+  border-radius: 999px;
+  background: alpha(currentColor, 0.09);
+}
+.tag-chip:hover { background: alpha(currentColor, 0.17); }
+.tag-chip-on {
+  background: @accent_bg_color;
+  color: @accent_fg_color;
+}
 .dot { min-width: 8px; min-height: 8px; border-radius: 999px; }
 .dot-busy    { background: @accent_bg_color; }
 .dot-ready   { background: @success_color; }
@@ -517,11 +844,23 @@ CSS = """
 """
 
 
-def install_css():
-    provider = Gtk.CssProvider()
-    provider.load_from_string(CSS)
-    display = Gdk.Display.get_default()
-    if display:
-        Gtk.StyleContext.add_provider_for_display(
-            display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
+def install_css(config=None):
+    """Put the house sheet, plus this app's own rules, on the display.
+
+    The house sheet is the palettes and the shared idiom — see housestyle.py —
+    and `CSS` above is only what is particular to this app. One provider,
+    reloaded in place, so a theme change takes effect on widgets that have
+    already been built.
+
+    `config` is optional so that a first install can happen before any
+    settings have been read; without one the house defaults are used, which
+    is the right answer for the one frame before a window exists.
+    """
+    scheme = housestyle.theming.get(housestyle.wanted_key(config))
+    glass = bool(housestyle.setting(config, "glass"))
+    housestyle.install(
+        scheme, CSS,
+        translucency=float(housestyle.setting(config, "translucency")),
+        window_radius=int(housestyle.setting(config, "rounding")),
+        blur=int(housestyle.setting(config, "glass_blur")) if glass else 0,
+        glass=glass)

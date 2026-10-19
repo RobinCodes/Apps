@@ -89,6 +89,46 @@ LY_PW_TRANSPORT
 " setVal(pw,p);"
 " return true;};"
 
+/* A box being asked for a *new* password rather than an existing one, which
+ * is where offering to make one up is worth an interruption and filling a
+ * saved one would be wrong. The page saying so outright is taken at its
+ * word; otherwise a second password box on the same form is the giveaway,
+ * because that is the confirmation field, and a form with one is a sign-up,
+ * a reset or a change. */
+"var newish=function(e){"
+" var a=(e.getAttribute('autocomplete')||'').toLowerCase();"
+" if(a.indexOf('new-password')>=0)return true;"
+" if(a.indexOf('current-password')>=0)return false;"
+" var f=e.form,scope=f||document,ps;"
+" try{ps=[].slice.call(scope.querySelectorAll('input[type=password]')).filter(vis);}"
+" catch(_){ps=[];}"
+" if(ps.length>1)return true;"
+" var hay=(location.pathname+' '+location.search+' '+"
+"  (f?[f.getAttribute('action'),f.id,f.className,f.name].join(' '):'')).toLowerCase();"
+" return /(sign-?up|signup|regist|create-?account|create-?an-?account|join|"
+"new-?account|set-?password|reset-?password|change-?password|new-?pass)/"
+"  .test(hay);};"
+
+/* Fills every box on the form that is asking for the new password, which is
+ * what makes "password" and "confirm password" come out the same without the
+ * user retyping it. */
+"window.__lyndonFillNew=function(p){"
+" var f=pws();if(!f.length)f=deep('input[type=password]');"
+" if(!f.length)return false;"
+" var n=0;"
+" for(var i=0;i<f.length;i++)if(newish(f[i])){setVal(f[i],p);n++;}"
+" if(!n){setVal(f[0],p);n=1;}"
+" return true;};"
+
+/* Once per page: the offer is made when the box is first touched, and a
+ * second one over the same form would be nagging. */
+"var offered=false;"
+"document.addEventListener('focusin',function(e){"
+" var t=e.target;"
+" if(offered||!t||(t.type||'').toLowerCase()!=='password'||!newish(t))return;"
+" offered=true;"
+" H.postMessage({type:'newpassword',origin:location.origin});},true);"
+
 /* Does this submission look like a sign-in at all? Only asked before offering
  * to fill in a gap, where a false positive costs the user an interruption. */
 "var loginish=function(el){"

@@ -3,5 +3,8 @@ lyndon
 tests/test-abp
 tests/test-util
 tests/test-store
+tests/test-engine
+tests/test-archive
+tests/test-pwcheck
 *.o
 *.d

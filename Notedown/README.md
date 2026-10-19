@@ -65,7 +65,8 @@ highlighting is semantic rather than decorative: a heading is drawn at the
 size it will be, bold source is bold, a link is underlined, a fence is
 monospace on a tinted ground. The markers themselves are dimmed rather than
 hidden, because hiding them is a trick that looks wonderful until you try to
-put the cursor between two asterisks you can no longer see.
+put the cursor between two asterisks you can no longer see. Which monospace
+font, and at what size, is yours to say — see [Settings](#settings).
 
 The courtesies are the other half of it:
 
@@ -122,6 +123,25 @@ fails.
 `Copy as HTML` puts a fragment on the clipboard, for pasting into an email or
 a CMS.
 
+## The house style
+
+The look is the house's, from [`house/`](../house/README.md): the same eight
+themes as the rest of the suite, the same preference rows in the same order,
+and the same material. The window paints nothing itself — everything sits on
+one rounded, translucent slab of glass inside it, with a highlight that
+follows the pointer and the theme's own slow light drifting behind.
+
+**Porcelain** is the light default — warm paper under glass — and **Moss**
+the dark one, a desaturated forest black under sage. With **Follow the desktop** on, which it
+is by default, the app uses one in a light session and the other in a dark
+one and switches when the desktop does. The rest of the eight are in
+Preferences → Look, along with how translucent the glass is, how far a
+floating panel blurs what is behind it, and how round the corners are.
+
+The window also remembers the size it was last closed at, and whether it was
+maximised, and comes back that way. Under a tiling compositor it does
+neither — see below.
+
 ## Settings
 
 In `~/.config/notedown/config.json`, and all of it is reachable from the
@@ -129,6 +149,8 @@ menus. The ones worth knowing about:
 
 | | |
 |---|---|
+| `editor_font_family` `editor_font_size` | the font the text half is written in |
+| `preview_font_family` `preview_font_size` | the page's, in points — every size on the page is a ratio of it |
 | `auto_save` | save a named file a second and a half after you stop typing |
 | `focus_mode` | dim everything but the paragraph you are in |
 | `typewriter` | keep the line you are typing in the middle of the view |
@@ -137,6 +159,13 @@ menus. The ones worth knowing about:
 | `trim_trailing_space` | off by default — two trailing spaces are a line break |
 | `backup_on_save` | keep the previous version as `file.md~` |
 | `load_remote_images` | off by default, see above |
+
+Both fonts are in the menu as well, under **Text → Fonts…**, where they are
+picked and applied as you pick them; a family with nothing chosen is the one
+the desktop would have used anyway. `Ctrl+±` moves the two sizes together and
+`Ctrl+0` puts them back to the ones this app ships with, which are larger than
+the toolkit's own — a page of prose is not a row of buttons and there is no
+reason it should be set at the same size as one.
 
 The documents you had open are reopened next time, and a file changed by
 something else while you were away is reloaded when the window comes back —
@@ -171,10 +200,27 @@ cp notedown.svg ~/.local/share/icons/hicolor/scalable/apps/
 update-desktop-database ~/.local/share/applications
 ```
 
-To make it the default for `.md` files:
+To make it the default for `.md` files, and to give those files Notedown's
+own page icon rather than the generic document one:
 
 ```bash
-xdg-mime default notedown.desktop text/markdown
+xdg-mime default notedown.desktop text/markdown text/x-markdown
+cp notedown-document.svg \
+   ~/.local/share/icons/hicolor/scalable/mimetypes/text-markdown.svg
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
+```
+
+`.md`, `.markdown` and `.mkd` are `text/markdown` to
+[shared-mime-info](https://gitlab.freedesktop.org/xdg/shared-mime-info), which
+is what a file manager asks; the longer spellings Notedown opens are plain
+text to it, and open in Notedown by being given to it rather than by being its
+type.
+
+The *Create Document* menu in Thunar, Nautilus and the rest is whatever is in
+`~/Templates`, so a Markdown entry in it is a file:
+
+```bash
+printf '# Title\n\n' > ~/Templates/"Markdown File.md"
 ```
 
 On Windows, see [the shared README](../README.md#on-windows); `notedown.bat`

@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=The Eye
+GenericName=Photo and video viewer
+Comment=Look at photographs and video, and grade them while you do
+Exec=/home/robin/.local/bin/the-eye %F
+Icon=the-eye
+Terminal=false
+Categories=Graphics;Viewer;AudioVideo;Player;Photography;
+MimeType=audio/aac;audio/ac3;audio/aiff;audio/amr;audio/flac;audio/m4a;audio/matroska;audio/midi;audio/mp2;audio/mp3;audio/mp4;audio/mpeg;audio/mpeg3;audio/ogg;audio/opus;audio/vnd.dts;audio/vnd.m-realaudio;audio/vnd.rn-realaudio;audio/vnd.wave;audio/wav;audio/wma;audio/x-aac;audio/x-ac3;audio/x-aifc;audio/x-aiff;audio/x-aiffc;audio/x-ape;audio/x-dts;audio/x-flac;audio/x-m4a;audio/x-matroska;audio/x-midi;audio/x-mod;audio/x-mp2;audio/x-mp3;audio/x-mpeg;audio/x-mpg;audio/x-ms-wma;audio/x-ogg;audio/x-opus+ogg;audio/x-pn-realaudio;audio/x-speex;audio/x-speex+ogg;audio/x-vorbis+ogg;audio/x-wav;audio/x-wavpack;image/avif;image/avif-sequence;image/bmp;image/gif;image/heic;image/heic-sequence;image/heif;image/heif-sequence;image/ico;image/icon;image/jpeg;image/jpg;image/jxl;image/pjpeg;image/png;image/qoi;image/svg+xml;image/svg+xml-compressed;image/targa;image/tga;image/tiff;image/vnd.microsoft.icon;image/vnd.ms-dds;image/webp;image/x-MS-bmp;image/x-adobe-dng;image/x-bmp;image/x-canon-cr2;image/x-canon-cr3;image/x-dds;image/x-epson-erf;image/x-exr;image/x-fuji-raf;image/x-hasselblad-3fr;image/x-hasselblad-fff;image/x-icb;image/x-icns;image/x-ico;image/x-icon;image/x-kodak-dcr;image/x-kodak-kdc;image/x-leaf-mos;image/x-mamiya-mef;image/x-minolta-mrw;image/x-ms-bmp;image/x-nikon-nef;image/x-nikon-nrw;image/x-olympus-orf;image/x-panasonic-raw2;image/x-panasonic-rw2;image/x-pentax-pef;image/x-phaseone-iiq;image/x-png;image/x-portable-anymap;image/x-portable-bitmap;image/x-portable-graymap;image/x-portable-pixmap;image/x-samsung-srw;image/x-sigma-x3f;image/x-sony-arw;image/x-sony-sr2;image/x-sony-srf;image/x-targa;image/x-tga;image/x-tiff;image/x-webp;image/x-xbitmap;image/x-xpixmap;image/x-xpm;video/3gp;video/3gpp;video/3gpp-encrypted;video/3gpp2;video/avi;video/divx;video/dv;video/flv;video/matroska;video/mp2t;video/mp4;video/mp4v-es;video/mpeg;video/mpeg-system;video/msvideo;video/ogg;video/quicktime;video/vnd.avi;video/vnd.divx;video/webm;video/x-avi;video/x-flv;video/x-m4v;video/x-matroska;video/x-mjpeg;video/x-mpeg;video/x-mpeg-system;video/x-mpeg2;video/x-ms-asf;video/x-ms-wmv;video/x-msvideo;video/x-ogg;video/x-ogm;video/x-ogm+ogg;video/x-theora+ogg;
+Keywords=photo;picture;image;viewer;video;player;movie;film;slideshow;gallery;grade;colour;color;filter;edit;
+StartupNotify=true
+StartupWMClass=com.robin.TheEye
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/home/robin/.local/bin/the-eye --new-window

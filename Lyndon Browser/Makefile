@@ -75,7 +75,8 @@ RES_C      := build/lyndon-resources.c
 RES_O      := build/lyndon-resources.o
 RES_DEPS   := $(shell glib-compile-resources --sourcedir=data --generate-dependencies $(RES_XML) 2>/dev/null)
 
-.PHONY: all run clean install uninstall check deps help
+.PHONY: all run clean install uninstall user-install user-uninstall \
+        check deps help dist
 
 all: $(APP)
 
@@ -99,6 +100,19 @@ $(RES_C): $(RES_XML) $(RES_DEPS) | build
 build:
 	@mkdir -p build
 
+# A built copy somewhere other than the checkout root, so that lyndon.py can
+# build a new version while the old one is still the binary being run — the
+# linker cannot write an executable that is running (ETXTBSY), and dist/ is
+# what the launcher starts. Nothing is bundled: unlike the Windows dist, the
+# data is already compiled into the binary and the libraries are the system's.
+DISTDIR ?= dist
+
+dist: $(APP)
+	@mkdir -p $(DISTDIR)
+	@cp -f $(APP) $(DISTDIR)/.$(APP).new
+	@mv -f $(DISTDIR)/.$(APP).new $(DISTDIR)/$(APP)
+	@echo "  ==>   $(DISTDIR)/$(APP) ready"
+
 deps:
 	@echo "Checking build dependencies…"
 	@pkg-config --exists gtk4         || { echo "  MISSING: gtk4";         exit 1; }
@@ -115,11 +129,19 @@ deps:
 run: $(APP)
 	@./$(APP)
 
-check: tests/test-abp tests/test-util tests/test-store tests/test-engine
+check: tests/test-abp tests/test-util tests/test-store tests/test-engine \
+       tests/test-archive tests/test-pwcheck
 	@./tests/test-abp
 	@./tests/test-util
 	@./tests/test-store
 	@./tests/test-engine
+	@./tests/test-archive
+	@./tests/test-pwcheck
+	@# The launcher is Python, and what it decides about builds is the one
+	@# thing here that can leave someone without a browser. Skipped rather
+	@# than failed where there is no python3: it is not a build dependency.
+	@command -v python3 >/dev/null && python3 tests/test-launcher.py || \
+	  echo "  skip  tests/test-launcher.py (no python3)"
 
 tests/test-abp: tests/test-abp.c src/abp.c
 	@echo "  CC    $@"
@@ -136,10 +158,11 @@ tests/test-util: tests/test-util.c src/util.c
 	  $(shell pkg-config --cflags gtk4 libadwaita-1 webkitgtk-6.0) \
 	  $(shell pkg-config --cflags --libs glib-2.0 gio-2.0)
 
-# store.c needs sqlite and glib and nothing else; the test supplies the one
-# symbol it wants from the rest of the browser. lyndon.h still pulls adwaita
-# in on this platform, hence the headers on the include path -- see test-util.
-tests/test-store: tests/test-store.c src/store.c
+# store.c needs sqlite, glib and util.c's URL handling -- grouping history by
+# site is ly_uri_base_domain's answer. The test supplies the one symbol it
+# wants from the rest of the browser. lyndon.h still pulls adwaita in on this
+# platform, hence the headers on the include path -- see test-util.
+tests/test-store: tests/test-store.c src/store.c src/util.c
 	@echo "  CC    $@"
 	@$(CC) $(STD) $(WARN) -O1 -g -Isrc -o $@ $^ -lm \
 	  $(shell pkg-config --cflags gtk4 libadwaita-1 webkitgtk-6.0) \
@@ -155,6 +178,73 @@ tests/test-engine: tests/test-engine.c src/engine.c src/config.c src/util.c buil
 	  -DLYNDON_VERSION=\"$(VERSION)\" -DLYNDON_APP_ID=\"$(APP_ID)\" -o $@ $^ \
 	  $(shell pkg-config --cflags --libs $(PKGS))
 
+# archive.c reaches into the engine for the user agent its crawler sends and
+# into the store for the sweep's shortlist, so both come along; the rest is
+# the same set test-engine needs.
+tests/test-archive: tests/test-archive.c src/archive.c src/engine.c src/config.c \
+                    src/store.c src/util.c build/lyndon-resources.c
+	@echo "  CC    $@"
+	@$(CC) $(STD) $(WARN) -O1 -g -Isrc -Ibuild \
+	  -DLYNDON_VERSION=\"$(VERSION)\" -DLYNDON_APP_ID=\"$(APP_ID)\" -o $@ $^ -lm \
+	  $(shell pkg-config --cflags --libs $(PKGS))
+
+# pwcheck.c judges a password and asks the breach service about it: libsoup
+# for the one request it makes, libcrypto for the random bytes the generator
+# is built from, and util.c because reuse is counted per site, which is
+# ly_uri_base_domain's answer. credentials.c supplies LyCredential.
+tests/test-pwcheck: tests/test-pwcheck.c src/pwcheck.c src/util.c src/credentials.c
+	@echo "  CC    $@"
+	@$(CC) $(STD) $(WARN) -O1 -g -Isrc -o $@ $^ -lm \
+	  $(shell pkg-config --cflags gtk4 libadwaita-1 webkitgtk-6.0) \
+	  -DLYNDON_VERSION=\"$(VERSION)\" \
+	  $(shell pkg-config --cflags --libs glib-2.0 gio-2.0 libsoup-3.0 libcrypto)
+
+# -- installing -----------------------------------------------------------
+# Two routes, and they are not the same thing.
+#
+# `user-install` is the one to use. It puts a link in ~/.local/bin pointing at
+# lyndon.py in this checkout, and a .desktop file that runs it, so Lyndon
+# starts the way the Python apps beside it do: the launcher fast-forwards the
+# checkout, builds a new version behind the running browser, and the browser
+# offers a Restart when one is ready. Nothing needs root, which is the whole
+# reason it can replace its own binary.
+#
+# `install` is the packaging route: a copy in $(PREFIX), owned by whoever
+# installed it. It cannot update itself -- there is no checkout under it and
+# no write permission anyway -- so it is what a distribution package would do,
+# not what someone running from git wants.
+
+USER_BINDIR  ?= $(HOME)/.local/bin
+USER_DATADIR ?= $(HOME)/.local/share
+HERE         := $(CURDIR)
+
+user-install: dist
+	@install -d $(USER_BINDIR) $(USER_DATADIR)/applications
+	@ln -sfn "$(HERE)/lyndon.py" $(USER_BINDIR)/$(APP)
+	@sed 's|^Exec=$(APP)|Exec=$(USER_BINDIR)/$(APP)|' data/$(APP_ID).desktop \
+	  > $(USER_DATADIR)/applications/$(APP_ID).desktop
+	@chmod 644 $(USER_DATADIR)/applications/$(APP_ID).desktop
+	@install -Dm644 data/icons/$(APP_ID).svg \
+	  $(USER_DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
+	@-update-desktop-database $(USER_DATADIR)/applications 2>/dev/null
+	@-gtk-update-icon-cache -qtf $(USER_DATADIR)/icons/hicolor 2>/dev/null
+	@echo "  ==>   $(USER_BINDIR)/$(APP) -> $(HERE)/lyndon.py"
+	@echo "        updates itself from this checkout; nothing here needs root."
+	@if [ -e $(BINDIR)/$(APP) ] || [ -e /usr/bin/$(APP) ]; then \
+	  echo ""; \
+	  echo "  note: an older system-wide copy is still there. Which one runs"; \
+	  echo "        is down to PATH order, and ~/.local/bin usually comes"; \
+	  echo "        first, so this is a stale duplicate rather than a"; \
+	  echo "        conflict -- but it will never update. Remove it with"; \
+	  echo "        sudo make uninstall"; \
+	fi
+
+user-uninstall:
+	rm -f $(USER_BINDIR)/$(APP) \
+	      $(USER_DATADIR)/applications/$(APP_ID).desktop \
+	      $(USER_DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
+	-update-desktop-database $(USER_DATADIR)/applications 2>/dev/null
+
 install: $(APP)
 	install -Dm755 $(APP) $(DESTDIR)$(BINDIR)/$(APP)
 	install -d $(DESTDIR)$(DATADIR)/applications
@@ -167,6 +257,7 @@ install: $(APP)
 	-update-desktop-database $(DESTDIR)$(DATADIR)/applications 2>/dev/null
 	-gtk-update-icon-cache -qtf $(DESTDIR)$(DATADIR)/icons/hicolor 2>/dev/null
 	@echo "installed to $(DESTDIR)$(BINDIR)/$(APP)"
+	@echo "note: a copy installed this way cannot update itself -- see user-install."
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(APP) \
@@ -174,17 +265,24 @@ uninstall:
 	      $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
 
 clean:
-	rm -rf build $(APP) tests/test-abp tests/test-util tests/test-store tests/test-engine
+	rm -rf build dist dist-next dist-old* $(APP) \
+	       tests/test-abp tests/test-util tests/test-store \
+	       tests/test-engine tests/test-archive
 
 help:
 	@echo "make            build"
 	@echo "make run        build and launch"
-	@echo "make check      run unit tests (filter lists, URL handling, ranking)"
+	@echo "make check      run unit tests (filter lists, URL handling, ranking,"
+	@echo "                offline mirror paths, the launcher's build swap)"
+	@echo "make dist       build into dist/, which is what lyndon.py starts"
+	@echo "make user-install    ~/.local/bin link + .desktop, updates itself"
+	@echo "make user-uninstall  remove them again"
 	@echo "make DEBUG=1    asan/ubsan build"
 	@echo "make LTO=1      link-time optimised build"
 	@echo "make deps       verify build dependencies"
 	@echo ""
 	@echo "nss is optional: present at build time it enables Firefox password import."
-	@echo "sudo make install"
+	@echo "make user-install     (no root; this is the one you want)"
+	@echo "sudo make install     (a packaged copy that cannot self-update)"
 
 -include $(DEPS)

@@ -40,10 +40,67 @@ gi.require_version("Adw", "1")
 from gi.repository import (Adw, Gdk, GdkPixbuf, GLib, Graphene, Gtk,  # noqa: E402
                            Pango)
 
-from . import highlight, latex, markdown  # noqa: E402
+from . import highlight, latex, markdown, widgets  # noqa: E402
+from .config import DEFAULTS  # noqa: E402
 
 MAX_IMAGE_WIDTH = 900
 CODE_LINE_LIMIT = 4000
+
+MIN_FONT_SIZE = 6
+MAX_FONT_SIZE = 40
+
+
+# ---------------------------------------------------------- the page font --
+#
+# The size everything on the page is a ratio of, as a rule on the display
+# rather than on the preview widget.
+#
+# A provider added to one widget's style context styles that widget and
+# nothing beneath it, and a page here is a tree of labels, grids and check
+# buttons rather than one widget drawing text. A rule on the display reaches
+# all of them, and `.md-page` is worn by nothing else. That it is one rule for
+# every window is not a compromise either: the font is one line in one config
+# file, and a page in a second window drawn at some other size would be a bug.
+
+_page_css = Gtk.CssProvider()
+_page_css_installed = False
+_page_font = (str(DEFAULTS["preview_font_family"]),
+              int(DEFAULTS["preview_font_size"]))
+
+
+def set_page_font(family: str, points: int):
+    """Draw every rendered page in this family, at this size in points."""
+    global _page_font
+    points = max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, int(points)))
+    family = str(family or "")
+    _page_font = (family, points)
+
+    rule = f".md-page {{ font-size: {points}pt;"
+    css_family = widgets.css_font_family(family)
+    if css_family:
+        rule += f" font-family: {css_family};"
+    _page_css.load_from_string(rule + " }")
+    _install_page_css()
+
+
+def page_font() -> tuple[str, int]:
+    """The family and point size the page is being drawn at."""
+    return _page_font
+
+
+def _install_page_css():
+    global _page_css_installed
+    display = Gdk.Display.get_default()
+    if _page_css_installed or display is None:
+        return
+    Gtk.StyleContext.add_provider_for_display(
+        display, _page_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    _page_css_installed = True
+
+
+# So a page has its font from the first one drawn, whether or not anything
+# ever sets one. There may be no display yet; the first Preview installs it.
+set_page_font(*_page_font)
 
 
 # ------------------------------------------------------------ inline spans --
@@ -127,7 +184,6 @@ class Preview(Gtk.ScrolledWindow):
 
         self.base_dir = ""
         self.load_remote_images = False
-        self._scale = 1.0
         self._width_limit = 0          # 0 = full width, else a reading measure
         self._cache: dict[str, list[Gtk.Widget]] = {}
         self._anchors: dict[str, Gtk.Widget] = {}
@@ -142,6 +198,7 @@ class Preview(Gtk.ScrolledWindow):
                                tightening_threshold=720)
         self.set_child(self.clamp)
         self.add_css_class("preview-area")
+        _install_page_css()
 
         # Whether the pointer is over the preview, which is how the document
         # decides that a scroll here was the user's doing rather than a
@@ -161,14 +218,6 @@ class Preview(Gtk.ScrolledWindow):
 
     def has_pointer(self) -> bool:
         return self._pointer_inside
-
-    def set_font_scale(self, scale: float):
-        self._scale = max(0.6, min(2.4, float(scale)))
-        self.column.set_property("width-request", -1)
-        self._retheme()
-
-    def get_font_scale(self) -> float:
-        return self._scale
 
     def set_reading_width(self, columns: int):
         """Clamp the text to a measure, or 0 for the whole pane."""
@@ -196,7 +245,7 @@ class Preview(Gtk.ScrolledWindow):
 
         keep = []
         for block in document.blocks:
-            signature = _signature(block, dark, self._scale)
+            signature = _signature(block, dark)
             pool = old.get(signature)
             widget = pool.pop() if pool else None
             if widget is None:
@@ -605,14 +654,15 @@ class Preview(Gtk.ScrolledWindow):
 # ---------------------------------------------------------------- helpers --
 
 
-def _signature(block, dark, scale):
+def _signature(block, dark):
     """What makes two renderings of a block the same widget.
 
-    The theme and the text size are in it because both change how the widget
-    was built, not just how it is styled — a code block's colours are baked
-    into its markup.
+    The theme is in it because it changes how the widget was built rather than
+    only how it is styled — a code block's colours are baked into its markup.
+    The font is not, because that is a stylesheet and a widget already drawn
+    picks up a new one without being built again.
     """
-    parts = [block.kind, "d" if dark else "l", f"{scale:.2f}"]
+    parts = [block.kind, "d" if dark else "l"]
     for name in ("level", "language", "text", "ordered", "start", "tight", "aligns"):
         value = getattr(block, name, None)
         if value is not None:
@@ -635,7 +685,7 @@ def _spans_key(spans):
 
 
 def _blocks_key(blocks):
-    return repr([_signature(block, False, 1.0) for block in blocks or []])
+    return repr([_signature(block, False) for block in blocks or []])
 
 
 def _walk(spans):

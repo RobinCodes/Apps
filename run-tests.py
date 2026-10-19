@@ -29,16 +29,29 @@ WINDOWS = os.name == "nt"
 
 
 class Suite:
-    def __init__(self, name, kind, argv, cwd, needs=(), env=None):
+    def __init__(self, name, kind, argv, cwd, needs=(), env=None, wants=()):
         self.name = name
         self.kind = kind          # "python", "c" or "powershell"
         self.argv = argv
         self.cwd = cwd
         self.needs = needs        # executables that must exist to run at all
         self.env = env or {}      # on top of the environment every suite gets
+        self.wants = wants        # libraries, checked by the functions above
 
     def missing(self):
         return [tool for tool in self.needs if not shutil.which(tool)]
+
+
+def have_vte():
+    """Prism is the only app here that needs VTE, and it is not usually installed."""
+    try:
+        import gi
+
+        gi.require_version("Vte", "3.91")
+        from gi.repository import Vte  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 def have_gtk():
@@ -91,16 +104,27 @@ def msys2_path(make):
 def suites():
     found = []
     for app, script in (
+        # The house style first: it is what the other eight are drawn in, and
+        # a drift between the copies vendored into them is worth knowing
+        # about before any of their own failures.
+        ("House style", os.path.join("house", "test_house.py")),
         ("Claude Desk", os.path.join("Claude Program", "tests", "test_claudedesk.py")),
         ("Git Manager", os.path.join("Git Manager", "tests", "test_gitmanager.py")),
         ("LaRenderer", os.path.join("LaRenderer", "tests", "test_larenderer.py")),
         ("Fathom", os.path.join("Fathom", "tests", "test_fathom.py")),
+        ("Hermione", os.path.join("Hermione", "tests", "test_hermione.py")),
         ("Notedown", os.path.join("Notedown", "tests", "test_notedown.py")),
+        ("Prism", os.path.join("Terminal", "tests", "test_prism.py")),
+        ("The Eye", os.path.join("The Eye", "tests", "test_theeye.py")),
     ):
         path = os.path.join(ROOT, script)
         if os.path.exists(path):
-            found.append(Suite(app, "python", [sys.executable, path],
-                               cwd=os.path.dirname(os.path.dirname(path))))
+            # The house suite's own folder is its working directory; every
+            # app's is the folder above its tests.
+            cwd = (os.path.dirname(path) if app == "House style"
+                   else os.path.dirname(os.path.dirname(path)))
+            found.append(Suite(app, "python", [sys.executable, path], cwd=cwd,
+                               wants=("vte",) if app == "Prism" else ()))
 
     if WINDOWS:
         # What windows/install.ps1 writes to the registry, written to a
@@ -164,6 +188,7 @@ def main():
     env["PYTHONIOENCODING"] = "utf-8"
 
     gtk = have_gtk()
+    vte = have_vte()
     passed, failed, skipped = [], [], []
 
     for suite in suites():
@@ -173,6 +198,11 @@ def main():
             continue
         if suite.kind == "python" and not gtk:
             skipped.append((suite.name, "no GTK4 bindings for this interpreter"))
+            continue
+        if "vte" in suite.wants and not vte:
+            # The suite would run its own half and skip the rest, which
+            # reads as a pass; saying so here is the honest answer.
+            skipped.append((suite.name, "no VTE GTK4 bindings (install vte4)"))
             continue
         if args.list:
             print(f"  would run  {suite.name}")

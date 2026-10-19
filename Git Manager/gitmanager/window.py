@@ -9,11 +9,12 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
+gi.require_version("Gdk", "4.0")
 
-from gi.repository import Adw, Gio, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import (config, filesystem, github, gitcmd, ignore, jobs, link, readme,  # noqa: E402
-                scanner, widgets, winenv)
+from . import (config, filesystem, github, gitcmd, housestyle, ignore,  # noqa: E402
+                jobs, link, readme, scanner, widgets, winenv)
 from .branches import BranchesTab  # noqa: E402
 from .changes import ChangesTab  # noqa: E402
 from .ghtab import GitHubTab  # noqa: E402
@@ -103,7 +104,11 @@ class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Git Manager")
         self.cfg = config.Config()
-        self.set_default_size(self.cfg["window_width"], self.cfg["window_height"])
+        # The remembered size and maximise, applied before the first map —
+        # see housestyle.Geometry for why the two are treated differently
+        # under a tiling compositor.
+        self.geometry = housestyle.Geometry(self, self.cfg)
+        self.geometry.restore()
         self.states = []
         self.selected = None
         self._close_warned = False
@@ -111,7 +116,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._scan_generation = 0
 
         self.toasts = Adw.ToastOverlay()
-        self.set_content(self.toasts)
+        # The house style: the window paints nothing and everything sits on
+        # one rounded, translucent slab of glass inside it. `self.glazing` is
+        # what the Look page calls back into when a setting changes.
+        self.glazing = housestyle.Glazing(self, self.cfg,
+                                          extra=widgets.CSS,
+                                          app_class="git-manager")
+        self.glazing.wrap(self.toasts)
         self.split = Adw.NavigationSplitView(min_sidebar_width=280, max_sidebar_width=420)
         self.toasts.set_child(self.split)
 
@@ -1061,8 +1072,12 @@ class MainWindow(Adw.ApplicationWindow):
         jobs.run(work, done, lambda e: widgets.error_toast(self, e))
 
     def _settings_dialog(self):
-        dialog = Adw.PreferencesDialog(title="Scan settings")
-        page = Adw.PreferencesPage()
+        dialog = Adw.PreferencesDialog(title="Settings")
+        # The Look page is the house's, so the themes and the glass are the
+        # same rows in the same order as in every other app here.
+        dialog.add(housestyle.look_page(self.cfg, self.glazing.restyle))
+        page = Adw.PreferencesPage(title="Scanning",
+                                   icon_name="folder-symbolic")
         group = Adw.PreferencesGroup(
             title="Scan roots",
             description="Folders walked when looking for repositories, one per line.",
@@ -1190,9 +1205,7 @@ class MainWindow(Adw.ApplicationWindow):
         about.present(self)
 
     def _on_close(self, *_):
-        width, height = self.get_default_size()
-        self.cfg["window_width"] = width
-        self.cfg["window_height"] = height
+        self.geometry.save()
         if not self.cfg.save() and not self._close_warned:
             # A toast posted during teardown is one nobody reads. Refuse the
             # close once so the message is actually on screen; a second attempt

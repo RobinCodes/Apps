@@ -9,6 +9,7 @@
 
 #include "chrome.h"
 #include "login.h"
+#include "notice.h"
 #include "panel.h"
 #include "prefs.h"
 
@@ -118,13 +119,19 @@ wWinMain (HINSTANCE instance, HINSTANCE prev, PWSTR cmdline, int show)
 
   LyDownloads *downloads = ly_downloads_new (cfg);
   LyPasswords *passwords = ly_passwords_new (cfg);
+  /* NULL unless lyndon.py started us, which is the only way a new build ever
+   * arrives — see src/update.c. */
+  LyUpdate    *update    = ly_update_new ();
 
   if (!ly_window_register (instance) || !ly_panel_register (instance) ||
-      !ly_prefs_register (instance) || !ly_login_register (instance)) {
+      !ly_prefs_register (instance) || !ly_login_register (instance) ||
+      !ly_notice_register (instance)) {
     MessageBoxW (NULL, L"Could not register the window classes.", L"Lyndon",
                  MB_OK | MB_ICONERROR);
     return 1;
   }
+
+  ly_window_set_update (update);
 
   /* What the command line asked for opens instead of the homepage, read the
    * way the address bar would read it: "example.com" is a site, and words
@@ -184,6 +191,7 @@ wWinMain (HINSTANCE instance, HINSTANCE prev, PWSTR cmdline, int show)
   }
 
   ly_webview_shutdown ();
+  ly_update_free (update);
   ly_passwords_free (passwords);
   ly_downloads_free (downloads);
   ly_store_free (store);

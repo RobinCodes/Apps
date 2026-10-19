@@ -26,8 +26,17 @@ LyTab *ly_window_active_tab (LyWindow *self);
 
 void ly_window_toast (LyWindow *self, const char *text);
 
+/* "A newer Lyndon is ready" with a Restart button, for as long as it takes
+ * someone to answer it. Raised by LyApp when a build lands, and by a window
+ * built while one is already waiting. */
+void ly_window_offer_restart (LyWindow *self);
+
 /* Re-read configuration: effect classes, tab policies, chrome density. */
 void ly_window_refresh (LyWindow *self);
+
+/* A site archive started, moved or stopped: re-read what the transfers button
+ * should be saying. */
+void ly_window_archives_changed (LyWindow *self);
 
 /* Record this window's size and maximised state in the configuration, so the
  * next window opens the shape this one was left in. */

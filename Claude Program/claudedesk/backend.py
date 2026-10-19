@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import uuid
@@ -65,15 +66,33 @@ def resolve_bin(name=None):
 
     return winenv.which(name)
 
-# The terminal offers these; we expose the same set minus the two that only
-# make sense with a human watching a TTY.
+# The modes the control channel accepts, in the order they widen: deny
+# anything that would prompt, ask, auto-accept edits, let a classifier decide,
+# skip the checks. `plan` sits apart — it is about what Claude may do, not how
+# much it may do without asking.
+#
+# These are wire names, not labels: the CLI calls `default` "Manual" in its own
+# UI, and a name it does not know is quietly coerced to `default` rather than
+# refused, so a plausible-looking invented mode is a setting that silently
+# does nothing. Anything added here has to be a name from the protocol's own
+# enum — see tests/test_claudedesk.py::test_permission_modes_are_wire_names.
 PERMISSION_MODES = [
-    ("manual", "Ask every time"),
+    ("default", "Ask every time"),
+    ("dontAsk", "Never ask (deny)"),
     ("acceptEdits", "Auto-accept edits"),
     ("auto", "Auto"),
     ("plan", "Plan only"),
     ("bypassPermissions", "Bypass all checks"),
 ]
+
+# What "Bypass all checks" does not cover. The CLI decides an ask before it
+# consults the mode, so a handful of escalations come through whatever mode
+# you are in: a tool whose approval card *is* the interaction, a `permissions.
+# ask` rule you wrote, an MCP server whose ceiling is ask, a PreToolUse hook,
+# a safety check the classifier will not sign off, a read outside the working
+# directory. The card says which one it was, because "bypass" and "it asked
+# anyway" otherwise reads as the app ignoring the setting.
+BYPASS_MODE = "bypassPermissions"
 
 MODELS = [
     ("default", "Default"),
@@ -82,6 +101,22 @@ MODELS = [
     ("haiku", "Haiku"),
     ("fable", "Fable"),
 ]
+
+
+def model_label(name):
+    """The one-word name for whatever a child says it is running.
+
+    The init frame names the model in full — `claude-opus-5-20260101` — while
+    a settings file usually says `opus`. Both are the same answer to "which
+    model is Default", so this matches on the family rather than the string.
+    An id from a family this app has never heard of comes back as it arrived,
+    which is still more use than "Default" on its own.
+    """
+    lowered = str(name or "").lower()
+    for key, label in MODELS:
+        if key != "default" and key in lowered:
+            return label
+    return str(name or "")
 
 # Slash commands the CLI answers by itself. They report on the tool — what
 # the plan has been spent on, what is in the context window, which MCP servers
@@ -207,6 +242,24 @@ def questions_in(request):
             "multi": bool(item.get("multiSelect")),
         })
     return questions
+
+
+# CSI and OSC sequences, and the C0 controls either side of them. Tool output
+# and a safety check's warning text can arrive coloured for a terminal, and
+# the escapes would otherwise reach a Pango label as mojibake.
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]")
+CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def plain_text(text, limit=400):
+    """Wire text with its terminal dressing taken off.
+
+    The protocol says so explicitly of `decision_reason` and the ask rule it
+    rides with: producer-authored, may carry ANSI, sanitize before rendering.
+    """
+    text = ANSI.sub("", str(text or ""))
+    text = " ".join(CONTROLS.sub("", text).split())
+    return text[: limit - 1] + "…" if len(text) > limit else text
 
 
 @dataclass
@@ -467,13 +520,40 @@ class Backend:
             input=request.get("input") or {},
             suggestions=request.get("permission_suggestions") or [],
             tool_use_id=request.get("tool_use_id"),
+            # Why it is asking. The CLI sends this so a front end can say so
+            # instead of leaving the question looking arbitrary — and the two
+            # booleans are instructions about the buttons, not decoration:
+            # `default_to_no` means Allow must not be the one key press away,
+            # and `suppress_always_allow_rule` means the "don't ask again"
+            # button would write a rule wider than the question.
+            reason=request.get("decision_reason") or "",
+            reason_type=request.get("decision_reason_type") or "",
+            ask_rule=request.get("matched_ask_rule") or {},
+            mcp_server=request.get("mcp_server") or "",
+            blocked_path=request.get("blocked_path") or "",
+            interactive=bool(request.get("requires_user_interaction")),
+            default_to_no=bool(request.get("default_to_no")),
+            no_always=bool(request.get("suppress_always_allow_rule")),
         )
 
     def _on_control_response(self, msg):
+        envelope = msg.get("response") or {}
+        response = envelope.get("response") or {}
+
+        # A mode change is not a request we can assume worked. The CLI answers
+        # it with the mode now *in effect*, which is not always the one asked
+        # for: a name it does not know becomes `default`, and bypass is
+        # refused outright where it has not been consented to. Taking the echo
+        # as the truth is what stops the header promising a mode the child is
+        # not in.
+        if str(envelope.get("request_id") or "").startswith("mode-"):
+            self._emit("mode", mode=response.get("mode") or "",
+                       error=envelope.get("error") or "")
+            return
+
         if self._ready:
             return
         self._ready = True
-        response = (msg.get("response") or {}).get("response") or {}
         self._emit("handshake", commands=response.get("commands") or [])
         pending, self._pending = self._pending, []
         for message in pending:

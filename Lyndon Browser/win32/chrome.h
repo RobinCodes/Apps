@@ -16,6 +16,7 @@
 #include "tab.h"
 #include "downloads.h"
 #include "passwords.h"
+#include "update.h"
 
 #include <windows.h>
 
@@ -56,5 +57,12 @@ LyWindow *ly_window_from_message (MSG *msg);
 /* Called when the shared WebView2 environment finishes starting, so windows
  * created before it was ready can build the tabs they were asked for. */
 void ly_window_environment_ready (gboolean ok, const char *message);
+
+/* Hand over the update watch, once, before the first window. A newer build
+ * then shows the notice bar over whichever window is in front, and the
+ * Restart on it quits this Lyndon so the launcher can bring the new one up.
+ * NULL — Lyndon started by hand rather than through lyndon.py — means there
+ * is no update machinery in the window at all. */
+void ly_window_set_update (LyUpdate *update);
 
 G_END_DECLS

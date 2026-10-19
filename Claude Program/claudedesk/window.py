@@ -23,8 +23,8 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import config, widgets  # noqa: E402
-from .backend import MODELS, PERMISSION_MODES  # noqa: E402
+from . import config, housestyle, widgets  # noqa: E402
+from .backend import MODELS, PERMISSION_MODES, model_label  # noqa: E402
 from .chat import ChatView  # noqa: E402
 from .manager import Manager, short_path  # noqa: E402
 
@@ -48,11 +48,29 @@ STATE_DOTS = {
 
 
 class SessionRow(Gtk.ListBoxRow):
-    def __init__(self, session):
+    """One conversation, what it is tagged with, and two ways to file it.
+
+    One button and a menu, where there were three buttons. Three of them
+    beside a name left the names less room than the furniture in a sidebar
+    that can be dragged down to 190 px, and of the three only the archive
+    earns a press of its own: it is the one that makes a chat leave the list,
+    which is the thing you do often and want done in one go. The star moved
+    into the menu beside it, where it sits with the section it belongs to and
+    with every tag — one place, opened once, rather than two buttons and a
+    list that knew about neither.
+
+    The button sits in the row rather than appearing on hover: a button you
+    cannot see is not a button you can click, and reserving the space keeps
+    the names from reflowing as the pointer crosses the list. Both are drawn
+    faint until the pointer is on them, so the sidebar still reads as names.
+    """
+
+    def __init__(self, session, on_menu):
         super().__init__()
         self.session = session
+        self.on_menu = on_menu
 
-        box = Gtk.Box(spacing=10, margin_top=8, margin_bottom=8, margin_start=10, margin_end=6)
+        box = Gtk.Box(spacing=8, margin_top=8, margin_bottom=8, margin_start=10, margin_end=4)
         self.dot = Gtk.Box(css_classes=["dot", "dot-asleep"], valign=Gtk.Align.CENTER)
         box.append(self.dot)
 
@@ -61,14 +79,57 @@ class SessionRow(Gtk.ListBoxRow):
                               css_classes=["session-name"])
         self.meta = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE,
                               css_classes=["session-meta"])
+        # A line of its own, and only for a chat that has tags: putting them
+        # on the end of the line above would have them competing with the
+        # folder and the model for the width that ellipsizes first.
+        self.tags = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END,
+                              visible=False, css_classes=["session-tags"])
         text.append(self.name)
         text.append(self.meta)
+        text.append(self.tags)
         box.append(text)
 
         self.spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
         box.append(self.spinner)
+
+        actions = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["row-actions"])
+        self.archive = widgets.icon_button("folder-download-symbolic", "", self.toggle_archive,
+                                           css=("flat", "row-action"))
+        # A MenuButton rather than a popover of our own: it owns the thing it
+        # opens, and the menu is built on each click, so a tag made in one
+        # row's menu is in the next row's without anything having to say so.
+        self.menu = Gtk.MenuButton(icon_name="view-more-symbolic",
+                                   tooltip_text="Favourite, file and tag…",
+                                   css_classes=["flat", "row-action"])
+        self.menu.set_create_popup_func(lambda _b: self.on_menu(self))
+        for button in (self.archive, self.menu):
+            actions.append(button)
+        box.append(actions)
+
+        # The same menu on a right-click, and on a long press where there is
+        # no right button to press: in a list of names that is the first
+        # place to look for one. It opens where the button is rather than
+        # where the pointer is, because the button owns the popover and one
+        # menu in one place beats two ways of putting the same one up.
+        secondary = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
+        secondary.connect("pressed", self._open_menu)
+        self.add_controller(secondary)
+        held = Gtk.GestureLongPress(touch_only=True)
+        held.connect("pressed", self._open_menu)
+        self.add_controller(held)
+
         self.set_child(box)
         self.refresh()
+
+    def _open_menu(self, *_args):
+        self.menu.popup()
+
+    # The archive is a toggle: pressing the button of a chat that is already
+    # archived takes it out again, which is the only thing the same button
+    # can sensibly mean the second time.
+    def toggle_archive(self):
+        self.session.set_group("" if self.session.meta.group == config.ARCHIVE_GROUP
+                               else config.ARCHIVE_GROUP)
 
     def refresh(self):
         meta = self.session.meta
@@ -89,14 +150,61 @@ class SessionRow(Gtk.ListBoxRow):
             tooltip = ("Waiting for your answer" if pending.get("questions")
                        else "Waiting for your approval")
             self.dot.set_css_classes(["dot", "dot-waiting"])
-        self.set_tooltip_text(f"{short_path(meta.cwd)}\n{tooltip}")
+
+        tags = " ".join(config.tag_label(tag) for tag in meta.tags)
+        self.tags.set_label(tags)
+        self.tags.set_visible(bool(tags))
+
+        archived = meta.group == config.ARCHIVE_GROUP
+        self.archive.set_icon_name("go-up-symbolic" if archived
+                                   else "folder-download-symbolic")
+        self.archive.set_tooltip_text("Take out of the archive" if archived else "Archive")
+        self.archive.set_css_classes(["flat", "row-action", "row-action-on"] if archived
+                                     else ["flat", "row-action"])
+
+        where = config.group_label(meta.group) if meta.group else ""
+        # Tags in here as well as on the row: the row's line ellipsizes, and
+        # a chat with five tags should still be able to say what they are.
+        self.set_tooltip_text("\n".join(part for part in
+                                        (short_path(meta.cwd), where, tags, tooltip)
+                                        if part))
+
+
+class ArchiveRow(Gtk.ListBoxRow):
+    """The Archived section's own header, and the click that opens it.
+
+    A section header made by `set_header_func` cannot be clicked and cannot
+    exist without a row under it, and a collapsed archive needs both: one
+    line that says how much is in there and opens it. So this is a row —
+    unselectable, so it never becomes the conversation on screen.
+    """
+
+    def __init__(self, count, opened, on_toggle):
+        super().__init__(selectable=False, activatable=True,
+                         css_classes=["archive-row"])
+        self.on_toggle = on_toggle
+        box = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6,
+                      margin_start=12, margin_end=12)
+        box.append(Gtk.Image(icon_name="pan-down-symbolic" if opened
+                             else "pan-end-symbolic", valign=Gtk.Align.CENTER))
+        box.append(Gtk.Label(label=f"Archived · {count}", xalign=0, hexpand=True,
+                             css_classes=["group-header"]))
+        self.set_child(box)
+        self.set_tooltip_text("Hide the archive" if opened else "Show the archive")
 
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app, cfg, manager=None):
         super().__init__(application=app, title="Claude Desk",
-                         default_width=1120, default_height=740)
+                         default_width=config.DEFAULT_WINDOW_WIDTH,
+                         default_height=config.DEFAULT_WINDOW_HEIGHT)
         self.cfg = cfg
+        # The remembered size and maximise, applied before the first map —
+        # see housestyle.Geometry for why the two are treated differently
+        # under a tiling compositor.
+        self.geometry = housestyle.Geometry(
+            self, cfg, minimum=(config.MIN_WINDOW_WIDTH, config.MIN_WINDOW_HEIGHT))
+        self.geometry.restore()
         # One Manager for the application, not one per window. It owns the
         # live Claude processes and rations them against a budget, so a
         # second one would run a second set of children over the same
@@ -109,20 +217,83 @@ class MainWindow(Adw.ApplicationWindow):
         self.view_order = []
         self.current = None
         self._syncing = False
+        # The sessions in the order the sidebar shows them, which is also what
+        # Ctrl+1…9 counts: the nth row, not the nth session ever started.
+        self.ordered = []
+        # One subscription per session per window, kept so it can be taken
+        # back. Subscribing inside the rebuild — which now runs whenever a
+        # chat changes group — would add a listener every time and deliver
+        # each change as many times as the sidebar had been rebuilt.
+        self._subs = {}
+        self._layout = None
+        self._relayout_queued = False
+        self._sections = set()
+        # Which tag the list is narrowed to, "" for all of them. Per window
+        # and not saved: a filter is where you are in a session's work, not a
+        # setting, and a sidebar that opened showing a tenth of the chats
+        # would look like the rest had been lost.
+        self.tag_filter = ""
+        self._tag_bar_state = None
 
         self.toasts = Adw.ToastOverlay()
-        self.split = Adw.OverlaySplitView(sidebar_width_fraction=0.26, max_sidebar_width=340)
-        self.split.set_sidebar(self._build_sidebar())
-        self.split.set_content(self._build_content())
-        self.toasts.set_child(self.split)
-        self.set_content(self.toasts)
+        # A Paned rather than an Adw.OverlaySplitView, for the one thing the
+        # split view has no handle for: dragging the boundary. What the split
+        # view was doing here it does with the panes' own style classes, and
+        # the Paned adds a pointer that changes shape over the seam, keyboard
+        # resizing with F8, and a handle wide enough to aim at.
+        sidebar, content = self._build_sidebar(), self._build_content()
+        sidebar.add_css_class("sidebar-pane")
+        sidebar.set_size_request(config.MIN_SIDEBAR_WIDTH, -1)
+        content.add_css_class("content-pane")
+        content.set_size_request(config.MIN_CHAT_WIDTH, -1)
+
+        # resize_start_child=False keeps the sidebar the width you left it at
+        # when the window grows; the conversation takes the new space, which
+        # is where it is wanted. shrink=False on both is what makes the two
+        # minimums above the real ends of the drag rather than advisory.
+        self.paned = Gtk.Paned(
+            orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True,
+            start_child=sidebar, end_child=content,
+            resize_start_child=False, shrink_start_child=False,
+            resize_end_child=True, shrink_end_child=False,
+        )
+        self.paned.set_position(cfg.sidebar_width)
+        self.paned.connect("notify::position", self._on_sidebar_dragged)
+        self._width_timer = 0
+
+        # Below this the conversation's header gives up its dropdowns, which
+        # is what lets the window be narrower than they are wide. It has to be
+        # above the header's own un-broken minimum, or there would be a band
+        # of widths the window can be asked for and cannot honour; it is well
+        # above it, because a window with no room for the dropdowns also has
+        # no room to drag the sidebar, and the extra row costs only its own
+        # height. AdwBreakpointBin measures with its breakpoints in hand, so
+        # adding this is what drops the window's own reported minimum.
+        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 1000px"))
+        narrow.connect("apply", lambda _b: self._set_compact(True))
+        narrow.connect("unapply", lambda _b: self._set_compact(False))
+        self.add_breakpoint(narrow)
+
+        self.toasts.set_child(self.paned)
+        # The house style: the window paints nothing and everything sits on
+        # one rounded, translucent slab of glass inside it. `self.glazing` is
+        # what the Look page calls back into when a setting changes.
+        self.glazing = housestyle.Glazing(self, self.cfg.house,
+                                          extra=widgets.CSS,
+                                          app_class="claude-desk")
+        self.glazing.wrap(self.toasts)
 
         self._install_shortcuts()
         self.connect("close-request", self._on_close)
 
         self._rebuild_sidebar()
-        first = next((s for s in self.manager.sessions if s.meta.uid == cfg.active_uid),
-                     self.manager.sessions[0] if self.manager.sessions else None)
+        # A chat you archived is not the one to open the window on, unless it
+        # is the only kind you have left.
+        ranked = self.manager.ordered_sessions()
+        shown = [s for s in ranked
+                 if s.meta.group != config.ARCHIVE_GROUP or cfg.show_archived] or ranked
+        first = next((s for s in shown if s.meta.uid == cfg.active_uid),
+                     shown[0] if shown else None)
         if first is None:
             first = self.manager.new_session()
             self._rebuild_sidebar()
@@ -131,7 +302,14 @@ class MainWindow(Adw.ApplicationWindow):
     # ---------------------------------------------------------------- build --
 
     def _build_sidebar(self):
-        header = Adw.HeaderBar(css_classes=["flat"])
+        # Adw.HeaderBar splits the window buttons between two panes by itself,
+        # but only when it can find an Adw split view above it — in a plain
+        # Paned each header believes it is the only one and reserves the whole
+        # decoration layout, which both duplicates the close button and makes
+        # the pane as wide as two sets of controls before anything is in it.
+        # So the split is made here instead: the near side on the left header,
+        # the far side on the right one, which is what the split view did.
+        header = Adw.HeaderBar(css_classes=["flat"], show_end_title_buttons=False)
         header.set_title_widget(Adw.WindowTitle(title="Sessions"))
         header.pack_start(widgets.icon_button("list-add-symbolic", "New session (Ctrl+N)",
                                               self.new_session))
@@ -146,15 +324,45 @@ class MainWindow(Adw.ApplicationWindow):
         self.listbox = Gtk.ListBox(css_classes=["navigation-sidebar"])
         self.listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.listbox.connect("row-selected", self._on_row_selected)
+        # The archive line is a row, not a header, so it has to be activated
+        # rather than selected -- see ArchiveRow.
+        self.listbox.connect("row-activated", self._on_row_activated)
+        self.listbox.set_header_func(self._group_header)
+        # Only ever seen with a tag filter on and nothing wearing it: without
+        # a word in it an empty list looks like something broke rather than
+        # like an answer.
+        self.listbox.set_placeholder(Gtk.Label(label="Nothing is tagged that",
+                                               css_classes=["dim"], margin_top=18,
+                                               margin_start=12, margin_end=12,
+                                               wrap=True, justify=Gtk.Justification.CENTER))
 
         scroller = Gtk.ScrolledWindow(vexpand=True, child=self.listbox)
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
+        # The filter: one chip per tag in use, and the only thing in the
+        # sidebar that is not a chat. Hidden outright until something is
+        # tagged, so a sidebar with no tags in it looks exactly as it did.
+        # It scrolls sideways rather than wrapping — a filter that grew a
+        # second and third line would take the room from the list it filters
+        # — and with no scrollbar of its own, which would cost more height
+        # than the chips do.
+        self.tag_bar = Gtk.Box(spacing=4, css_classes=["tag-bar"])
+        self.tag_scroller = Gtk.ScrolledWindow(
+            child=self.tag_bar, visible=False, propagate_natural_height=True,
+            vscrollbar_policy=Gtk.PolicyType.NEVER,
+            hscrollbar_policy=Gtk.PolicyType.EXTERNAL)
+
+        # Ellipsized, and not for looks: a label that cannot shorten sets the
+        # minimum width of everything above it, so "1 of 2 live · ~450 MB · 3
+        # waiting for a slot" would quietly become the narrowest the sidebar
+        # could ever be dragged.
         self.memory_label = Gtk.Label(xalign=0, css_classes=["session-meta"],
+                                      ellipsize=Pango.EllipsizeMode.END,
                                       margin_start=12, margin_end=12,
                                       margin_top=6, margin_bottom=8)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(self.tag_scroller)
         box.append(scroller)
         box.append(Gtk.Separator())
         box.append(self.memory_label)
@@ -166,7 +374,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_content(self):
         self.title_widget = Adw.WindowTitle(title="Claude Desk")
-        header = Adw.HeaderBar()
+        header = Adw.HeaderBar(show_start_title_buttons=False)
         header.set_title_widget(self.title_widget)
         header.pack_start(widgets.icon_button("sidebar-show-symbolic", "Toggle sidebar",
                                               self._toggle_sidebar))
@@ -183,15 +391,27 @@ class MainWindow(Adw.ApplicationWindow):
         self.folder_button.connect("clicked", lambda _b: self.change_folder())
         header.pack_start(self.folder_button)
 
-        self.model_drop = Gtk.DropDown.new_from_strings([label for _, label in MODELS])
-        self.model_drop.set_tooltip_text("Model")
+        # "Default" on its own is the one entry in this list that does not say
+        # which model it means. It is also the entry most sessions are on, so
+        # the name goes in the entry itself — "Default (Opus)" — rather than
+        # being something you have to open Preferences to find out.
+        self.model_strings = Gtk.StringList.new([label for _, label in MODELS])
+        self.model_drop = Gtk.DropDown(model=self.model_strings)
         self.model_drop.connect("notify::selected", self._on_model_changed)
-        header.pack_end(self.model_drop)
+        self._default_shown = None
 
         self.mode_drop = Gtk.DropDown.new_from_strings([label for _, label in PERMISSION_MODES])
         self.mode_drop.set_tooltip_text("Permission mode")
         self.mode_drop.connect("notify::selected", self._on_mode_changed)
-        header.pack_end(self.mode_drop)
+
+        # The two dropdowns travel together, in one box, because between them
+        # they are 296 px of the header — nearly half of what it needs — and
+        # in a tiling column that is the difference between a sidebar you can
+        # drag and a sidebar pinned to its floor. In a narrow window the box
+        # moves out of the header onto a row of its own; see _set_compact.
+        self.controls = Gtk.Box(spacing=6)
+        self.controls.append(self.mode_drop)
+        self.controls.append(self.model_drop)
 
         menu = Gio.Menu()
         menu.append("Rename…", "win.rename")
@@ -203,13 +423,29 @@ class MainWindow(Adw.ApplicationWindow):
         close = Gio.Menu()
         close.append("Delete session", "win.delete")
         menu.append_section(None, close)
-        header.pack_end(Gtk.MenuButton(icon_name="view-more-symbolic", menu_model=menu,
-                                       tooltip_text="Session"))
+
+        # One box for the whole end of the header, rather than three things
+        # packed individually: pack_end's order depends on what is already
+        # packed, so taking the dropdowns out for a narrow window and packing
+        # them back put the ⋮ button on the other side of them. Inside a box,
+        # append is append and the menu never moves.
+        self.header_end = Gtk.Box(spacing=6)
+        self.header_end.append(Gtk.MenuButton(icon_name="view-more-symbolic",
+                                              menu_model=menu, tooltip_text="Session"))
+        self.header_end.append(self.controls)
+        header.pack_end(self.header_end)
 
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE,
                                transition_duration=90)
+        self.content_header = header
+        self.header_menu = self.header_end.get_first_child()
+        # Where the dropdowns go when the header has no room for them. Empty
+        # and hidden while it has.
+        self.control_bar = Adw.Bin(css_classes=["toolbar"], visible=False)
+
         view = Adw.ToolbarView()
         view.add_top_bar(header)
+        view.add_top_bar(self.control_bar)
         view.set_content(self.stack)
         return view
 
@@ -241,28 +477,189 @@ class MainWindow(Adw.ApplicationWindow):
         if state & Gdk.ModifierType.CONTROL_MASK:
             if Gdk.KEY_1 <= keyval <= Gdk.KEY_9:
                 index = keyval - Gdk.KEY_1
-                if index < len(self.manager.sessions):
-                    self.select(self.manager.sessions[index])
+                if index < len(self.ordered):
+                    self.select(self.ordered[index])
                 return Gdk.EVENT_STOP
         return Gdk.EVENT_PROPAGATE
 
     # ------------------------------------------------------------- sessions --
 
+    def _layout_of(self):
+        """What the sidebar would look like, as something comparable.
+
+        Cheaper than rebuilding to find out nothing moved — and the sidebar
+        now depends on more than the list of sessions, so "did a session
+        change" is no longer the same question as "did the list change".
+
+        Tagging is in here only through the filter: with none on, `"" in
+        tags` is False for every chat however it is tagged, so ticking a tag
+        refreshes the one row and leaves the menu it was ticked from open.
+        """
+        return [(session.meta.uid, session.meta.group,
+                 self.tag_filter in session.meta.tags)
+                for session in self.manager.ordered_sessions()] + [
+                    self.cfg.show_archived, self.tag_filter]
+
     def _rebuild_sidebar(self):
+        self._relayout_queued = False
+        self._layout = self._layout_of()
+        # A row about to be destroyed may hold the keyboard focus -- one of
+        # its own buttons usually does, since clicking a star is what brought
+        # us here. Note it now and put the focus back on the selected row at
+        # the end, rather than letting GTK look for somewhere to put it.
+        root = self.get_root()
+        focus = root.get_focus() if root is not None else None
+        had_focus = focus is not None and focus.is_ancestor(self.listbox)
+
         self._syncing = True
+        # Rows only: the placeholder is a child of the list box like any row
+        # is, and sits in the same sibling chain, so walking the chain reaches
+        # it too. Handing it to remove() unparents it for good -- the empty
+        # state would be gone from the first rebuild onwards, and GTK would
+        # warn about a non-child on every one after that.
         child = self.listbox.get_first_child()
         while child is not None:
             following = child.get_next_sibling()
-            self.listbox.remove(child)
+            if isinstance(child, Gtk.ListBoxRow):
+                self.listbox.remove(child)
             child = following
         self.rows.clear()
-        for session in self.manager.sessions:
-            row = SessionRow(session)
+
+        sessions = self.manager.ordered_sessions()
+        if self.tag_filter and self.tag_filter not in self.cfg.all_tags():
+            # The last chat wearing it has just been untagged or deleted, so
+            # the tag is gone and there is nothing left to be filtered by.
+            self.tag_filter = ""
+        if self.tag_filter:
+            # Archived chats included: the archive is where a chat is, and
+            # asking for a tag is asking across all three sections. It is
+            # still behind its own line, with a count of what matched.
+            sessions = [s for s in sessions if self.tag_filter in s.meta.tags]
+        archived = [s for s in sessions if s.meta.group == config.ARCHIVE_GROUP]
+        shown = [s for s in sessions
+                 if s.meta.group != config.ARCHIVE_GROUP or self.cfg.show_archived]
+        # Headers earn their place only once there is more than one section to
+        # tell apart: a single "Chats" above every chat you have says nothing.
+        self._sections = {s.meta.group for s in shown}
+        self.ordered = shown
+
+        for session in shown:
+            if session.meta.group == config.ARCHIVE_GROUP and archived:
+                self._append_archive_row(len(archived))
+                archived = []
+            row = SessionRow(session, self._row_menu)
             self.rows[session.meta.uid] = row
             self.listbox.append(row)
-            session.subscribe(lambda _w, _d, s=session: self._refresh_row(s))
+        if archived:
+            # Nothing was appended above, because the archive is closed.
+            self._append_archive_row(len(archived))
+
+        # Subscriptions follow the sessions, not the rows: a chat inside a
+        # closed archive still has a footer to keep honest and may still be
+        # the one on screen. A session that has gone took its listeners with
+        # it, so there is nothing to unsubscribe from — only to forget.
+        live = {session.meta.uid: session for session in self.manager.sessions}
+        for uid in [uid for uid in self._subs if uid not in live]:
+            del self._subs[uid]
+        for uid, session in live.items():
+            if uid not in self._subs:
+                self._subs[uid] = session.subscribe(
+                    lambda _w, _d, s=session: self._refresh_row(s)
+                )
+
+        row = self.rows.get(self.current.meta.uid) if self.current is not None else None
+        if row is not None:
+            self.listbox.select_row(row)
+            if had_focus:
+                row.grab_focus()
         self._syncing = False
+        self._refresh_tag_bar()
         self._refresh_footer()
+
+    def _append_archive_row(self, count):
+        self.listbox.append(ArchiveRow(count, self.cfg.show_archived,
+                                       self._toggle_archive_section))
+
+    def _toggle_archive_section(self):
+        self.cfg.show_archived = not self.cfg.show_archived
+        self.cfg.save()
+        self._queue_relayout()
+
+    def _queue_relayout(self):
+        """Rebuild the sidebar once the handler that asked for it has returned.
+
+        What asks is nearly always a widget the rebuild will destroy — the
+        star on a row, the archive line itself — and destroying a widget from
+        inside its own signal is a thing to avoid rather than to get right.
+        """
+        if not self._relayout_queued:
+            self._relayout_queued = True
+            GLib.idle_add(self._rebuild_sidebar)
+
+    def _group_header(self, row, before):
+        """The line above the first row of each section."""
+        if not isinstance(row, SessionRow) or len(self._sections) < 2:
+            row.set_header(None)
+            return
+        group = row.session.meta.group
+        previous = before.session.meta.group if isinstance(before, SessionRow) else None
+        if (before is not None and previous == group) or group == config.ARCHIVE_GROUP:
+            # The archive has a row of its own saying so, above these.
+            row.set_header(None)
+            return
+        row.set_header(Gtk.Label(label=config.group_label(group), xalign=0,
+                                 css_classes=["group-header"],
+                                 margin_top=10, margin_bottom=2,
+                                 margin_start=12, margin_end=12))
+
+    def _row_menu(self, row):
+        """What the ⋮ button and a right-click on the row both open."""
+        session = row.session
+        row.menu.set_popover(widgets.row_menu(
+            self.cfg.all_tags(), session.meta.group, session.meta.tags,
+            session.set_group, session.toggle_tag,
+            lambda: widgets.prompt(self, "New tag",
+                                   f"“{session.meta.name}” wears it first.",
+                                   "Create", lambda name: self._new_tag(session, name)),
+        ))
+
+    def _new_tag(self, session, name):
+        """A name typed into New tag, if it is a name a tag can have."""
+        if not config.clean_tag(name):
+            # A built-in group's name is not a tag -- see config.clean_tag.
+            # Refusing it silently would look like the dialog had not worked.
+            widgets.toast(self, f"“{name}” is a group, not a tag")
+            return
+        session.add_tag(name)
+
+    def _refresh_tag_bar(self):
+        """The chips above the list: every tag in use, and which one is on.
+
+        Rebuilt only when it would come out different, because what calls it
+        is every refresh of every row: a chip rebuilt on each token of a
+        reply would be a lot of widgets for a list that changes twice a week.
+        """
+        tags = self.cfg.all_tags()
+        state = (tags, self.tag_filter)
+        if state == self._tag_bar_state:
+            return
+        self._tag_bar_state = state
+        widgets.clear_box(self.tag_bar)
+        for tag in tags:
+            label = config.tag_label(tag)
+            on = tag == self.tag_filter
+            self.tag_bar.append(widgets.tag_chip(
+                label, on, lambda t=tag: self._filter_by_tag(t),
+                "Show every chat again" if on else f"Only chats tagged {label}"))
+        self.tag_scroller.set_visible(bool(tags))
+
+    def _filter_by_tag(self, tag):
+        """Narrow the list to one tag, or widen it to all of them again."""
+        self.tag_filter = "" if tag == self.tag_filter else tag
+        # On an idle, like every other relayout: the chip that asked is one
+        # of the widgets the rebuild destroys, and its own handler is still
+        # on the stack. See _queue_relayout.
+        self._queue_relayout()
 
     def _refresh_row(self, session):
         row = self.rows.get(session.meta.uid)
@@ -270,6 +667,9 @@ class MainWindow(Adw.ApplicationWindow):
             row.refresh()
         if session is self.current:
             self._sync_header()
+        # A tag may have just been made or taken off the last chat wearing
+        # it, which adds or removes a chip without moving a single row.
+        self._refresh_tag_bar()
         self._refresh_footer()
 
     def _refresh_footer(self):
@@ -282,6 +682,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.memory_label.set_label(text)
 
     def _on_manager_changed(self, session=None):
+        if self._layout != self._layout_of():
+            # On an idle, not here: what usually changed the layout is a
+            # button on one of the rows about to be destroyed, and that
+            # button's own handler is still on the stack.
+            self._queue_relayout()
         if session is not None:
             self._refresh_row(session)
         else:
@@ -291,9 +696,13 @@ class MainWindow(Adw.ApplicationWindow):
         widgets.toast(self, message, timeout=6)
 
     def _on_row_selected(self, _listbox, row):
-        if self._syncing or row is None:
+        if self._syncing or not isinstance(row, SessionRow):
             return
         self.select(row.session)
+
+    def _on_row_activated(self, _listbox, row):
+        if isinstance(row, ArchiveRow):
+            row.on_toggle()
 
     def select(self, session):
         if session is None:
@@ -351,6 +760,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.folder_button.set_tooltip_text(
             f"{short_path(session.meta.cwd)}\nClick to change the working folder"
         )
+        self._sync_default_model(session)
         keys = [key for key, _ in MODELS]
         if session.meta.model in keys:
             self.model_drop.set_selected(keys.index(session.meta.model))
@@ -358,6 +768,32 @@ class MainWindow(Adw.ApplicationWindow):
         if session.meta.permission_mode in modes:
             self.mode_drop.set_selected(modes.index(session.meta.permission_mode))
         self._syncing = False
+
+    def _sync_default_model(self, session):
+        """Name the model "Default" currently means, in the entry itself.
+
+        What a live child reported beats what the settings file says, because
+        an env var or a managed policy can have the last word after it. A
+        session on a named model still shows the global default, since that is
+        what choosing Default would get you.
+        """
+        resolved = (session.live_model if session.meta.model == "default"
+                    else "") or self.cfg.default_model
+        name = model_label(resolved)
+        label = f"Default ({name})" if name else "Default"
+        tooltip = ("Model for this session"
+                   + (f" · Default is {name} — change it in Preferences"
+                      if name else ""))
+        self.model_drop.set_tooltip_text(tooltip)
+        if label == self._default_shown:
+            return
+        self._default_shown = label
+        # Splicing the selected row out resets the selection, so put it back.
+        # _sync_header has _syncing set, which is what keeps that from being
+        # read as the user choosing a model.
+        selected = self.model_drop.get_selected()
+        self.model_strings.splice(0, 1, [label])
+        self.model_drop.set_selected(selected)
 
     # -------------------------------------------------------------- actions --
 
@@ -409,6 +845,22 @@ class MainWindow(Adw.ApplicationWindow):
         session = self.current
         if session is None:
             return
+        # Where it already is, is not a choice worth offering.
+        offered = [path for path in self.cfg.recent_folders()
+                   if path != session.meta.cwd]
+        if not offered:
+            # Nothing remembered yet, so do not make them dismiss an empty
+            # list on the way to the chooser they actually need.
+            self._browse_for_folder(session)
+            return
+        widgets.choose_folder(
+            self, offered,
+            lambda path: self._move_session(session, path),
+            lambda: self._browse_for_folder(session),
+            heading="Folder for this chat" if is_new else "Change working folder",
+        )
+
+    def _browse_for_folder(self, session):
         dialog = Gtk.FileDialog(title="Choose a working folder")
         try:
             dialog.set_initial_folder(Gio.File.new_for_path(session.meta.cwd))
@@ -442,6 +894,7 @@ class MainWindow(Adw.ApplicationWindow):
         session.meta.claude_session_id = ""
         session.meta.cwd = path
         self.cfg.last_cwd = path
+        self.cfg.remember_folder(path)
         if session.meta.name in ("", "New session"):
             session.meta.name = os.path.basename(path) or path
 
@@ -488,11 +941,15 @@ class MainWindow(Adw.ApplicationWindow):
             self.stack.remove(view)
         if uid in self.view_order:
             self.view_order.remove(uid)
+        callback = self._subs.pop(uid, None)
+        if callback is not None:
+            session.unsubscribe(callback)
+        self.current = None
         self.manager.remove_session(session)
         if not self.manager.sessions:
             self.manager.new_session()
         self._rebuild_sidebar()
-        self.select(self.manager.sessions[0])
+        self.select(self.manager.ordered_sessions()[0])
 
     def _on_model_changed(self, drop, _param):
         if self._syncing or self.current is None:
@@ -507,13 +964,56 @@ class MainWindow(Adw.ApplicationWindow):
         self.manager.save()
 
     def _toggle_sidebar(self):
-        self.split.set_show_sidebar(not self.split.get_show_sidebar())
+        # Hiding the child rather than dragging the handle to zero: the Paned
+        # then gives the conversation everything, takes the handle away with
+        # it, and still remembers the width to come back to.
+        sidebar = self.paned.get_start_child()
+        sidebar.set_visible(not sidebar.get_visible())
+
+    def _set_compact(self, compact):
+        """Move the model and mode dropdowns off the header, or back onto it.
+
+        One box moves rather than two dropdowns, so neither the order they sit
+        in nor the signals they carry has to be rebuilt either way.
+        """
+        if compact:
+            if self.controls.get_parent() is self.header_end:
+                self.header_end.remove(self.controls)
+            self.controls.set_halign(Gtk.Align.END)
+            self.control_bar.set_child(self.controls)
+            self.control_bar.set_visible(True)
+        else:
+            self.control_bar.set_child(None)
+            self.control_bar.set_visible(False)
+            self.controls.set_halign(Gtk.Align.FILL)
+            if self.controls.get_parent() is None:
+                self.header_end.append(self.controls)
+
+    def _on_sidebar_dragged(self, paned, _param):
+        """Keep the width you dragged to, without a file write per pixel."""
+        width = paned.get_position()
+        if not paned.get_start_child().get_visible() or width < config.MIN_SIDEBAR_WIDTH:
+            # Mid-toggle, or mid-allocation before the first real size.
+            return
+        self.cfg.sidebar_width = width
+        if self._width_timer:
+            GLib.source_remove(self._width_timer)
+        self._width_timer = GLib.timeout_add(700, self._save_sidebar_width)
+
+    def _save_sidebar_width(self):
+        self._width_timer = 0
+        self.cfg.save()
+        return GLib.SOURCE_REMOVE
 
     # ---------------------------------------------------------- preferences --
 
     def show_preferences(self):
         dialog = Adw.PreferencesDialog(title="Preferences")
-        page = Adw.PreferencesPage()
+        # The Look page is the house's, so the themes and the glass are the
+        # same rows in the same order as in every other app here.
+        dialog.add(housestyle.look_page(self.cfg.house, self.glazing.restyle))
+        page = Adw.PreferencesPage(title="Sessions",
+                                   icon_name="utilities-terminal-symbolic")
         group = Adw.PreferencesGroup(
             title="Memory",
             description="A live Claude Code process holds about 450 MB. Sessions "
@@ -533,6 +1033,30 @@ class MainWindow(Adw.ApplicationWindow):
         idle.connect("notify::value", lambda row, _p: self._set_idle(int(row.get_value())))
         group.add(idle)
         page.add(group)
+
+        models = Adw.PreferencesGroup(
+            title="Model",
+            description="“Default” is Claude Code's own `model` setting, in "
+                        "~/.claude/settings.json — shared with the terminal "
+                        "and with every other session on this machine.",
+        )
+        # Re-read on opening: the terminal may have changed it since launch.
+        self.cfg.default_model = config.read_default_model()
+        choices = [("", "Whatever Claude Code picks"),
+                   *((key, label) for key, label in MODELS if key != "default")]
+        row = Adw.ComboRow(title="Default model",
+                           model=Gtk.StringList.new([label for _, label in choices]))
+        keys = [key for key, _ in choices]
+        current = self.cfg.default_model
+        row.set_selected(keys.index(current) if current in keys else 0)
+        if current and current not in keys:
+            # A pinned id rather than an alias — `claude-opus-5-20260101`. Say
+            # so instead of showing it as unset and offering to overwrite it.
+            row.set_subtitle(f"Currently {current}")
+        row.connect("notify::selected",
+                    lambda combo, _p: self._set_default_model(keys[combo.get_selected()]))
+        models.add(row)
+        page.add(models)
 
         appearance = Adw.PreferencesGroup(title="Conversation")
         thinking = Adw.SwitchRow(title="Show thinking", active=self.cfg.show_thinking)
@@ -556,6 +1080,20 @@ class MainWindow(Adw.ApplicationWindow):
         self.cfg.show_thinking = value
         self.cfg.save()
 
+    def _set_default_model(self, name):
+        if name == self.cfg.default_model:
+            return
+        if not config.write_default_model(name):
+            widgets.toast(self, "Could not write ~/.claude/settings.json — "
+                               "left it as it was")
+            return
+        self.cfg.default_model = name
+        self._sync_header()
+        # A session already running on Default keeps the model it was started
+        # with, the same as changing a session's own model does.
+        chose = model_label(name) or "Claude Code’s own choice"
+        widgets.toast(self, f"Default is now {chose} — from each session's next start")
+
     def show_about(self):
         about = Adw.AboutDialog(
             application_name="Claude Desk",
@@ -573,6 +1111,14 @@ class MainWindow(Adw.ApplicationWindow):
         # Stop listening first: whatever happens next must not be delivered
         # into widgets that are on their way out.
         self.manager.unwatch(*self._watch)
+        self.geometry.save()
+        if self._width_timer:
+            GLib.source_remove(self._width_timer)
+            self._width_timer = 0
+        for session in self.manager.sessions:
+            callback = self._subs.pop(session.meta.uid, None)
+            if callback is not None:
+                session.unsubscribe(callback)
 
         # The sessions belong to the application, not to this window. Closing
         # one of several must not stop the children the others are showing --

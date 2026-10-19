@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- The Eye. A lens aperture, which is the one shape that means both
+       "looking" and "photography" at once — six blades around a dark pupil,
+       with the app's own glass behind them.
+
+       Drawn to survive being shrunk. At 16px the blades are gone and what is
+       left is a bright ring around a dark centre, which is still an eye; the
+       contrast between the ring and the pupil is therefore the strongest
+       edge in the icon and nothing else is allowed to compete with it. Pure
+       circles and paths — no text elements, so it does not depend on a font
+       being installed anywhere. -->
+  <defs>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2435"/>
+      <stop offset="1" stop-color="#090d16"/>
+    </linearGradient>
+    <linearGradient id="iris" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#9fd0ff"/>
+      <stop offset="0.5" stop-color="#4f9fe8"/>
+      <stop offset="1" stop-color="#1f5f9e"/>
+    </linearGradient>
+    <radialGradient id="pupil" cx="0.42" cy="0.36" r="0.75">
+      <stop offset="0" stop-color="#1a2130"/>
+      <stop offset="1" stop-color="#03060c"/>
+    </radialGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- The slab, with the bright top edge the whole app is made of. -->
+  <rect x="6" y="6" width="116" height="116" rx="26" fill="url(#glass)"/>
+  <rect x="6" y="6" width="116" height="116" rx="26" fill="none"
+        stroke="#7fb4ef" stroke-opacity="0.26" stroke-width="1.5"/>
+  <path d="M32 7h64a26 26 0 0 1 26 26v4a26 26 0 0 0-26-26H32A26 26 0 0 0 6 37v-4A26 26 0 0 1 32 7z"
+        fill="url(#sheen)"/>
+
+  <!-- The aperture. Six blades, each a wedge from the rim towards the centre,
+       rotated about the middle. -->
+  <g transform="translate(64 66)">
+    <circle r="43" fill="#060a12"/>
+    <circle r="43" fill="none" stroke="#5f9ad6" stroke-opacity="0.35"
+            stroke-width="1.5"/>
+    <g fill="url(#iris)">
+      <path d="M0-41 35.5-20.5 24-14 0-28z"/>
+      <path d="M0-41 35.5-20.5 24-14 0-28z" transform="rotate(60)"/>
+      <path d="M0-41 35.5-20.5 24-14 0-28z" transform="rotate(120)"/>
+      <path d="M0-41 35.5-20.5 24-14 0-28z" transform="rotate(180)"/>
+      <path d="M0-41 35.5-20.5 24-14 0-28z" transform="rotate(240)"/>
+      <path d="M0-41 35.5-20.5 24-14 0-28z" transform="rotate(300)"/>
+    </g>
+    <!-- The ring that survives at 16px. -->
+    <circle r="30" fill="none" stroke="url(#iris)" stroke-width="9"/>
+    <circle r="21" fill="url(#pupil)"/>
+    <!-- One specular highlight, so it reads as glass and not as a hole. -->
+    <ellipse cx="-7.5" cy="-9" rx="7" ry="5" fill="#ffffff"
+             fill-opacity="0.5" transform="rotate(-28 -7.5 -9)"/>
+  </g>
+</svg>

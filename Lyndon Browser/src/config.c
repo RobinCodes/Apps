@@ -102,6 +102,22 @@ G_STATIC_ASSERT (G_N_ELEMENTS (ART_IDS) == LY_ART_N);
 const char *ly_start_page_id (LyStartPage p) { return START_IDS[p]; }
 const char *ly_start_art_id  (LyStartArt  a) { return ART_IDS[a]; }
 
+/* ---------------------------------------------------------- house themes */
+
+const LyHouseTheme *
+ly_house_theme (const char *key)
+{
+  if (key == NULL || *key == '\0')
+    return NULL;
+  for (guint i = 0; i < LY_HOUSE_THEME_N; i++)
+    if (g_strcmp0 (LY_HOUSE_THEMES[i].key, key) == 0)
+      return &LY_HOUSE_THEMES[i];
+  /* Names carried over from before the palettes were shared. */
+  if (g_strcmp0 (key, "vitreous") == 0)
+    return ly_house_theme ("aurora");
+  return NULL;
+}
+
 /* ----------------------------------------------------------- constructor */
 
 LyConfig *
@@ -115,6 +131,8 @@ ly_config_new (void)
   cfg->show_tab_bar_single = FALSE;
   cfg->show_bookmarks_bar  = FALSE;
   cfg->ui_opacity          = 0.82;
+  cfg->dark_theme          = g_strdup (LY_HOUSE_DARK_DEFAULT);
+  cfg->light_theme         = g_strdup (LY_HOUSE_LIGHT_DEFAULT);
 
   cfg->force_dark       = LY_DARK_OFF;
   cfg->javascript       = TRUE;
@@ -149,6 +167,8 @@ ly_config_new (void)
   cfg->search_keywords       = g_ptr_array_new_with_free_func (g_free);
   cfg->save_passwords        = TRUE;
   cfg->password_autofill     = TRUE;
+  cfg->password_suggest      = TRUE;
+  cfg->password_leak_check   = FALSE;
   cfg->password_never        = g_ptr_array_new_with_free_func (g_free);
   cfg->remember_history      = TRUE;
   cfg->ua_mode               = LY_UA_DEFAULT;
@@ -182,6 +202,22 @@ ly_config_new (void)
   cfg->download_dir = g_strdup (g_get_user_special_dir (G_USER_DIRECTORY_DOWNLOAD)
                                   ?: g_get_home_dir ());
 
+  /* Off by default: this is the one feature in the browser that writes
+   * hundreds of megabytes without being asked to, so it is opt-in and the
+   * sweep is opt-in again on top of that. An empty directory means "work it
+   * out from the user's Documents folder", which is what archive.c does. */
+  cfg->offline_enabled    = FALSE;
+  cfg->offline_dir        = g_strdup ("");
+  cfg->offline_ask_where  = FALSE;
+  cfg->offline_automatic  = FALSE;
+  cfg->offline_days       = 7;
+  cfg->offline_min_visits = 3;
+  cfg->offline_allow      = g_ptr_array_new_with_free_func (g_free);
+  cfg->offline_block      = g_ptr_array_new_with_free_func (g_free);
+  cfg->offline_max_pages  = 200;
+  cfg->offline_max_depth  = 3;
+  cfg->offline_max_mb     = 200;
+
   cfg->homepage        = g_strdup ("lyndon:start");
   cfg->start_page      = LY_START_FULL;
   cfg->start_art       = LY_ART_NONE;
@@ -210,6 +246,9 @@ ly_config_free (LyConfig *cfg)
   g_clear_pointer (&cfg->search_name, g_free);
   g_clear_pointer (&cfg->search_url, g_free);
   g_clear_pointer (&cfg->download_dir, g_free);
+  g_clear_pointer (&cfg->offline_dir, g_free);
+  g_clear_pointer (&cfg->offline_allow, g_ptr_array_unref);
+  g_clear_pointer (&cfg->offline_block, g_ptr_array_unref);
   g_clear_pointer (&cfg->homepage, g_free);
   g_clear_pointer (&cfg->path, g_free);
   g_clear_pointer (&cfg->block_exceptions, g_ptr_array_unref);
@@ -217,6 +256,8 @@ ly_config_free (LyConfig *cfg)
   g_clear_pointer (&cfg->search_keywords, g_ptr_array_unref);
   g_clear_pointer (&cfg->proxy_url, g_free);
   g_clear_pointer (&cfg->languages, g_free);
+  g_clear_pointer (&cfg->dark_theme, g_free);
+  g_clear_pointer (&cfg->light_theme, g_free);
   g_clear_pointer (&cfg->subscriptions, g_ptr_array_unref);
   g_clear_pointer (&cfg->watchers, g_ptr_array_unref);
   g_free (cfg);
@@ -284,6 +325,11 @@ ly_config_load (LyConfig *cfg)
   GET_BOOL   ("appearance", "tab-bar-when-single", show_tab_bar_single);
   GET_BOOL   ("appearance", "bookmarks-bar",       show_bookmarks_bar);
   GET_DOUBLE ("appearance", "opacity",       ui_opacity);
+  /* Not checked against the table on the way in: a theme that has since been
+   * renamed resolves to the default when it is looked up, which is what lets
+   * one be renamed without emptying everybody's settings file. */
+  GET_STR    ("appearance", "dark-theme",    dark_theme);
+  GET_STR    ("appearance", "light-theme",   light_theme);
   GET_ENUM   ("appearance", "start-page",    start_page, START_IDS, LyStartPage);
   GET_ENUM   ("appearance", "start-artwork", start_art,  ART_IDS,   LyStartArt);
 
@@ -317,6 +363,8 @@ ly_config_load (LyConfig *cfg)
   load_string_list (kf, "privacy", "search-keywords", cfg->search_keywords);
   GET_BOOL ("privacy", "save-passwords",      save_passwords);
   GET_BOOL ("privacy", "password-autofill",   password_autofill);
+  GET_BOOL ("privacy", "password-suggest",    password_suggest);
+  GET_BOOL ("privacy", "password-leak-check", password_leak_check);
   GET_BOOL ("privacy", "remember-history",    remember_history);
   load_string_list (kf, "privacy", "password-never", cfg->password_never);
   GET_ENUM ("privacy", "user-agent", ua_mode, UA_IDS, LyUaMode);
@@ -343,6 +391,18 @@ ly_config_load (LyConfig *cfg)
 
   GET_STR  ("downloads", "directory", download_dir);
 
+  GET_BOOL ("offline", "enabled",        offline_enabled);
+  GET_STR  ("offline", "directory",      offline_dir);
+  GET_BOOL ("offline", "ask-where",      offline_ask_where);
+  GET_BOOL ("offline", "automatic",      offline_automatic);
+  GET_INT  ("offline", "days",           offline_days);
+  GET_INT  ("offline", "minimum-visits", offline_min_visits);
+  GET_INT  ("offline", "max-pages",      offline_max_pages);
+  GET_INT  ("offline", "max-depth",      offline_max_depth);
+  GET_INT  ("offline", "max-megabytes",  offline_max_mb);
+  load_string_list (kf, "offline", "allow", cfg->offline_allow);
+  load_string_list (kf, "offline", "block", cfg->offline_block);
+
   GET_BOOL ("session", "restore",          restore_session);
   GET_BOOL ("session", "show-home-button", show_home_button);
   GET_BOOL ("session", "per-site-zoom",    per_site_zoom);
@@ -358,6 +418,14 @@ ly_config_load (LyConfig *cfg)
   /* A hand-edited or stale file must not hand back a window too small to
    * drive, nor one larger than any plausible display. */
   cfg->unload_after  = CLAMP (cfg->unload_after, 0, 1440);
+  /* A crawl is the one thing here that can fill a disk, so the ceilings are
+   * clamped even harder than the rest: a hand-edited file cannot ask for an
+   * unbounded one. */
+  cfg->offline_days       = CLAMP (cfg->offline_days, 1, 365);
+  cfg->offline_min_visits = CLAMP (cfg->offline_min_visits, 1, 1000);
+  cfg->offline_max_pages  = CLAMP (cfg->offline_max_pages, 1, 5000);
+  cfg->offline_max_depth  = CLAMP (cfg->offline_max_depth, 0, 12);
+  cfg->offline_max_mb     = CLAMP (cfg->offline_max_mb, 1, 20000);
   cfg->window_width  = CLAMP (cfg->window_width,  480, 32767);
   cfg->window_height = CLAMP (cfg->window_height, 360, 32767);
 }
@@ -375,6 +443,8 @@ ly_config_save (LyConfig *cfg)
   g_key_file_set_boolean (kf, "appearance", "tab-bar-when-single", cfg->show_tab_bar_single);
   g_key_file_set_boolean (kf, "appearance", "bookmarks-bar",       cfg->show_bookmarks_bar);
   g_key_file_set_double  (kf, "appearance", "opacity",      cfg->ui_opacity);
+  g_key_file_set_string  (kf, "appearance", "dark-theme",  cfg->dark_theme  ?: LY_HOUSE_DARK_DEFAULT);
+  g_key_file_set_string  (kf, "appearance", "light-theme", cfg->light_theme ?: LY_HOUSE_LIGHT_DEFAULT);
   g_key_file_set_string  (kf, "appearance", "start-page",    START_IDS[cfg->start_page]);
   g_key_file_set_string  (kf, "appearance", "start-artwork", ART_IDS[cfg->start_art]);
 
@@ -410,6 +480,8 @@ ly_config_save (LyConfig *cfg)
                               cfg->search_keywords->len);
   g_key_file_set_boolean (kf, "privacy", "save-passwords",      cfg->save_passwords);
   g_key_file_set_boolean (kf, "privacy", "password-autofill",   cfg->password_autofill);
+  g_key_file_set_boolean (kf, "privacy", "password-suggest",    cfg->password_suggest);
+  g_key_file_set_boolean (kf, "privacy", "password-leak-check", cfg->password_leak_check);
   g_key_file_set_boolean (kf, "privacy", "remember-history",    cfg->remember_history);
   g_key_file_set_string_list (kf, "privacy", "password-never",
                               (const char * const *) cfg->password_never->pdata,
@@ -435,6 +507,22 @@ ly_config_save (LyConfig *cfg)
     g_key_file_set_string (kf, "permissions", PERMS[i].id, POLICY_IDS[cfg->perm[i]]);
 
   g_key_file_set_string  (kf, "downloads", "directory", cfg->download_dir ?: "");
+
+  g_key_file_set_boolean (kf, "offline", "enabled",        cfg->offline_enabled);
+  g_key_file_set_string  (kf, "offline", "directory",      cfg->offline_dir ?: "");
+  g_key_file_set_boolean (kf, "offline", "ask-where",      cfg->offline_ask_where);
+  g_key_file_set_boolean (kf, "offline", "automatic",      cfg->offline_automatic);
+  g_key_file_set_integer (kf, "offline", "days",           cfg->offline_days);
+  g_key_file_set_integer (kf, "offline", "minimum-visits", cfg->offline_min_visits);
+  g_key_file_set_integer (kf, "offline", "max-pages",      cfg->offline_max_pages);
+  g_key_file_set_integer (kf, "offline", "max-depth",      cfg->offline_max_depth);
+  g_key_file_set_integer (kf, "offline", "max-megabytes",  cfg->offline_max_mb);
+  g_key_file_set_string_list (kf, "offline", "allow",
+                              (const char * const *) cfg->offline_allow->pdata,
+                              cfg->offline_allow->len);
+  g_key_file_set_string_list (kf, "offline", "block",
+                              (const char * const *) cfg->offline_block->pdata,
+                              cfg->offline_block->len);
 
   g_key_file_set_boolean (kf, "session", "restore",          cfg->restore_session);
   g_key_file_set_boolean (kf, "session", "show-home-button", cfg->show_home_button);

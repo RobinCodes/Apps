@@ -20,7 +20,16 @@
 # include <webkit/webkit.h>
 #endif
 
+/* The house palettes, generated from house/theme.py by house/sync.py. The
+ * same eight themes the Python apps here use, so that Porcelain in the
+ * browser is the same Porcelain as in the terminal and the file manager. */
+#include "house-themes.h"
+
 G_BEGIN_DECLS
+
+/* Whichever of the generated themes `key` names, or NULL for one this build
+ * does not know. Defined in config.c. */
+const LyHouseTheme *ly_house_theme (const char *key);
 
 /* ------------------------------------------------------------------ enums */
 
@@ -180,6 +189,11 @@ struct _LyConfig {
   GPtrArray     *search_keywords;     /* char* "w=https://…?q=%s"           */
   gboolean       save_passwords;    /* offer to save form logins       */
   gboolean       password_autofill;
+  gboolean       password_suggest;    /* offer a generated one on sign-up */
+  /* Off until it is asked for: checking a password against a breach corpus
+   * means reaching a service that is not ours. Five characters of a hash is
+   * all that goes, and nothing goes at all until this is on. */
+  gboolean       password_leak_check;
   GPtrArray     *password_never;     /* char* origin — never ask here    */
   gboolean       remember_history;
   LyUaMode       ua_mode;
@@ -195,11 +209,30 @@ struct _LyConfig {
   GPtrArray *block_exceptions;         /* char* host — blocker off for these  */
   GPtrArray *subscriptions;            /* char* URL of extra filter lists     */
 
+  /* the house style — see house-themes.h. `scheme` above decides which of
+   * the two is in force: FORCE_LIGHT and FORCE_DARK pick one outright, and
+   * SYSTEM follows the desktop between them. */
+  char     *dark_theme;
+  char     *light_theme;
+
   /* permissions */
   LyPolicy perm[LY_PERM_N];
 
   /* downloads */
   char     *download_dir;
+
+  /* offline archives — whole sites kept on disk, see archive.h */
+  gboolean   offline_enabled;
+  char      *offline_dir;            /* default ~/Documents/Websites       */
+  gboolean   offline_ask_where;      /* choose a folder on every save      */
+  gboolean   offline_automatic;      /* sweep recently-read sites          */
+  int        offline_days;           /* "read in the last X days"          */
+  int        offline_min_visits;     /* before a site counts as one of yours */
+  GPtrArray *offline_allow;          /* char* host — empty means "any"     */
+  GPtrArray *offline_block;          /* char* host — never these           */
+  int        offline_max_pages;
+  int        offline_max_depth;
+  int        offline_max_mb;
 
   /* session and startup */
   gboolean  restore_session;
@@ -231,6 +264,8 @@ void      ly_config_queue_save  (LyConfig *cfg);
 void      ly_config_touch       (LyConfig *cfg);
 guint     ly_config_watch       (LyConfig *cfg, LyConfigChangedFn fn, gpointer data);
 void      ly_config_unwatch     (LyConfig *cfg, guint id);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (LyConfig, ly_config_free)
 
 gboolean  ly_config_host_excepted   (LyConfig *cfg, const char *host);
 void      ly_config_set_host_except (LyConfig *cfg, const char *host, gboolean excepted);

@@ -1,6 +1,7 @@
 /* tab.c — see tab.h. */
 
 #include "tab.h"
+#include "pwcheck.h"
 
 #include <string.h>
 
@@ -33,6 +34,18 @@ struct _LyTab {
   char      *seen_origin;       /* a username from a two-step login's first  */
   char      *seen_username;     /* screen, to offer on the screen after it   */
   gint64     seen_at;
+
+  /* The other two things a password manager has to ask: which of several
+   * saved accounts to fill, and whether to make up a password for a form
+   * that is asking for a new one. One bar serves both — they are never
+   * raised at the same time, because one is about a sign-in and the other
+   * about a sign-up. */
+  GtkWidget *offer_bar;
+  GtkWidget *offer_label;
+  GtkWidget *offer_buttons;     /* rebuilt for each offer                   */
+  guint      offer_timeout;
+  char      *offer_password;    /* the generated one, until it is used      */
+  GPtrArray *offer_choices;     /* LyCredential*, for the account chooser   */
 
   WebKitWebView            *view;
   WebKitUserContentManager *ucm;
@@ -392,7 +405,6 @@ build_password_bar (LyTab *tab)
    * the page left a gap for the user to fill. */
   GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
   gtk_widget_add_css_class (bar, "lyndon-permission");
-  gtk_widget_add_css_class (bar, "card");
   gtk_widget_set_halign (bar, GTK_ALIGN_CENTER);
   gtk_widget_set_valign (bar, GTK_ALIGN_START);
   gtk_widget_set_visible (bar, FALSE);
@@ -457,6 +469,220 @@ build_password_bar (LyTab *tab)
   return bar;
 }
 
+/* ------------------------------------- choosing an account, making one up */
+
+static void
+clear_offer (LyTab *tab)
+{
+  if (tab->offer_timeout != 0) {
+    g_source_remove (tab->offer_timeout);
+    tab->offer_timeout = 0;
+  }
+
+  if (tab->offer_password != NULL) {
+    memset (tab->offer_password, 0, strlen (tab->offer_password));
+    g_clear_pointer (&tab->offer_password, g_free);
+  }
+  g_clear_pointer (&tab->offer_choices, g_ptr_array_unref);
+
+  if (tab->offer_bar == NULL)
+    return;
+
+  GtkWidget *child;
+  while ((child = gtk_widget_get_first_child (tab->offer_buttons)) != NULL)
+    gtk_box_remove (GTK_BOX (tab->offer_buttons), child);
+  gtk_widget_set_visible (tab->offer_bar, FALSE);
+}
+
+static gboolean
+on_offer_expired (gpointer data)
+{
+  LyTab *tab = data;
+  tab->offer_timeout = 0;
+  clear_offer (tab);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+on_offer_dismissed (GtkButton *button, gpointer data)
+{
+  clear_offer ((LyTab *) data);
+}
+
+static GtkWidget *
+build_offer_bar (LyTab *tab)
+{
+  GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_widget_add_css_class (bar, "lyndon-permission");
+  gtk_widget_set_halign (bar, GTK_ALIGN_CENTER);
+  gtk_widget_set_valign (bar, GTK_ALIGN_START);
+  gtk_widget_set_visible (bar, FALSE);
+  gtk_widget_set_margin_top (bar, 10);
+
+  GtkWidget *icon = gtk_image_new_from_icon_name ("dialog-password-symbolic");
+  gtk_widget_set_margin_start (icon, 12);
+  gtk_box_append (GTK_BOX (bar), icon);
+
+  tab->offer_label = gtk_label_new ("");
+  gtk_label_set_ellipsize (GTK_LABEL (tab->offer_label), PANGO_ELLIPSIZE_MIDDLE);
+  gtk_widget_set_margin_top (tab->offer_label, 8);
+  gtk_widget_set_margin_bottom (tab->offer_label, 8);
+  gtk_box_append (GTK_BOX (bar), tab->offer_label);
+
+  tab->offer_buttons = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+  gtk_box_append (GTK_BOX (bar), tab->offer_buttons);
+
+  GtkWidget *not_now = gtk_button_new_with_label ("Not now");
+  gtk_widget_add_css_class (not_now, "flat");
+  gtk_widget_set_margin_end (not_now, 8);
+  g_signal_connect (not_now, "clicked", G_CALLBACK (on_offer_dismissed), tab);
+  gtk_box_append (GTK_BOX (bar), not_now);
+
+  return bar;
+}
+
+static void
+fill_login (LyTab *tab, const char *username, const char *password)
+{
+  g_autofree char *user = ly_escape_js_string (username);
+  g_autofree char *pass = ly_escape_js_string (password);
+  g_autofree char *js = g_strdup_printf (
+    "if(window.__lyndonFill)window.__lyndonFill(\"%s\",\"%s\");", user, pass);
+
+  webkit_web_view_evaluate_javascript (tab->view, js, -1, NULL, NULL, NULL, NULL, NULL);
+}
+
+/* -- which account -- */
+
+static void
+on_account_chosen (GtkButton *button, gpointer data)
+{
+  LyTab *tab = data;
+  if (tab->offer_choices == NULL)
+    return;
+
+  guint at = (guint) GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (button),
+                                                          "lyndon-choice"));
+  if (at >= tab->offer_choices->len)
+    return;
+
+  LyCredential *credential = g_ptr_array_index (tab->offer_choices, at);
+  fill_login (tab, credential->username, credential->password);
+  clear_offer (tab);
+}
+
+/* More than one login saved for this page. Chrome does not guess in this
+ * situation and neither should this: filling the first of them is how
+ * somebody ends up signed in as the wrong account, or locked out by a site
+ * counting failures against a password that was never meant for it.
+ *
+ * The array is taken over, secrets and all, and held only until the offer is
+ * answered or times out. */
+static void
+show_account_chooser (LyTab *tab, const char *origin, GPtrArray *credentials)
+{
+  clear_pending_login (tab);
+  clear_offer (tab);
+
+  tab->offer_choices = g_ptr_array_ref (credentials);
+
+  g_autofree char *host = ly_uri_host (origin);
+  g_autofree char *text = g_strdup_printf ("Sign in to %s as:",
+                                           (host && *host) ? host : origin);
+  gtk_label_set_text (GTK_LABEL (tab->offer_label), text);
+
+  for (guint i = 0; i < credentials->len && i < 6; i++) {
+    LyCredential *credential = g_ptr_array_index (credentials, i);
+    const char *name = (credential->username && *credential->username)
+      ? credential->username : "(no username)";
+
+    GtkWidget *button = gtk_button_new_with_label (name);
+    gtk_widget_add_css_class (button, "flat");
+    GtkWidget *label = gtk_button_get_child (GTK_BUTTON (button));
+    if (GTK_IS_LABEL (label)) {
+      gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_MIDDLE);
+      gtk_label_set_max_width_chars (GTK_LABEL (label), 24);
+    }
+    /* Where it was saved, which is not always this page: a login matched
+     * under the same domain came from a different host, and whoever is
+     * choosing should be able to see which. */
+    gtk_widget_set_tooltip_text (button, credential->origin);
+
+    g_object_set_data (G_OBJECT (button), "lyndon-choice", GUINT_TO_POINTER (i));
+    g_signal_connect (button, "clicked", G_CALLBACK (on_account_chosen), tab);
+    gtk_box_append (GTK_BOX (tab->offer_buttons), button);
+  }
+
+  gtk_widget_set_visible (tab->offer_bar, TRUE);
+  tab->offer_timeout = g_timeout_add_seconds (90, on_offer_expired, tab);
+}
+
+/* -- making one up -- */
+
+static void
+on_suggestion_used (GtkButton *button, gpointer data)
+{
+  LyTab *tab = data;
+  if (tab->offer_password == NULL)
+    return;
+
+  g_autofree char *pass = ly_escape_js_string (tab->offer_password);
+  g_autofree char *js = g_strdup_printf (
+    "if(window.__lyndonFillNew)window.__lyndonFillNew(\"%s\");", pass);
+  webkit_web_view_evaluate_javascript (tab->view, js, -1, NULL, NULL, NULL, NULL, NULL);
+
+  /* Nothing is stored here. The form is about to be submitted, and the
+   * ordinary save offer is what asks about keeping it — which also means a
+   * password that was generated but never used leaves nothing behind. */
+  clear_offer (tab);
+}
+
+static void
+on_suggestion_copied (GtkButton *button, gpointer data)
+{
+  LyTab *tab = data;
+  if (tab->offer_password == NULL)
+    return;
+  gdk_clipboard_set_text (gtk_widget_get_clipboard (GTK_WIDGET (tab)),
+                          tab->offer_password);
+}
+
+/* A box asking for a new password. */
+static void
+show_password_suggestion (LyTab *tab)
+{
+  g_autofree char *password = ly_pw_generate ();
+  if (password == NULL)
+    return;
+
+  clear_pending_login (tab);
+  clear_offer (tab);
+
+  tab->offer_password = g_steal_pointer (&password);
+  gtk_label_set_text (GTK_LABEL (tab->offer_label), "Use a strong password:");
+
+  /* Shown, not hidden: it is going into a box on the page either way, and
+   * somebody who wants to keep it elsewhere needs to be able to read it. */
+  GtkWidget *shown = gtk_label_new (tab->offer_password);
+  gtk_widget_add_css_class (shown, "monospace");
+  gtk_label_set_selectable (GTK_LABEL (shown), TRUE);
+  gtk_box_append (GTK_BOX (tab->offer_buttons), shown);
+
+  GtkWidget *copy = gtk_button_new_from_icon_name ("edit-copy-symbolic");
+  gtk_widget_add_css_class (copy, "flat");
+  gtk_widget_set_tooltip_text (copy, "Copy");
+  g_signal_connect (copy, "clicked", G_CALLBACK (on_suggestion_copied), tab);
+  gtk_box_append (GTK_BOX (tab->offer_buttons), copy);
+
+  GtkWidget *use = gtk_button_new_with_label ("Use");
+  gtk_widget_add_css_class (use, "suggested-action");
+  g_signal_connect (use, "clicked", G_CALLBACK (on_suggestion_used), tab);
+  gtk_box_append (GTK_BOX (tab->offer_buttons), use);
+
+  gtk_widget_set_visible (tab->offer_bar, TRUE);
+  tab->offer_timeout = g_timeout_add_seconds (120, on_offer_expired, tab);
+}
+
 /* Remembered from the first screen of a two-step login, where the name is
  * asked for on one page and the password on the next. */
 static void
@@ -484,6 +710,7 @@ show_login_offer (LyTab *tab, LoginKind kind, const char *origin,
                   const char *username, const char *password, gboolean is_update)
 {
   clear_pending_login (tab);
+  clear_offer (tab);
 
   tab->pending_origin   = g_strdup (origin);
   tab->pending_username = g_strdup (username ?: "");
@@ -554,18 +781,12 @@ on_credentials_for_fill (GPtrArray *credentials, gpointer data)
   LoginWork *work = data;
   g_autoptr (GObject) object = g_weak_ref_get (&work->tab_ref);
 
-  if (object != NULL && credentials->len > 0) {
+  if (object != NULL && credentials->len == 1) {
     LyTab *tab = LY_TAB (object);
-    /* More than one account saved: fill the first and leave switching to the
-     * site's own account picker rather than inventing a second UI. */
     LyCredential *credential = g_ptr_array_index (credentials, 0);
-
-    g_autofree char *user = ly_escape_js_string (credential->username);
-    g_autofree char *pass = ly_escape_js_string (credential->password);
-    g_autofree char *js = g_strdup_printf (
-      "if(window.__lyndonFill)window.__lyndonFill(\"%s\",\"%s\");", user, pass);
-
-    webkit_web_view_evaluate_javascript (tab->view, js, -1, NULL, NULL, NULL, NULL, NULL);
+    fill_login (tab, credential->username, credential->password);
+  } else if (object != NULL && credentials->len > 1) {
+    show_account_chooser (LY_TAB (object), work->origin, credentials);
   }
   login_work_free (work);
 }
@@ -689,8 +910,18 @@ on_password_message (WebKitUserContentManager *ucm, JSCValue *value, gpointer da
     if (count == NULL || jsc_value_to_int32 (count) <= 0)
       return;
 
-    ly_passwords_lookup (tab->passwords, origin, on_credentials_for_fill,
-                         login_work_new (tab, origin, NULL));
+    ly_passwords_lookup_matching (tab->passwords, origin, on_credentials_for_fill,
+                                  login_work_new (tab, origin, NULL));
+    return;
+  }
+
+  /* A form asking for a new password. Offered before the never-ask list is
+   * consulted: that list is about keeping passwords, and this is about making
+   * one up — somebody who told Lyndon not to save logins for a site can still
+   * want a password they are not going to have to invent. */
+  if (g_strcmp0 (type, "newpassword") == 0) {
+    if (tab->cfg->password_suggest)
+      show_password_suggestion (tab);
     return;
   }
 
@@ -1302,7 +1533,6 @@ build_permission_bar (LyTab *tab)
 {
   GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_widget_add_css_class (bar, "lyndon-permission");
-  gtk_widget_add_css_class (bar, "card");
   gtk_widget_set_halign (bar, GTK_ALIGN_CENTER);
   gtk_widget_set_valign (bar, GTK_ALIGN_START);
   gtk_widget_set_visible (bar, FALSE);
@@ -1348,9 +1578,11 @@ ly_tab_dispose (GObject *object)
 
   g_clear_object (&tab->pending_permission);
   clear_pending_login (tab);
+  clear_offer (tab);
   /* Dispose can run twice; the second pass must not reach into widgets the
    * first one already took down with the overlay. */
   tab->password_bar = NULL;
+  tab->offer_bar    = NULL;
   g_clear_pointer (&tab->seen_origin, g_free);
   g_clear_pointer (&tab->seen_username, g_free);
   g_clear_pointer (&tab->selection, g_free);
@@ -1429,6 +1661,9 @@ wire_view (LyTab *tab)
 
   tab->password_bar = build_password_bar (tab);
   gtk_overlay_add_overlay (GTK_OVERLAY (tab->overlay), tab->password_bar);
+
+  tab->offer_bar = build_offer_bar (tab);
+  gtk_overlay_add_overlay (GTK_OVERLAY (tab->overlay), tab->offer_bar);
 
   gtk_widget_set_parent (tab->overlay, GTK_WIDGET (tab));
 

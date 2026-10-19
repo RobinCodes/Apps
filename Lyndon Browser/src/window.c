@@ -14,6 +14,7 @@ struct _LyWindow {
   LyEngine    *engine;
   LyBlocker   *blocker;
   LyDownloads *downloads;
+  LyArchive   *archive;
   LyStore     *store;
   LyPasswords *passwords;
 
@@ -36,6 +37,7 @@ struct _LyWindow {
   GtkWidget *zoom_button;
   GtkWidget *bookmarks_bar;
   GtkWidget *downloads_button;
+  GtkWidget *offline_button;
   GtkWidget *progress;
 
   /* address-bar completion */
@@ -119,6 +121,20 @@ void
 ly_window_toast (LyWindow *self, const char *text)
 {
   adw_toast_overlay_add_toast (self->toasts, adw_toast_new (text));
+}
+
+/* A newer Lyndon has been built behind this one. The toast does not time out:
+ * it is an offer, not a notification, and one that scrolls away unread is the
+ * same as never having made it. */
+void
+ly_window_offer_restart (LyWindow *self)
+{
+  AdwToast *toast = adw_toast_new ("A newer Lyndon is ready");
+  adw_toast_set_button_label (toast, "Restart");
+  adw_toast_set_action_name (toast, "app.restart-for-update");
+  adw_toast_set_timeout (toast, 0);
+  adw_toast_set_priority (toast, ADW_TOAST_PRIORITY_HIGH);
+  adw_toast_overlay_add_toast (self->toasts, toast);
 }
 
 /* ------------------------------------------------------------ url field */
@@ -538,6 +554,120 @@ on_download_cancel (GtkButton *button, gpointer data)
 }
 
 static void
+on_archive_cancel (GtkButton *button, gpointer data)
+{
+  LyWindow *self = data;
+  LyArchiveJob *job = g_object_get_data (G_OBJECT (button), "lyndon-job");
+  ly_archive_cancel (self->archive, job);
+}
+
+static void
+on_archive_open (GtkButton *button, gpointer data)
+{
+  const char *root = g_object_get_data (G_OBJECT (button), "lyndon-root");
+  g_autofree char *uri = g_filename_to_uri (root, NULL, NULL);
+  if (uri == NULL)
+    return;
+  g_autoptr (GtkFileLauncher) launcher = gtk_file_launcher_new (NULL);
+  g_autoptr (GFile) file = g_file_new_for_path (root);
+  gtk_file_launcher_set_file (launcher, file);
+  gtk_file_launcher_launch (launcher, NULL, NULL, NULL, NULL);
+}
+
+/* Site archives share the downloads panel. They are the same kind of thing —
+ * something being fetched into a folder — and a second popover for them would
+ * be a second place to remember to look. */
+static void
+append_archives (LyWindow *self, GtkWidget *box)
+{
+  GPtrArray *jobs = ly_archive_jobs (self->archive);
+  if (jobs->len == 0)
+    return;
+
+  GtkWidget *title = gtk_label_new ("Offline sites");
+  gtk_widget_add_css_class (title, "lyndon-panel-title");
+  gtk_widget_set_halign (title, GTK_ALIGN_START);
+  gtk_box_append (GTK_BOX (box), title);
+
+  for (guint i = jobs->len; i > 0 && jobs->len - i < 8; i--) {
+    LyArchiveJob *job = g_ptr_array_index (jobs, i - 1);
+
+    GtkWidget *row = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_add_css_class (row, "lyndon-download-row");
+
+    GtkWidget *name = gtk_label_new (job->host);
+    gtk_label_set_ellipsize (GTK_LABEL (name), PANGO_ELLIPSIZE_MIDDLE);
+    gtk_label_set_xalign (GTK_LABEL (name), 0.0f);
+    gtk_box_append (GTK_BOX (row), name);
+
+    g_autofree char *size = ly_format_size (job->bytes);
+    g_autofree char *detail =
+        job->failed    ? g_strdup_printf ("Failed — %s", job->error ?: "unknown error")
+      : job->cancelled ? g_strdup_printf ("Stopped · %u page%s, %s", job->pages,
+                                          job->pages == 1 ? "" : "s", size)
+      : job->finished  ? g_strdup_printf ("%u page%s · %s · %s", job->pages,
+                                          job->pages == 1 ? "" : "s", size,
+                                          job->kind == LY_ARCHIVE_AUTOMATIC
+                                            ? "automatic" : "saved")
+      : job->rewriting ? g_strdup_printf ("Relinking %u page%s…", job->pages,
+                                          job->pages == 1 ? "" : "s")
+                       : g_strdup_printf ("%u page%s, %u to go · %s", job->pages,
+                                          job->pages == 1 ? "" : "s",
+                                          job->queued, size);
+
+    GtkWidget *sub = gtk_label_new (detail);
+    gtk_widget_add_css_class (sub, "lyndon-dim");
+    gtk_widget_add_css_class (sub, "caption");
+    gtk_label_set_xalign (GTK_LABEL (sub), 0.0f);
+    gtk_box_append (GTK_BOX (row), sub);
+
+    GtkWidget *line = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+
+    if (!job->finished) {
+      GtkWidget *bar = gtk_progress_bar_new ();
+      /* A crawl discovers as it goes, so the only honest fraction is pages
+       * done out of pages known about so far. */
+      guint known = job->pages + job->queued;
+      if (job->rewriting || known == 0)
+        gtk_progress_bar_pulse (GTK_PROGRESS_BAR (bar));
+      else
+        gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (bar),
+                                       (double) job->pages / (double) known);
+      gtk_widget_set_valign (bar, GTK_ALIGN_CENTER);
+      gtk_widget_set_hexpand (bar, TRUE);
+      gtk_box_append (GTK_BOX (line), bar);
+
+      GtkWidget *cancel = gtk_button_new_from_icon_name ("window-close-symbolic");
+      gtk_widget_add_css_class (cancel, "flat");
+      gtk_widget_set_tooltip_text (cancel, "Stop archiving");
+      g_object_set_data (G_OBJECT (cancel), "lyndon-job", job);
+      g_signal_connect (cancel, "clicked", G_CALLBACK (on_archive_cancel), self);
+      gtk_box_append (GTK_BOX (line), cancel);
+    } else if (!job->failed) {
+      GtkWidget *open = gtk_button_new_with_label ("Open folder");
+      gtk_widget_add_css_class (open, "flat");
+      gtk_widget_set_halign (open, GTK_ALIGN_START);
+      g_object_set_data_full (G_OBJECT (open), "lyndon-root",
+                              g_strdup (job->root), g_free);
+      g_signal_connect (open, "clicked", G_CALLBACK (on_archive_open), self);
+      gtk_box_append (GTK_BOX (line), open);
+    }
+
+    if (gtk_widget_get_first_child (line) != NULL)
+      gtk_box_append (GTK_BOX (row), line);
+
+    gtk_box_append (GTK_BOX (box), row);
+  }
+
+  GtkWidget *clear = gtk_button_new_with_label ("Clear finished sites");
+  gtk_widget_add_css_class (clear, "flat");
+  gtk_widget_set_margin_top (clear, 4);
+  g_signal_connect_swapped (clear, "clicked",
+                            G_CALLBACK (ly_archive_clear_finished), self->archive);
+  gtk_box_append (GTK_BOX (box), clear);
+}
+
+static void
 build_downloads_popover (LyWindow *self, GtkWidget *popover)
 {
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
@@ -611,18 +741,42 @@ build_downloads_popover (LyWindow *self, GtkWidget *popover)
     gtk_box_append (GTK_BOX (box), clear);
   }
 
+  append_archives (self, box);
+
   gtk_popover_set_child (GTK_POPOVER (popover), box);
+}
+
+/* The one button covers files and site archives both, because the panel
+ * behind it does. */
+static void
+sync_transfers_button (LyWindow *self)
+{
+  if (self->downloads_button == NULL || self->downloads == NULL || self->archive == NULL)
+    return;
+
+  guint files    = ly_downloads_items (self->downloads)->len;
+  guint sites    = ly_archive_jobs (self->archive)->len;
+  guint busy     = ly_downloads_active_count (self->downloads);
+  guint crawling = ly_archive_active (self->archive);
+
+  gtk_widget_set_visible (self->downloads_button, files > 0 || sites > 0);
+  gtk_widget_set_tooltip_text (self->downloads_button,
+      busy > 0 && crawling > 0 ? "Downloading and archiving…"
+    : crawling > 0             ? "Archiving a site…"
+    : busy > 0                 ? "Downloading…"
+                               : "Downloads");
 }
 
 static void
 on_downloads_changed (LyDownloads *downloads, gpointer data)
 {
-  LyWindow *self = data;
-  guint active = ly_downloads_active_count (downloads);
-  gtk_widget_set_visible (self->downloads_button,
-                          ly_downloads_items (downloads)->len > 0);
-  gtk_widget_set_tooltip_text (self->downloads_button,
-                               active > 0 ? "Downloading…" : "Downloads");
+  sync_transfers_button (LY_WINDOW (data));
+}
+
+void
+ly_window_archives_changed (LyWindow *self)
+{
+  sync_transfers_button (self);
 }
 
 /* --------------------------------------------------------------- shield
@@ -729,6 +883,304 @@ on_downloads_popover_show (GtkPopover *popover, gpointer data)
 }
 
 
+/* ------------------------------------------------- bookmark context menu */
+
+/* A bookmark can be acted on from two places — the bar under the header and
+ * the Bookmarks dialog — and both want the same menu on a right-click. What
+ * differs is only which list has to be drawn again afterwards, so the caller
+ * hands that in.
+ *
+ * The popover hangs off the row it was opened on, which is also what makes
+ * acting on a bookmark safe: redrawing the list destroys that row and takes
+ * the popover with it. Hanging it off the list instead would leave a widget
+ * in there that the list's own "remove every child" loop cannot remove —
+ * which, for a GtkBox cleared by taking its first child until there is none,
+ * is an endless loop. Every handler below therefore copies what it needs off
+ * the menu before popping it down, because closing can free it at once.
+ */
+
+static void refresh_bookmarks_bar (LyWindow *self);
+
+typedef void (*LyRedrawFn) (gpointer data);
+
+typedef struct {
+  LyWindow   *window;
+  char       *url;
+  LyRedrawFn  redraw;       /* the list it was opened from, NULL for the bar */
+  gpointer    redraw_data;
+  GtkWidget  *popover;
+} BookmarkMenu;
+
+static void
+bookmark_menu_free (gpointer data)
+{
+  BookmarkMenu *menu = data;
+  g_free (menu->url);
+  g_free (menu);
+}
+
+static void
+bookmark_menu_redraw (BookmarkMenu *menu)
+{
+  refresh_bookmarks_bar (menu->window);
+  sync_chrome (menu->window);
+  if (menu->redraw != NULL)
+    menu->redraw (menu->redraw_data);
+}
+
+/* -- rename -- */
+
+typedef struct {
+  LyWindow   *window;
+  char       *url;
+  GtkWidget  *entry;
+  LyRedrawFn  redraw;
+  gpointer    redraw_data;
+} RenameRequest;
+
+static void
+rename_request_free (gpointer data)
+{
+  RenameRequest *request = data;
+  g_free (request->url);
+  g_free (request);
+}
+
+static void
+on_bookmark_renamed (AdwAlertDialog *dialog, const char *response, gpointer data)
+{
+  RenameRequest *request = data;
+
+  if (g_strcmp0 (response, "rename") != 0)
+    return;
+
+  const char *name = gtk_editable_get_text (GTK_EDITABLE (request->entry));
+  if (!ly_store_rename_bookmark (request->window->store, request->url, name)) {
+    /* Either the row went away while the dialog was open, or the name was
+     * nothing but spaces. Neither is worth an error dialog over. */
+    ly_window_toast (request->window, "That name could not be used");
+    return;
+  }
+
+  refresh_bookmarks_bar (request->window);
+  sync_chrome (request->window);
+  if (request->redraw != NULL)
+    request->redraw (request->redraw_data);
+  ly_window_toast (request->window, "Bookmark renamed");
+}
+
+static void
+present_bookmark_rename (LyWindow *self, const char *url,
+                         LyRedrawFn redraw, gpointer redraw_data)
+{
+  if (self->store == NULL || url == NULL)
+    return;
+
+  /* What is stored, not what the row happens to be drawing: a bookmark saved
+   * before its page had a title draws as its own address, and offering that
+   * back as the name to edit would be offering the wrong thing. */
+  g_autofree char *current = ly_store_bookmark_title (self->store, url);
+  if (current == NULL) {
+    ly_window_toast (self, "That bookmark is no longer saved");
+    return;
+  }
+
+  AdwDialog *dialog = adw_alert_dialog_new ("Rename bookmark", NULL);
+  g_autofree char *pretty = ly_pretty_uri (url);
+  adw_alert_dialog_set_body (ADW_ALERT_DIALOG (dialog), pretty);
+
+  GtkWidget *entry = gtk_entry_new ();
+  gtk_entry_set_placeholder_text (GTK_ENTRY (entry), "Name");
+  gtk_editable_set_text (GTK_EDITABLE (entry), current);
+  gtk_editable_select_region (GTK_EDITABLE (entry), 0, -1);
+  gtk_entry_set_activates_default (GTK_ENTRY (entry), TRUE);
+  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dialog), entry);
+
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dialog),
+                                  "cancel", "Cancel", "rename", "Rename", NULL);
+  adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dialog), "rename",
+                                            ADW_RESPONSE_SUGGESTED);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dialog), "rename");
+  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dialog), "cancel");
+
+  RenameRequest *request = g_new0 (RenameRequest, 1);
+  request->window      = self;
+  request->url         = g_strdup (url);
+  request->entry       = entry;
+  request->redraw      = redraw;
+  request->redraw_data = redraw_data;
+  g_object_set_data_full (G_OBJECT (dialog), "lyndon-rename",
+                          request, rename_request_free);
+
+  g_signal_connect (dialog, "response", G_CALLBACK (on_bookmark_renamed), request);
+  adw_dialog_present (dialog, GTK_WIDGET (self));
+  gtk_widget_grab_focus (entry);
+}
+
+/* -- the menu itself -- */
+
+static void
+on_bookmark_menu_rename (GtkButton *button, gpointer data)
+{
+  BookmarkMenu *menu = data;
+  LyWindow *self = menu->window;
+  g_autofree char *url = g_strdup (menu->url);
+  LyRedrawFn redraw = menu->redraw;
+  gpointer redraw_data = menu->redraw_data;
+
+  /* Closing takes the popover, and `menu` with it, so nothing below reads
+   * from it again. */
+  gtk_popover_popdown (GTK_POPOVER (menu->popover));
+  present_bookmark_rename (self, url, redraw, redraw_data);
+}
+
+static void
+on_bookmark_menu_open (GtkButton *button, gpointer data)
+{
+  BookmarkMenu *menu = data;
+  LyWindow *self = menu->window;
+  g_autofree char *url = g_strdup (menu->url);
+
+  gtk_popover_popdown (GTK_POPOVER (menu->popover));
+  ly_window_open_tab (self, url, FALSE);
+}
+
+static void
+on_bookmark_menu_copy (GtkButton *button, gpointer data)
+{
+  BookmarkMenu *menu = data;
+  LyWindow *self = menu->window;
+
+  gdk_clipboard_set_text (gtk_widget_get_clipboard (GTK_WIDGET (self)), menu->url);
+  gtk_popover_popdown (GTK_POPOVER (menu->popover));
+  ly_window_toast (self, "Address copied");
+}
+
+static void
+on_bookmark_menu_remove (GtkButton *button, gpointer data)
+{
+  BookmarkMenu *menu = data;
+  /* The popdown below frees `menu`, so everything the redraw needs comes off
+   * it first. */
+  BookmarkMenu after = { .window      = menu->window,
+                         .redraw      = menu->redraw,
+                         .redraw_data = menu->redraw_data };
+
+  ly_store_remove_bookmark (menu->window->store, menu->url);
+  gtk_popover_popdown (GTK_POPOVER (menu->popover));
+
+  bookmark_menu_redraw (&after);
+  ly_window_toast (after.window, "Bookmark removed");
+}
+
+static void
+on_bookmark_menu_closed (GtkPopover *popover, gpointer data)
+{
+  /* Built fresh for every right-click, so it goes away with the click. The
+   * row it hangs from can be destroyed first — acting on a bookmark redraws
+   * the list — in which case this has already happened. */
+  if (gtk_widget_get_parent (GTK_WIDGET (popover)) != NULL)
+    gtk_widget_unparent (GTK_WIDGET (popover));
+}
+
+static GtkWidget *
+bookmark_menu_item (GtkWidget *box, const char *label)
+{
+  GtkWidget *button = gtk_button_new_with_label (label);
+  gtk_widget_add_css_class (button, "flat");
+  gtk_button_set_can_shrink (GTK_BUTTON (button), TRUE);
+  GtkWidget *text = gtk_button_get_child (GTK_BUTTON (button));
+  if (GTK_IS_LABEL (text))
+    gtk_label_set_xalign (GTK_LABEL (text), 0.0);
+  gtk_box_append (GTK_BOX (box), button);
+  return button;
+}
+
+/* What the gesture was installed with: enough to build the menu, and no
+ * pointer to the row, which the gesture itself already belongs to. */
+typedef struct {
+  LyWindow   *window;
+  char       *url;
+  LyRedrawFn  redraw;
+  gpointer    redraw_data;
+} BookmarkSite;
+
+static void
+bookmark_site_free (gpointer data, GClosure *closure)
+{
+  BookmarkSite *site = data;
+  g_free (site->url);
+  g_free (site);
+}
+
+static void
+on_bookmark_right_click (GtkGestureClick *gesture, int n_press,
+                         double x, double y, gpointer data)
+{
+  BookmarkSite *site = data;
+
+  GtkWidget *popover = gtk_popover_new ();
+  gtk_popover_set_has_arrow (GTK_POPOVER (popover), TRUE);
+  gtk_widget_add_css_class (popover, "menu");
+
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_set_margin_start (box, 4);
+  gtk_widget_set_margin_end (box, 4);
+  gtk_widget_set_margin_top (box, 4);
+  gtk_widget_set_margin_bottom (box, 4);
+  gtk_popover_set_child (GTK_POPOVER (popover), box);
+
+  BookmarkMenu *menu = g_new0 (BookmarkMenu, 1);
+  menu->window      = site->window;
+  menu->url         = g_strdup (site->url);
+  menu->redraw      = site->redraw;
+  menu->redraw_data = site->redraw_data;
+  menu->popover     = popover;
+  g_object_set_data_full (G_OBJECT (popover), "lyndon-bookmark-menu",
+                          menu, bookmark_menu_free);
+
+  g_signal_connect (bookmark_menu_item (box, "Open in New Tab"), "clicked",
+                    G_CALLBACK (on_bookmark_menu_open), menu);
+  g_signal_connect (bookmark_menu_item (box, "Rename…"), "clicked",
+                    G_CALLBACK (on_bookmark_menu_rename), menu);
+  g_signal_connect (bookmark_menu_item (box, "Copy Address"), "clicked",
+                    G_CALLBACK (on_bookmark_menu_copy), menu);
+
+  GtkWidget *remove = bookmark_menu_item (box, "Remove");
+  gtk_widget_add_css_class (remove, "destructive-action");
+  g_signal_connect (remove, "clicked", G_CALLBACK (on_bookmark_menu_remove), menu);
+
+  g_signal_connect (popover, "closed", G_CALLBACK (on_bookmark_menu_closed), NULL);
+
+  gtk_widget_set_parent (popover, gtk_event_controller_get_widget (
+                                    GTK_EVENT_CONTROLLER (gesture)));
+
+  /* At the pointer rather than under the middle of a bookmark that may be
+   * most of the bar wide. */
+  GdkRectangle at = { (int) x, (int) y, 1, 1 };
+  gtk_popover_set_pointing_to (GTK_POPOVER (popover), &at);
+
+  gtk_gesture_set_state (GTK_GESTURE (gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+  gtk_popover_popup (GTK_POPOVER (popover));
+}
+
+static void
+attach_bookmark_menu (GtkWidget *row, LyWindow *self,
+                      const char *url, LyRedrawFn redraw, gpointer redraw_data)
+{
+  BookmarkSite *site = g_new0 (BookmarkSite, 1);
+  site->window      = self;
+  site->url         = g_strdup (url);
+  site->redraw      = redraw;
+  site->redraw_data = redraw_data;
+
+  GtkGesture *gesture = gtk_gesture_click_new ();
+  gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (gesture), GDK_BUTTON_SECONDARY);
+  g_signal_connect_data (gesture, "pressed", G_CALLBACK (on_bookmark_right_click),
+                         site, bookmark_site_free, 0);
+  gtk_widget_add_controller (row, GTK_EVENT_CONTROLLER (gesture));
+}
+
 /* ------------------------------------------------- bookmarks and history */
 
 /* One dialog serves both lists: they differ only in where the rows come from
@@ -821,6 +1273,12 @@ library_populate (Library *library)
     g_object_set_data_full (G_OBJECT (remove), "lyndon-url", g_strdup (entry->url), g_free);
     g_signal_connect (remove, "clicked", G_CALLBACK (on_library_remove), library);
     adw_action_row_add_suffix (ADW_ACTION_ROW (row), remove);
+
+    /* History rows have no name of their own to change — the title is the
+     * page's, and the next visit would write it back. */
+    if (library->bookmarks)
+      attach_bookmark_menu (row, library->window, entry->url,
+                            (LyRedrawFn) library_populate, library);
 
     gtk_list_box_append (GTK_LIST_BOX (library->list), row);
   }
@@ -1107,6 +1565,7 @@ refresh_bookmarks_bar (LyWindow *self)
     g_object_set_data_full (G_OBJECT (button), "lyndon-url",
                             g_strdup (mark->url), g_free);
     g_signal_connect (button, "clicked", G_CALLBACK (on_bookmark_bar_clicked), self);
+    attach_bookmark_menu (button, self, mark->url, NULL, NULL);
     gtk_box_append (GTK_BOX (self->bookmarks_bar), button);
   }
 }
@@ -1707,6 +2166,7 @@ static const struct {
   const char      *action;
 } PAGE_SHORTCUTS[] = {
   { GDK_KEY_s, GDK_CONTROL_MASK,                  "win.save-page"  },
+  { GDK_KEY_s, GDK_CONTROL_MASK | GDK_SHIFT_MASK, "win.save-site"  },
   { GDK_KEY_p, GDK_CONTROL_MASK,                  "win.print"      },
   { GDK_KEY_f, GDK_CONTROL_MASK,                  "win.find"       },
   { GDK_KEY_g, GDK_CONTROL_MASK,                  "win.find-next"  },
@@ -2044,6 +2504,99 @@ action_save_page (GSimpleAction *action, GVariant *param, gpointer data)
     ly_tab_save_page (tab);
 }
 
+/* ---------------------------------------------------------- offline sites */
+
+typedef struct {
+  LyWindow *window;
+  char     *url;
+} ArchiveRequest;
+
+static void
+archive_request_free (ArchiveRequest *request)
+{
+  g_free (request->url);
+  g_free (request);
+}
+
+static void
+begin_archive (LyWindow *self, const char *url, const char *dest)
+{
+  g_autofree char *reason = NULL;
+  if (ly_archive_start (self->archive, url, LY_ARCHIVE_SAVED, dest, &reason)) {
+    g_autofree char *host = ly_uri_host (url);
+    g_autofree char *message = g_strdup_printf ("Archiving %s…", host ?: "this site");
+    ly_window_toast (self, message);
+    sync_transfers_button (self);
+  } else {
+    ly_window_toast (self, reason ?: "That site cannot be archived");
+  }
+}
+
+static void
+on_archive_folder_chosen (GObject *source, GAsyncResult *result, gpointer data)
+{
+  ArchiveRequest *request = data;
+  g_autoptr (GError) error = NULL;
+  g_autoptr (GFile) folder =
+    gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), result, &error);
+
+  if (folder != NULL) {
+    g_autofree char *path = g_file_get_path (folder);
+    if (path != NULL)
+      begin_archive (request->window, request->url, path);
+  }
+  archive_request_free (request);
+}
+
+static void
+action_save_site (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  LyWindow *self = data;
+  LyTab *tab = ly_window_active_tab (self);
+  if (tab == NULL)
+    return;
+
+  const char *url = ly_tab_uri (tab);
+  if (url == NULL || ly_uri_is_internal (url)) {
+    ly_window_toast (self, "There is no site here to archive");
+    return;
+  }
+
+  if (!self->cfg->offline_enabled) {
+    ly_window_toast (self, "Turn on offline sites in Preferences first");
+    return;
+  }
+
+  if (ly_window_is_private (self)) {
+    /* A private window exists so that nothing survives it. */
+    ly_window_toast (self, "Private windows do not archive sites");
+    return;
+  }
+
+  if (!self->cfg->offline_ask_where) {
+    begin_archive (self, url, NULL);
+    return;
+  }
+
+  /* Asked for a folder every time: the mirror still gets its own subfolder
+   * inside whatever is chosen, so two sites cannot land on top of each other. */
+  g_autofree char *host = ly_uri_host (url);
+  g_autoptr (GtkFileDialog) dialog = gtk_file_dialog_new ();
+  gtk_file_dialog_set_title (dialog, "Where to keep the offline copy");
+
+  g_autofree char *base = ly_archive_base_dir (self->cfg);
+  g_mkdir_with_parents (base, 0755);
+  g_autoptr (GFile) initial = g_file_new_for_path (base);
+  gtk_file_dialog_set_initial_folder (dialog, initial);
+
+  ArchiveRequest *request = g_new0 (ArchiveRequest, 1);
+  request->window = self;
+  request->url    = g_strdup (url);
+
+  gtk_file_dialog_select_folder (dialog, GTK_WINDOW (self), NULL,
+                                 on_archive_folder_chosen, request);
+}
+
 /* Firefox binds page info to Ctrl+I; having it on the keyboard also means the
  * padlock panel is reachable without a mouse. */
 static void
@@ -2101,6 +2654,7 @@ static const GActionEntry WINDOW_ACTIONS[] = {
   { "select-tab",        action_select_tab, "i" },
   { "view-source",       action_view_source },
   { "save-page",         action_save_page },
+  { "save-site",         action_save_site },
   { "caret-browsing",    action_caret_browsing },
   { "site-info",         action_site_info },
 };
@@ -2246,6 +2800,7 @@ build_main_menu (void)
   g_menu_append (page, "Find in Page…", "win.find");
   g_menu_append (page, "Print…",        "win.print");
   g_menu_append (page, "Save Page As…", "win.save-page");
+  g_menu_append (page, "Save Site for Offline…", "win.save-site");
   g_menu_append (page, "View Page Source", "win.view-source");
   g_menu_append (page, "Site Information",  "win.site-info");
   g_menu_append (page, "Full Screen",   "win.fullscreen");
@@ -2445,6 +3000,7 @@ ly_window_dispose (GObject *object)
   if (self->downloads != NULL)
     ly_downloads_set_callbacks (self->downloads, NULL, NULL, NULL);
   self->downloads = NULL;
+  self->archive = NULL;
 
   if (self->suggest_source != 0) {
     g_source_remove (self->suggest_source);
@@ -2476,6 +3032,125 @@ ly_window_init (LyWindow *self)
 {
 }
 
+/* ------------------------------------------------------------ dropped files */
+
+/* One drop target, on the window.
+ *
+ * GTK hands a drop to the widget under the pointer and lets it travel up from
+ * there, so this is reached only by what nothing inside the window wanted:
+ * the web view runs its own drop target, which is how a page's upload box and
+ * its editable fields keep working, and the address bar takes dropped text
+ * the way any entry does. What is left over is a file or an address dropped
+ * on the browser rather than on anything in it — which until now did nothing
+ * at all.
+ *
+ * Where it landed decides where it opens, the same way Chrome's does: over
+ * the chrome it is a new tab, over the page it replaces what is showing.
+ */
+
+static gboolean
+point_in_chrome (LyWindow *self, double x, double y)
+{
+  graphene_rect_t bounds;
+
+  if (self->chrome == NULL ||
+      !gtk_widget_compute_bounds (self->chrome, GTK_WIDGET (self), &bounds))
+    return FALSE;
+
+  return graphene_rect_contains_point (&bounds,
+                                       &GRAPHENE_POINT_INIT ((float) x, (float) y));
+}
+
+/* A drop can carry several files. `replace` is spent by the first of them —
+ * the rest open beside it — and `first` keeps the one that came to the front
+ * from being overtaken by the ones behind it. */
+static void
+open_dropped (LyWindow *self, const char *uri, gboolean *replace, gboolean *first)
+{
+  if (uri == NULL || *uri == '\0')
+    return;
+
+  if (*replace) {
+    *replace = FALSE;
+    LyTab *tab = ly_window_active_tab (self);
+    if (tab != NULL) {
+      *first = FALSE;
+      ly_tab_load (tab, uri);
+      return;
+    }
+  }
+  ly_window_open_tab (self, uri, !*first);
+  *first = FALSE;
+}
+
+static gboolean
+on_window_drop (GtkDropTarget *target, const GValue *value,
+                double x, double y, gpointer data)
+{
+  LyWindow *self = data;
+  /* Dropped on the chrome, it is an extra tab; dropped on the page, it is
+   * what that tab should be showing instead. */
+  gboolean replace = !point_in_chrome (self, x, y);
+  gboolean first = TRUE;
+
+  if (G_VALUE_HOLDS (value, GDK_TYPE_FILE_LIST)) {
+    GSList *files = g_value_get_boxed (value);
+    if (files == NULL)
+      return FALSE;
+    for (GSList *l = files; l != NULL; l = l->next) {
+      g_autofree char *uri = g_file_get_uri (G_FILE (l->data));
+      open_dropped (self, uri, &replace, &first);
+    }
+    return TRUE;
+  }
+
+  if (G_VALUE_HOLDS (value, G_TYPE_FILE)) {
+    GFile *file = g_value_get_object (value);
+    if (file == NULL)
+      return FALSE;
+    g_autofree char *uri = g_file_get_uri (file);
+    open_dropped (self, uri, &replace, &first);
+    return TRUE;
+  }
+
+  if (G_VALUE_HOLDS (value, G_TYPE_STRING)) {
+    const char *text = g_value_get_string (value);
+    if (text == NULL)
+      return FALSE;
+
+    g_autofree char *trimmed = g_strdup (text);
+    g_strstrip (trimmed);
+    if (*trimmed == '\0')
+      return FALSE;
+
+    /* A path, an address, or neither — in which case dropping it searches
+     * for it, which is what dropping selected text on a browser means. */
+    g_autofree char *from_path = ly_uri_from_path (trimmed, NULL);
+    g_autofree char *uri = from_path != NULL
+      ? g_steal_pointer (&from_path)
+      : ly_config_resolve_input (self->cfg, trimmed);
+    open_dropped (self, uri, &replace, &first);
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+static void
+install_drop_target (LyWindow *self)
+{
+  GtkDropTarget *target = gtk_drop_target_new (G_TYPE_INVALID, GDK_ACTION_COPY);
+
+  /* A file manager offers a file list; some send one file, and a dragged
+   * selection or address is text. Asked for in that order, because the list
+   * is the one that carries a path we can open without reading anything. */
+  GType types[] = { GDK_TYPE_FILE_LIST, G_TYPE_FILE, G_TYPE_STRING };
+  gtk_drop_target_set_gtypes (target, types, G_N_ELEMENTS (types));
+
+  g_signal_connect (target, "drop", G_CALLBACK (on_window_drop), self);
+  gtk_widget_add_controller (GTK_WIDGET (self), GTK_EVENT_CONTROLLER (target));
+}
+
 /* ---------------------------------------------------------------- public */
 
 static LyWindow *
@@ -2498,6 +3173,7 @@ window_create (LyApp *app, WebKitNetworkSession *session)
   self->engine    = ly_app_engine (app);
   self->blocker   = ly_app_blocker (app);
   self->downloads = ly_app_downloads (app);
+  self->archive   = ly_app_archive (app);
   self->store     = ly_app_store (app);
   self->passwords = ly_app_passwords (app);
 
@@ -2566,6 +3242,13 @@ window_create (LyApp *app, WebKitNetworkSession *session)
   GtkWidget *overview_button = icon_button ("view-grid-symbolic", "win.tab-overview",
                                             "All tabs");
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), overview_button);
+
+  /* The one-press route to an offline copy. Hidden until the feature is on,
+   * so a browser nobody asked this of looks exactly as it did. */
+  self->offline_button = icon_button ("drive-harddisk-symbolic", "win.save-site",
+                                      "Save this site for offline reading");
+  gtk_widget_set_visible (self->offline_button, FALSE);
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), self->offline_button);
 
   self->downloads_button = gtk_menu_button_new ();
   gtk_menu_button_set_icon_name (GTK_MENU_BUTTON (self->downloads_button),
@@ -2671,6 +3354,8 @@ window_create (LyApp *app, WebKitNetworkSession *session)
   adw_application_window_set_content (ADW_APPLICATION_WINDOW (self),
                                       GTK_WIDGET (self->overview));
 
+  install_drop_target (self);
+
   ly_downloads_set_callbacks (self->downloads, on_downloads_changed, NULL, self);
   ly_blocker_set_ready_callback (self->blocker, on_blocker_ready, self);
 
@@ -2690,6 +3375,11 @@ window_create (LyApp *app, WebKitNetworkSession *session)
   }
 
   ly_window_refresh (self);
+
+  /* A build that landed while Lyndon was closed, or while this window was
+   * not yet open: the live signal has already been and gone. */
+  if (ly_update_ready (ly_app_update (app)))
+    ly_window_offer_restart (self);
   return self;
 }
 
@@ -2771,6 +3461,7 @@ ly_window_restore_tab (LyWindow *self, const char *url, const char *title)
   return tab;
 }
 
+
 void
 ly_window_refresh (LyWindow *self)
 {
@@ -2790,6 +3481,10 @@ ly_window_refresh (LyWindow *self)
   refresh_bookmarks_bar (self);
   if (self->home_button != NULL)
     gtk_widget_set_visible (self->home_button, self->cfg->show_home_button);
+  if (self->offline_button != NULL)
+    gtk_widget_set_visible (self->offline_button,
+                            self->cfg->offline_enabled && !ly_window_is_private (self));
+  sync_transfers_button (self);
 
   for (int i = 0; i < adw_tab_view_get_n_pages (self->tabs); i++) {
     LyTab *tab = tab_from_page (adw_tab_view_get_nth_page (self->tabs, i));

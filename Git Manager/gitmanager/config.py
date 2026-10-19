@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import os
 
-from . import winenv
+from . import theme as theming, winenv
 
 DIR = winenv.config_home("git-manager")
 PATH = os.path.join(DIR, "config.json")
 
 DEFAULTS = {
+    # -- the house style --------------------------------------------------
+    # The themes, the glass, and whether to follow the desktop between light
+    # and dark. The keys and their defaults come from theme.py, which every
+    # app here has the same copy of, so that adding a theme or changing the
+    # default pair is one edit rather than nine.
+    **theming.SETTINGS,
+
     "roots": [os.path.expanduser("~")],
     # Repositories added by hand. The scan stops at the first repo it finds and
     # never descends into a working tree, so a repo nested inside another one
@@ -30,6 +37,7 @@ DEFAULTS = {
     "backup_max_depth": 3,
     "window_width": 1360,
     "window_height": 860,
+    "window_maximized": False,
     "last_repo": "",
     "diff_context": 3,
 }
@@ -66,6 +74,8 @@ class Config(dict):
                 for k, v in data.items():
                     if k in DEFAULTS and isinstance(v, type(DEFAULTS[k])):
                         self[k] = v
+                # The house-style keys have their own rules — see theming.take.
+                theming.take(self, data)
         except FileNotFoundError:
             pass  # first run: defaults are the answer, not a failure
         except (OSError, ValueError) as exc:

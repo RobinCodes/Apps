@@ -23,8 +23,8 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import (compiler, filetree, gitlink, jobs, overleafweb, packages,  # noqa: E402
-               project, templates, widgets)
+from . import (compiler, filetree, gitlink, housestyle, jobs,  # noqa: E402
+               overleafweb, packages, project, templates, widgets)
 from . import __version__  # noqa: E402
 from .config import Config  # noqa: E402
 from .document import UNTITLED, Document  # noqa: E402
@@ -67,15 +67,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._document_chrome: list = []   # filled as the header and strip are built
         self._last_live_pull = 0.0
 
-        self.set_default_size(self.config["window_width"], self.config["window_height"])
-        # Applied before the window is mapped, because that is the only way to
-        # come up maximised without a frame at the wrong size. Whether it was
-        # the right thing to do is only knowable later — see _on_realize.
-        self._maximize_pending = False
-        if self.config["window_maximized"]:
-            self.maximize()
-            self._maximize_pending = True
-        self.connect("realize", self._on_realize)
+        # The remembered size and maximise, applied before the first map —
+        # see housestyle.Geometry for why the two are treated differently
+        # under a tiling compositor.
+        self.geometry = housestyle.Geometry(self, self.config)
+        self.geometry.restore()
 
         self._build_actions()
         self._build_ui()
@@ -230,7 +226,13 @@ class MainWindow(Adw.ApplicationWindow):
         view.set_content(content)
 
         self.toasts = Adw.ToastOverlay(child=view)
-        self.set_content(self.toasts)
+        # The house style: the window paints nothing and everything sits on
+        # one rounded, translucent slab of glass inside it. `self.glazing` is
+        # what the Look page calls back into when a setting changes.
+        self.glazing = housestyle.Glazing(self, self.config,
+                                          extra=widgets.CSS,
+                                          app_class="larenderer")
+        self.glazing.wrap(self.toasts)
 
     # --------------------------------------------------------------- tabs --
 
@@ -2521,7 +2523,13 @@ class MainWindow(Adw.ApplicationWindow):
 
     def show_preferences(self):
         dialog = Adw.PreferencesDialog(title="Preferences")
-        page = Adw.PreferencesPage()
+        # The Look page is the house's, so the themes and the glass are the
+        # same rows in the same order as in every other app here. The PDF's
+        # own light/dark setting stays below, with the building options: it
+        # is about the pages, not about the app.
+        dialog.add(housestyle.look_page(self.config, self.glazing.restyle))
+        page = Adw.PreferencesPage(title="Building",
+                                   icon_name="system-run-symbolic")
 
         building = Adw.PreferencesGroup(title="Building")
 
@@ -2844,66 +2852,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------ geometry
 
-    def _compositor_tiles_windows(self) -> bool:
-        """Whether the compositor lays windows out itself, as niri and Sway do.
-
-        Under one, the window's size is the layout's arithmetic rather than
-        anything the user chose, and asking to be maximised takes the whole
-        output away from the arrangement they made. Two things give such a
-        compositor away: it offers no minimise, and when it does tell clients
-        they are tiled it says so in the toplevel state.
-        """
-        surface = self.get_surface()
-        if not isinstance(surface, Gdk.Toplevel):
-            return False
-        if surface.get_state() & Gdk.ToplevelState.TILED:
-            return True
-        if not hasattr(surface, "get_capabilities"):   # GTK before 4.20
-            return False
-        return not surface.get_capabilities() & Gdk.ToplevelCapabilities.MINIMIZE
-
-    def _on_realize(self, _widget):
-        surface = self.get_surface()
-        if not isinstance(surface, Gdk.Toplevel):
-            return
-
-        surface.connect("notify::capabilities",
-                        lambda *_: self._settle_restored_maximize())
-
-        # X11 knows what the window manager can do as soon as the window
-        # exists; Wayland reports a placeholder until the compositor's first
-        # configure, which only arrives after the map. Settle straight away
-        # when the answer is already in, and wait for the notify otherwise.
-        if (not hasattr(surface, "get_capabilities")
-                or surface.get_capabilities() & Gdk.ToplevelCapabilities.MINIMIZE):
-            self._settle_restored_maximize()
-
-    def _settle_restored_maximize(self):
-        """Take back the maximise from the config if it was the wrong call.
-
-        Runs once, before the first frame: a maximise the user asks for later
-        is theirs to keep. The flag is forgotten as well, so the next start
-        under this compositor does not ask again.
-        """
-        if not self._maximize_pending:
-            return
-        self._maximize_pending = False
-
-        if not self._compositor_tiles_windows():
-            return
-
-        self.unmaximize()
-        self.config["window_maximized"] = False
-        self.config.save()
-
     def _remember_geometry(self):
-        # Under a tiling compositor neither number is the user's to remember,
-        # so the ones from the last session that did get to choose them stay.
-        if not self._compositor_tiles_windows():
-            self.config["window_maximized"] = self.is_maximized()
-            if not self.is_maximized():
-                self.config["window_width"] = self.get_width()
-                self.config["window_height"] = self.get_height()
+        self.geometry.save()
         # Every tab has a paned and an editor of its own; the one in front is
         # the one whose layout the user just chose.
         if self.active is not None:

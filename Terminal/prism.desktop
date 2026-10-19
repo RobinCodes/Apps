@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Prism
+GenericName=Terminal
+Comment=A terminal made of glass
+Exec=/home/robin/.local/bin/prism
+Icon=prism
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;command;prompt;console;tty;vte;
+StartupNotify=true
+StartupWMClass=com.robin.Prism
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/home/robin/.local/bin/prism --new-window

@@ -13,11 +13,17 @@ struct _LyApp {
   LyEngine    *engine;
   LyBlocker   *blocker;
   LyDownloads *downloads;
+  LyArchive   *archive;
+  LyUpdate    *update;
   LyStore     *store;
   LyPasswords *passwords;
 
   GtkCssProvider *base_css;
   GtkCssProvider *tuned_css;   /* regenerated whenever opacity changes */
+
+  /* The offline sweep. Started late and run rarely: it is background work
+   * that costs bandwidth, and nothing about it is urgent. */
+  guint sweep_source;
 
   /* Tabs belonging to windows that have already closed during this run, and
    * how many window slots have been handed out. See ly_app_save_session. */
@@ -31,15 +37,49 @@ LyConfig    *ly_app_config    (LyApp *app) { return app->cfg; }
 LyEngine    *ly_app_engine    (LyApp *app) { return app->engine; }
 LyBlocker   *ly_app_blocker   (LyApp *app) { return app->blocker; }
 LyDownloads *ly_app_downloads (LyApp *app) { return app->downloads; }
+LyArchive   *ly_app_archive   (LyApp *app) { return app->archive; }
+LyUpdate    *ly_app_update    (LyApp *app) { return app->update; }
 LyStore     *ly_app_store     (LyApp *app) { return app->store; }
 LyPasswords *ly_app_passwords (LyApp *app) { return app->passwords; }
 
+static void reschedule_sweep (LyApp *app);
+
 /* ------------------------------------------------------------- styling */
+
+/* Which of the house themes is in force.
+ *
+ * `color-scheme` decides: Light and Dark name one of the pair outright, and
+ * Follow system picks whichever matches the desktop. Never NULL — a settings
+ * file naming a theme this build no longer has falls back to the house
+ * default rather than to no colours at all.
+ */
+static const LyHouseTheme *
+house_theme (LyApp *app)
+{
+  gboolean dark;
+  switch (app->cfg->scheme) {
+    case LY_SCHEME_LIGHT: dark = FALSE; break;
+    case LY_SCHEME_DARK:  dark = TRUE;  break;
+    default:
+      dark = adw_style_manager_get_dark (adw_style_manager_get_default ());
+      break;
+  }
+  const char *wanted = dark ? app->cfg->dark_theme : app->cfg->light_theme;
+  const LyHouseTheme *theme = ly_house_theme (wanted);
+  if (theme == NULL)
+    theme = ly_house_theme (dark ? LY_HOUSE_DARK_DEFAULT : LY_HOUSE_LIGHT_DEFAULT);
+  return theme;
+}
 
 static void
 apply_style (LyApp *app)
 {
   AdwStyleManager *style = adw_style_manager_get_default ();
+  /* The scheme is read before it is forced — see house_theme — so this has
+   * to come second, or Follow system would read back whatever was forced
+   * last time and latch on the first change. */
+  const LyHouseTheme *theme = house_theme (app);
+
   AdwColorScheme scheme;
   switch (app->cfg->scheme) {
     case LY_SCHEME_LIGHT: scheme = ADW_COLOR_SCHEME_FORCE_LIGHT; break;
@@ -48,10 +88,51 @@ apply_style (LyApp *app)
   }
   adw_style_manager_set_color_scheme (style, scheme);
 
-  /* The one value that has to be generated rather than written by hand. */
+  /* libadwaita's whole named palette, restated in the theme's colours. The
+   * browser's own stylesheet is written against those names, so this one
+   * block recolours every rule in it — and every widget nobody wrote a rule
+   * for. It is the same thing housestyle.palette() does for the Python apps
+   * here, which is why the numbers come from the same generated table. */
   g_autofree char *css = g_strdup_printf (
+    "@define-color window_bg_color %s;\n"
+    "@define-color window_fg_color %s;\n"
+    "@define-color view_bg_color %s;\n"
+    "@define-color view_fg_color %s;\n"
+    "@define-color headerbar_bg_color %s;\n"
+    "@define-color headerbar_fg_color %s;\n"
+    "@define-color headerbar_border_color %s;\n"
+    "@define-color headerbar_backdrop_color %s;\n"
+    "@define-color sidebar_bg_color %s;\n"
+    "@define-color sidebar_fg_color %s;\n"
+    "@define-color sidebar_border_color %s;\n"
+    "@define-color card_bg_color %s;\n"
+    "@define-color card_fg_color %s;\n"
+    "@define-color dialog_bg_color %s;\n"
+    "@define-color dialog_fg_color %s;\n"
+    "@define-color popover_bg_color %s;\n"
+    "@define-color popover_fg_color %s;\n"
+    "@define-color borders %s;\n"
+    "@define-color accent_bg_color %s;\n"
+    "@define-color accent_fg_color %s;\n"
+    "@define-color accent_color %s;\n"
+    "@define-color success_color %s;\n"
+    "@define-color warning_color %s;\n"
+    "@define-color error_color %s;\n"
+    "@define-color house_dim %s;\n"
+    "@define-color house_glass %s;\n"
     ".fx-full .lyndon-chrome { background-color: alpha(@headerbar_bg_color, %.3f); }\n"
     ".fx-full popover.lyndon-panel > contents { background-color: alpha(@popover_bg_color, %.3f); }\n",
+    theme->bg, theme->fg,
+    theme->view, theme->fg,
+    theme->raised, theme->fg, theme->hairline, theme->bg,
+    theme->view, theme->fg, theme->hairline,
+    theme->raised, theme->fg,
+    theme->floating, theme->fg,
+    theme->floating, theme->fg,
+    theme->hairline,
+    theme->accent, theme->on_accent, theme->accent,
+    theme->success, theme->warning, theme->error,
+    theme->dim, theme->glass,
     app->cfg->ui_opacity,
     CLAMP (app->cfg->ui_opacity + 0.14, 0.4, 1.0));
 
@@ -357,6 +438,38 @@ action_shortcuts (GSimpleAction *action, GVariant *param, gpointer data)
   adw_dialog_present (dialog, active_window_widget (app));
 }
 
+/* --------------------------------------------------------------- updates */
+
+/* lyndon.py has finished building a newer Lyndon. Nothing is swapped while
+ * this one is running — the restart is what takes it. */
+static void
+on_update_ready (LyUpdate *update, gpointer data)
+{
+  LyApp *app = data;
+  for (GList *l = gtk_application_get_windows (GTK_APPLICATION (app)); l != NULL; l = l->next)
+    if (LY_IS_WINDOW (l->data))
+      ly_window_offer_restart (LY_WINDOW (l->data));
+}
+
+static void
+action_restart (GSimpleAction *action, GVariant *param, gpointer data)
+{
+  LyApp *app = data;
+  g_autoptr (GError) error = NULL;
+
+  /* Only quit once something is actually coming back. */
+  if (!ly_update_restart (app->update, &error)) {
+    LyWindow *window = front_window (app);
+    if (window != NULL) {
+      g_autofree char *message =
+        g_strdup_printf ("Could not restart — %s", error->message);
+      ly_window_toast (window, message);
+    }
+    return;
+  }
+  g_application_quit (G_APPLICATION (app));
+}
+
 static void
 action_quit (GSimpleAction *action, GVariant *param, gpointer data)
 {
@@ -372,6 +485,7 @@ static const GActionEntry APP_ACTIONS[] = {
   { "shortcuts",   action_shortcuts },
   { "clear-data",  action_clear_data },
   { "quit",        action_quit },
+  { "restart-for-update", action_restart },
 };
 
 static const struct { const char *action; const char *accels[4]; } ACCELS[] = {
@@ -538,6 +652,7 @@ ly_app_refresh (LyApp *app)
 {
   apply_style (app);
   ly_engine_apply (app->engine);
+  reschedule_sweep (app);
 
   GList *windows = gtk_application_get_windows (GTK_APPLICATION (app));
   for (GList *l = windows; l != NULL; l = l->next)
@@ -553,6 +668,84 @@ on_blocker_ready (LyBlocker *blocker, gpointer data)
   for (GList *l = windows; l != NULL; l = l->next)
     if (LY_IS_WINDOW (l->data))
       ly_window_refresh (LY_WINDOW (l->data));
+}
+
+/* --------------------------------------------------------- offline sweep */
+
+/* Six hours is often enough that a day's reading is mirrored by the evening,
+ * and rare enough that nobody notices it happening. */
+#define LY_SWEEP_INTERVAL_S (6 * 60 * 60)
+/* Long enough after launch that the first page someone opens has the network
+ * to itself. */
+#define LY_SWEEP_FIRST_S    90
+
+static void
+on_archive_changed (LyArchive *archive, gpointer data)
+{
+  LyApp *app = data;
+  for (GList *l = gtk_application_get_windows (GTK_APPLICATION (app)); l != NULL; l = l->next)
+    if (LY_IS_WINDOW (l->data))
+      ly_window_archives_changed (LY_WINDOW (l->data));
+}
+
+static void
+on_archive_done (const LyArchiveJob *job, gpointer data)
+{
+  LyApp *app = data;
+
+  /* The sweep's work is nobody's business until it goes wrong. */
+  if (job->kind == LY_ARCHIVE_AUTOMATIC && !job->failed)
+    return;
+
+  LyWindow *window = front_window (app);
+  if (window == NULL)
+    return;
+
+  g_autofree char *size = ly_format_size (job->bytes);
+  g_autofree char *message =
+      job->failed    ? g_strdup_printf ("Could not archive %s — %s", job->host,
+                                        job->error ?: "unknown error")
+    : job->cancelled ? g_strdup_printf ("Stopped archiving %s", job->host)
+                     : g_strdup_printf ("Archived %s — %u page%s, %s", job->host,
+                                        job->pages, job->pages == 1 ? "" : "s", size);
+  ly_window_toast (window, message);
+}
+
+static gboolean
+on_sweep (gpointer data)
+{
+  LyApp *app = data;
+  ly_archive_sweep (app->archive, app->store);
+  return G_SOURCE_CONTINUE;
+}
+
+static gboolean
+on_first_sweep (gpointer data)
+{
+  LyApp *app = data;
+  ly_archive_sweep (app->archive, app->store);
+  app->sweep_source = g_timeout_add_seconds (LY_SWEEP_INTERVAL_S, on_sweep, app);
+  return G_SOURCE_REMOVE;
+}
+
+/* Called at startup and again whenever the setting changes, so switching the
+ * sweep on does not mean restarting the browser to see it run. */
+static void
+reschedule_sweep (LyApp *app)
+{
+  gboolean wanted = app->cfg->offline_enabled && app->cfg->offline_automatic;
+
+  if (!wanted) {
+    if (app->sweep_source != 0) {
+      g_source_remove (app->sweep_source);
+      app->sweep_source = 0;
+    }
+    return;
+  }
+  if (app->sweep_source != 0)
+    return;
+
+  app->sweep_source = g_timeout_add_seconds (LY_SWEEP_FIRST_S, on_first_sweep, app);
 }
 
 static void
@@ -582,6 +775,12 @@ ly_app_startup (GApplication *application)
   app->downloads = ly_downloads_new (app->cfg, ly_engine_session (app->engine));
   app->store     = ly_store_new ();
   app->passwords = ly_passwords_new (app->cfg);
+  app->archive   = ly_archive_new (app->cfg, app->engine);
+  app->update    = ly_update_new ();
+
+  ly_archive_set_callbacks (app->archive, on_archive_changed, on_archive_done, app);
+  ly_update_set_ready_callback (app->update, on_update_ready, app);
+  reschedule_sweep (app);
 
   ly_blocker_set_ready_callback (app->blocker, on_blocker_ready, app);
 
@@ -791,6 +990,13 @@ ly_app_shutdown (GApplication *application)
     if (LY_IS_WINDOW (l->data))
       ly_window_flush_attention (LY_WINDOW (l->data));
 
+  if (app->sweep_source != 0) {
+    g_source_remove (app->sweep_source);
+    app->sweep_source = 0;
+  }
+
+  g_clear_pointer (&app->update, ly_update_free);
+  g_clear_pointer (&app->archive, ly_archive_free);
   g_clear_pointer (&app->passwords, ly_passwords_free);
   g_clear_pointer (&app->store, ly_store_free);
   g_clear_pointer (&app->session_closed, g_ptr_array_unref);

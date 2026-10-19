@@ -16,7 +16,8 @@ and makes the app unusable where it lives.
 
 *It must not ask to be maximised.* A tiling compositor honours `set_maximized`
 by handing the window the whole output, which throws away the arrangement the
-user made. See `_settle_restored_maximize`.
+user made. The size is still remembered — see `housestyle.Geometry`, which is
+where both halves of that rule now live.
 """
 
 from __future__ import annotations
@@ -30,10 +31,11 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import __version__, export, jobs, markdown, widgets  # noqa: E402
-from .config import Config  # noqa: E402
+from . import __version__, export, housestyle, jobs, markdown  # noqa: E402
+from . import render, widgets  # noqa: E402
+from .config import Config, DEFAULTS  # noqa: E402
 from .document import MARKDOWN_EXTENSIONS, UNTITLED, Document  # noqa: E402
 from .outline import Outline  # noqa: E402
 from .search import FindBar  # noqa: E402
@@ -70,16 +72,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._setting_view = False
         self._reload_asked: dict[str, float] = {}
 
-        self.set_default_size(self.config["window_width"], self.config["window_height"])
-        self.set_size_request(360, 320)
-        # Applied before the window is mapped, because that is the only way to
-        # come up maximised without a frame at the wrong size. Whether it was
-        # the right call is only knowable later — see _on_realize.
-        self._maximize_pending = False
-        if self.config["window_maximized"]:
-            self.maximize()
-            self._maximize_pending = True
-        self.connect("realize", self._on_realize)
+        # The remembered size and maximise, applied before the first map —
+        # see housestyle.Geometry for why the two are treated differently
+        # under a tiling compositor.
+        self.geometry = housestyle.Geometry(self, self.config, minimum=(360, 320))
+        self.geometry.restore()
 
         self._build_actions()
         self._build_ui()
@@ -121,7 +118,13 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_ui(self):
         self.toasts = Adw.ToastOverlay()
-        self.set_content(self.toasts)
+        # The house style: the window paints nothing and everything sits on
+        # one rounded, translucent slab of glass inside it. `self.glazing` is
+        # what the Look page calls back into when a setting changes.
+        self.glazing = housestyle.Glazing(self, self.config,
+                                          extra=widgets.CSS,
+                                          app_class="notedown")
+        self.glazing.wrap(self.toasts)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.toasts.set_child(outer)
@@ -332,7 +335,9 @@ class MainWindow(Adw.ApplicationWindow):
         size.append("Bigger Text", "win.zoom-in")
         size.append("Smaller Text", "win.zoom-out")
         size.append("Reset Text Size", "win.zoom-reset")
-        menu.append_submenu("Text Size", size)
+        size.append("Fonts…", "win.fonts")
+        size.append("Appearance…", "win.appearance")
+        menu.append_submenu("Text", size)
 
         tools = Gio.Menu()
         tools.append("Document Statistics", "win.statistics")
@@ -422,6 +427,8 @@ class MainWindow(Adw.ApplicationWindow):
             "zoom-in": lambda: self.zoom(1),
             "zoom-out": lambda: self.zoom(-1),
             "zoom-reset": lambda: self.zoom(0),
+            "fonts": self.show_fonts,
+            "appearance": self.show_appearance,
             "clear-recent": self.clear_recent,
             "noop": lambda: None,
             # Formatting.
@@ -1072,24 +1079,38 @@ class MainWindow(Adw.ApplicationWindow):
         for document in self.documents:
             document.editor.set_gutter_visible(bool(self.config["show_gutter"]))
 
+    def _apply_fonts(self):
+        for document in self.documents:
+            document.apply_fonts()
+
     def _apply_remote_images(self):
         for document in self.documents:
             document.preview.load_remote_images = bool(self.config["load_remote_images"])
             document.render_now()
 
     def zoom(self, direction: int):
+        """Ctrl+± moves both halves a point at a time; Ctrl+0 is the shipped size.
+
+        Only the size moves. A family chosen in the Fonts dialog is a choice
+        about what the text looks like, not about how big it is, and zooming
+        is no reason to take it back.
+        """
         if self.active is None:
             return
         if direction == 0:
-            size, scale = 11, 1.0
+            text = int(DEFAULTS["editor_font_size"])
+            page = int(DEFAULTS["preview_font_size"])
         else:
-            size = self.active.editor.get_font_size() + direction
-            scale = self.active.preview.get_font_scale() + 0.08 * direction
-        for document in self.documents:
-            document.editor.set_font_size(size)
-            document.preview.set_font_scale(scale)
+            text = int(self.config["editor_font_size"]) + direction
+            page = int(self.config["preview_font_size"]) + direction
+        self.config["editor_font_size"] = text
+        self.config["preview_font_size"] = page
+        self._apply_fonts()
+        # Both halves clamp what they are handed, so the config keeps what
+        # they settled on rather than what it asked for — otherwise holding
+        # Ctrl+− wanders off past the limit and the way back is as long.
         self.config["editor_font_size"] = self.active.editor.get_font_size()
-        self.config["preview_scale"] = self.active.preview.get_font_scale()
+        self.config["preview_font_size"] = render.page_font()[1]
         self.config.save()
 
     # ------------------------------------------------------------ inserting --
@@ -1281,6 +1302,79 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.set_default_response("close")
         dialog.present(self)
 
+    def show_appearance(self):
+        """The theme and the glass — the house Look page, and nothing else.
+
+        A dialog of its own rather than a settings window: everything else in
+        this app is a toggle in the menu, and the two things that are not are
+        the fonts and these.
+        """
+        dialog = Adw.PreferencesDialog(title="Appearance")
+        dialog.add(housestyle.look_page(self.config, self.glazing.restyle))
+        dialog.present(self)
+
+    def show_fonts(self):
+        """Choose the font for each half. It applies as it is chosen."""
+        dialog = Adw.AlertDialog(
+            heading="Fonts",
+            body="The text you write in, and the page it is drawn as.")
+
+        grid = Gtk.Grid(column_spacing=12, row_spacing=10)
+        for row, (label, family_key, size_key) in enumerate((
+                ("Text", "editor_font_family", "editor_font_size"),
+                ("Page", "preview_font_family", "preview_font_size"))):
+            grid.attach(Gtk.Label(label=label, xalign=1.0), 0, row, 1, 1)
+            grid.attach(self._font_button(label, family_key, size_key), 1, row, 1, 1)
+        dialog.set_extra_child(grid)
+
+        dialog.add_response("defaults", "Defaults")
+        dialog.add_response("close", "Done")
+        dialog.set_default_response("close")
+        dialog.connect("response", self._fonts_answered)
+        dialog.present(self)
+
+    def _font_button(self, label, family_key, size_key):
+        description = Pango.FontDescription()
+        description.set_family(self.config[family_key] or self._desktop_font_family())
+        description.set_size(int(self.config[size_key]) * Pango.SCALE)
+
+        button = Gtk.FontDialogButton(
+            dialog=Gtk.FontDialog(title=f"{label} Font"),
+            level=Gtk.FontLevel.FONT, font_desc=description, hexpand=True)
+        button.connect("notify::font-desc", self._font_chosen, family_key, size_key)
+        return button
+
+    def _desktop_font_family(self) -> str:
+        """What GTK would use if this app named no font at all."""
+        settings = Gtk.Settings.get_default()
+        name = settings.get_property("gtk-font-name") if settings else ""
+        return Pango.FontDescription.from_string(name or "Sans 10").get_family() or "Sans"
+
+    def _font_chosen(self, button, _parameter, family_key, size_key):
+        description = button.get_font_desc()
+        if description is None:
+            return
+        # The family and the size, and not the face: the editor draws bold
+        # where the Markdown says bold, and a font that arrives bold has
+        # nothing left to say it with.
+        size = description.get_size() / Pango.SCALE
+        if description.get_size_is_absolute():
+            size *= 0.75                      # pixels at 96dpi, as points
+        self.config[family_key] = description.get_family() or ""
+        if size:
+            self.config[size_key] = int(round(size))
+        self._apply_fonts()
+        self.config.save()
+
+    def _fonts_answered(self, _dialog, response):
+        if response != "defaults":
+            return
+        for key in ("editor_font_family", "editor_font_size",
+                    "preview_font_family", "preview_font_size"):
+            self.config[key] = DEFAULTS[key]
+        self._apply_fonts()
+        self.config.save()
+
     def show_shortcuts(self):
         groups = [
             ("Files", [
@@ -1354,68 +1448,14 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------ geometry --
 
-    def _compositor_tiles_windows(self) -> bool:
-        """Whether the compositor lays windows out itself, as niri and Sway do.
-
-        Under one, the window's size is the layout's arithmetic rather than
-        anything the user chose, and asking to be maximised takes the whole
-        output away from the arrangement they made. Two things give such a
-        compositor away: it offers no minimise, and when it does tell clients
-        they are tiled it says so in the toplevel state.
-        """
-        surface = self.get_surface()
-        if not isinstance(surface, Gdk.Toplevel):
-            return False
-        if surface.get_state() & Gdk.ToplevelState.TILED:
-            return True
-        if not hasattr(surface, "get_capabilities"):   # GTK before 4.20
-            return False
-        return not surface.get_capabilities() & Gdk.ToplevelCapabilities.MINIMIZE
-
-    def _on_realize(self, _widget):
-        surface = self.get_surface()
-        if not isinstance(surface, Gdk.Toplevel):
-            return
-        surface.connect("notify::capabilities",
-                        lambda *_: self._settle_restored_maximize())
-        # X11 knows what the window manager can do as soon as the window
-        # exists; Wayland reports a placeholder until the compositor's first
-        # configure, which only arrives after the map. Settle straight away
-        # when the answer is already in, and wait for the notify otherwise.
-        if (not hasattr(surface, "get_capabilities")
-                or surface.get_capabilities() & Gdk.ToplevelCapabilities.MINIMIZE):
-            self._settle_restored_maximize()
-
-    def _settle_restored_maximize(self):
-        """Take back the maximise from the config if it was the wrong call.
-
-        Runs once, before the first frame: a maximise the user asks for later
-        is theirs to keep. The flag is forgotten as well, so the next start
-        under this compositor does not ask again.
-        """
-        if not self._maximize_pending:
-            return
-        self._maximize_pending = False
-        if not self._compositor_tiles_windows():
-            return
-        self.unmaximize()
-        self.config["window_maximized"] = False
-        self.config.save()
-
     def _remember_geometry(self):
-        # Under a tiling compositor neither number is the user's to remember,
-        # so the ones from the last session that did get to choose them stay.
-        if not self._compositor_tiles_windows():
-            self.config["window_maximized"] = self.is_maximized()
-            if not self.is_maximized():
-                self.config["window_width"] = self.get_width()
-                self.config["window_height"] = self.get_height()
+        self.geometry.save()
         if self.active is not None:
             fraction = self.active.split_fraction()
             if fraction is not None and not self._narrow:
                 self.config["split_fraction"] = round(fraction, 4)
             self.config["editor_font_size"] = self.active.editor.get_font_size()
-            self.config["preview_scale"] = round(self.active.preview.get_font_scale(), 3)
+            self.config["preview_font_size"] = render.page_font()[1]
         if self.outline.get_visible():
             self.config["sidebar_width"] = self.side_paned.get_position()
         self.config.save()

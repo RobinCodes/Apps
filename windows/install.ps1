@@ -97,6 +97,13 @@ $Apps = @(
        Icon = 'fathom.ico'; Svg = 'Fathom\fathom.svg'
        AppId = 'com.robin.Fathom'
        Comment = 'See what is taking up the disk, as a tree and as a map' }
+    # No file types: a file manager that registers itself as the handler for
+    # anything would be a file manager that opens files with itself.
+    @{ Name = 'Hermione'; Folder = 'Hermione'; Entry = 'hermione.py'
+       Launcher = 'hermione.bat'
+       Icon = 'hermione.ico'; Svg = 'Hermione\hermione.svg'
+       AppId = 'com.robin.Hermione'
+       Comment = 'Browse, search and tidy up the files on this machine' }
     @{ Name = 'Notedown'; Folder = 'Notedown'; Entry = 'notedown.py'
        Launcher = 'notedown.bat'
        Icon = 'notedown.ico'; Svg = 'Notedown\notedown.svg'
@@ -111,7 +118,7 @@ $Apps = @(
     # window already open: a link clicked in another program should not wait
     # on Python, git and a fetch first. Starting the app is still the
     # launcher's job, so the build an update left ready gets swapped in.
-    @{ Name = 'Lyndon'; Folder = 'Lyndon Browser'; Entry = 'win32\launch.py'
+    @{ Name = 'Lyndon'; Folder = 'Lyndon Browser'; Entry = 'lyndon.py'
        Opener = 'dist\lyndon.exe'; Browser = $true
        Icon = 'lyndon.ico'; Svg = 'Lyndon Browser\data\icons\org.lyndon.Browser.svg'
        AppId = 'org.lyndon.Browser'

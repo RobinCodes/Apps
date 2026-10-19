@@ -10,11 +10,12 @@ __pycache__/
 /Lyndon Browser/tests/test-util
 /Lyndon Browser/tests/test-store
 /Lyndon Browser/tests/test-engine
+/Lyndon Browser/tests/test-archive
+/Lyndon Browser/dist/
 
 # Lyndon Browser, Windows build
 /Lyndon Browser/build-win/
 /Lyndon Browser/lyndon.exe
-/Lyndon Browser/dist/
 # Staged next to the executable by `make dist`; the copy that is kept lives
 # in win32/webview2/x64/.
 /Lyndon Browser/WebView2Loader.dll
@@ -22,9 +23,12 @@ __pycache__/
 # Generated from the .svg files by windows/install.ps1
 /windows/icons/_preview*.png
 
-# Left by win32/launch.py: the next build while it is waiting to be swapped in,
-# the one it replaced, its lock, and its log.
+# Left by lyndon.py: the next build while it is waiting to be swapped in, the
+# one it replaced, the note to the running browser that one is waiting, when
+# the last fetch was, the build lock, and the log.
 /Lyndon Browser/dist-next/
 /Lyndon Browser/dist-old*/
+/Lyndon Browser/.update-ready
+/Lyndon Browser/.update-checked
 /Lyndon Browser/.update.lock
 /Lyndon Browser/update.log

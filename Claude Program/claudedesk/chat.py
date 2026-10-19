@@ -485,7 +485,7 @@ class ThinkingRow(Gtk.Box):
 class PermissionCard(Gtk.Box):
     """The terminal's y/n prompt, as something you can actually read."""
 
-    def __init__(self, request, on_answer):
+    def __init__(self, request, on_answer, mode=""):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10,
                          css_classes=["perm-card"], margin_top=6, margin_bottom=6)
         self.on_answer = on_answer
@@ -496,6 +496,13 @@ class PermissionCard(Gtk.Box):
         title.append(Gtk.Label(label=f"Allow {name}?", xalign=0, hexpand=True,
                                css_classes=["perm-title"]))
         self.append(title)
+
+        # Why it is asking, before what it wants to do. A question that
+        # arrives in a mode you set to stop questions is first of all a
+        # question about the mode, and the CLI tells us the answer.
+        why = widgets.permission_reason(request, mode)
+        if why:
+            self.append(_label(markdown.esc(why), css=("perm-why",)))
 
         detail = request.get("description") or widgets.tool_summary(
             request.get("tool_name", ""), request.get("input")
@@ -518,7 +525,10 @@ class PermissionCard(Gtk.Box):
              if s.get("type") == "setMode" and s.get("mode")),
             None,
         )
-        if always_mode:
+        # `suppress_always_allow_rule` is the CLI saying that accepting this
+        # once must not stand for accepting it always — the rule it would
+        # write is wider than the question being asked.
+        if always_mode and not request.get("no_always"):
             label = dict(PERMISSION_MODES).get(always_mode, always_mode)
             always = Gtk.Button(label=f"Allow — {label.lower()}")
             always.connect("clicked", lambda _b: self.on_answer(True, True))
@@ -528,7 +538,11 @@ class PermissionCard(Gtk.Box):
         allow.connect("clicked", lambda _b: self.on_answer(True, False))
         buttons.append(allow)
         self.append(buttons)
-        widgets.focus_soon(allow)
+        # Named, the way the other composite widgets name their parts.
+        self.allow, self.deny = allow, deny
+        # `default_to_no` means this must not be approvable by one stray key
+        # press, so the focus goes on Deny and Space does the safe thing.
+        widgets.focus_soon(deny if request.get("default_to_no") else allow)
 
 
 class QuestionCard(Gtk.Box):
@@ -1172,17 +1186,28 @@ class ChatView(Gtk.Box):
 
     # ------------------------------------------------------------ rendering --
 
-    def reload(self):
-        # Every message label is selectable, so one of them may hold the
-        # window's focus. Destroying the focused widget leaves the scrolled
-        # window checking the ancestry of something that no longer exists, so
-        # hand focus back to the composer first — which is where it belongs
-        # after a reload anyway.
+    def _release_focus(self, widget):
+        """Take the keyboard out of `widget` before `widget` goes away.
+
+        Every message label in the thread is selectable, which also makes it
+        a focus stop. Destroy the focused widget without saying where the
+        focus should go and GTK goes looking for somewhere itself: the first
+        stop inside the scrolled window, which is the first paragraph of the
+        first message — and a selectable label *selects all of its text* when
+        the focus arrives by keyboard. So clicking Allow would answer the
+        question, scroll the conversation to the very top, and highlight the
+        opening line of what you first said. The composer is where the focus
+        belongs after answering anyway, so it is never GTK's choice to make.
+        """
+        if widget is None:
+            return
         root = self.get_root()
         focus = root.get_focus() if root is not None else None
-        if focus is not None and focus.is_ancestor(self.list):
+        if focus is not None and (focus is widget or focus.is_ancestor(widget)):
             self.composer.focus()
 
+    def reload(self):
+        self._release_focus(self.list)
         widgets.clear_box(self.list)
         self._rows.clear()
         self._prompt_card = None
@@ -1332,7 +1357,8 @@ class ChatView(Gtk.Box):
         if request.get("questions"):
             card = QuestionCard(request, self._answer_question)
         else:
-            card = PermissionCard(request, self._answer_permission)
+            card = PermissionCard(request, self._answer_permission,
+                                  mode=self.session.meta.permission_mode)
         self._prompt_card = card
         self.list.append(card)
         self._sync_state()
@@ -1340,6 +1366,7 @@ class ChatView(Gtk.Box):
 
     def _clear_prompt(self):
         if self._prompt_card is not None:
+            self._release_focus(self._prompt_card)
             self.list.remove(self._prompt_card)
             self._prompt_card = None
             self._sync_state()
@@ -1364,6 +1391,7 @@ class ChatView(Gtk.Box):
 
     def _clear_report(self):
         if self._report_card is not None:
+            self._release_focus(self._report_card)
             self.list.remove(self._report_card)
             self._report_card = None
 

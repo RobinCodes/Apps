@@ -251,14 +251,28 @@ popover.lyndon-panel > contents {
 
 /* ------------------------------------------------------------ overlays */
 
+/* These bars float over live page content, so they have to carry a surface of
+   their own. Not .card: libadwaita's dark card background is an 8% white wash
+   meant to sit on a dark window, and over a white page it washes out to white
+   under white text — the save-password prompt became invisible on exactly the
+   pages that prompt for one. A popover's surface is opaque in both schemes,
+   which is what anything hovering over someone else's pixels needs. */
 .lyndon-permission {
   margin: 8px;
   border-radius: 14px;
+  background-color: @popover_bg_color;
+  color: @popover_fg_color;
+  box-shadow: inset 0 0 0 1px alpha(@borders, 0.8),
+              0 1px 4px alpha(@shade_color, 0.5),
+              0 8px 20px alpha(@shade_color, 0.45);
 }
 
-/* The capture bar floats over live page content, and an entry box with the
-   theme's transparent background lets the page read straight through whatever
-   is being typed into it. */
+.fx-off .lyndon-permission {
+  box-shadow: inset 0 0 0 1px @borders;
+}
+
+/* Same reason for the entry boxes: the theme's transparent entry background
+   would let the page read straight through whatever is being typed into it. */
 .lyndon-permission entry,
 .lyndon-permission entry > text,
 .lyndon-permission entry.password {

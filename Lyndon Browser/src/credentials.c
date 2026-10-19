@@ -36,6 +36,12 @@ ly_credential_free (LyCredential *credential)
     memset (credential->password, 0, strlen (credential->password));
     g_free (credential->password);
   }
+  /* A note is kept in the same store as the password and for the same reason:
+   * people put recovery codes in them. */
+  if (credential->note != NULL) {
+    memset (credential->note, 0, strlen (credential->note));
+    g_free (credential->note);
+  }
   g_free (credential);
 }
 

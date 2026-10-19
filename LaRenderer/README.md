@@ -14,6 +14,25 @@ Real LaTeX does the typesetting: the buffer goes to `pdflatex` (or XeLaTeX, or
 LuaLaTeX), poppler rasterises the pages, and SyncTeX maps the caret's line to a
 spot on a page. Nothing about the output is approximated.
 
+## The house style
+
+The look is the house's, from [`house/`](../house/README.md): the same eight
+themes as the rest of the suite, the same preference rows in the same order,
+and the same material. The window paints nothing itself — everything sits on
+one rounded, translucent slab of glass inside it, with a highlight that
+follows the pointer and the theme's own slow light drifting behind.
+
+**Porcelain** is the light default — warm paper under glass — and **Moss**
+the dark one, a desaturated forest black under sage. With **Follow the desktop** on, which it
+is by default, the app uses one in a light session and the other in a dark
+one and switches when the desktop does. The rest of the eight are in
+Preferences → Look, along with how translucent the glass is, how far a
+floating panel blurs what is behind it, and how round the corners are.
+
+The window also remembers the size it was last closed at, and whether it was
+maximised, and comes back that way. Under a tiling compositor it does
+neither — see below.
+
 ## Where it's installed
 
 Entry points go through a symlink, the same way Git Manager reaches its

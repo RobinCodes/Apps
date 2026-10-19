@@ -5,14 +5,24 @@ from __future__ import annotations
 import json
 import os
 
-from . import winenv
+from . import theme as theming, winenv
 
 DIR = winenv.config_home("notedown")
 PATH = os.path.join(DIR, "config.json")
 
 DEFAULTS = {
-    # The editor.
-    "editor_font_size": 11,
+    # -- the house style --------------------------------------------------
+    # The themes, the glass, and whether to follow the desktop between light
+    # and dark. The keys and their defaults come from theme.py, which every
+    # app here has the same copy of, so that adding a theme or changing the
+    # default pair is one edit rather than nine.
+    **theming.SETTINGS,
+
+    # The editor. A family of "" is whatever GTK would have used anyway, and
+    # "monospace" is the one the desktop keeps for code rather than a font of
+    # that name.
+    "editor_font_family": "monospace",
+    "editor_font_size": 13,
     "wrap": True,
     "show_gutter": True,
     "focus_mode": False,        # dim everything but the current paragraph
@@ -20,7 +30,8 @@ DEFAULTS = {
     "spell_check": False,
 
     # The preview.
-    "preview_scale": 1.0,
+    "preview_font_family": "",      # "" = the desktop's own document font
+    "preview_font_size": 13,        # points, the size the rest is a ratio of
     "reading_width": 820,       # 0 = the whole pane, else a measure in pixels
     "sync_scroll": True,
     "load_remote_images": False,
@@ -73,6 +84,8 @@ class Config(dict):
                     if isinstance(value, wanted) or (
                             wanted is float and isinstance(value, int)):
                         self[key] = wanted(value) if wanted is float else value
+                # The house-style keys have their own rules — see theming.take.
+                theming.take(self, data)
         except (OSError, ValueError):
             pass
         return self

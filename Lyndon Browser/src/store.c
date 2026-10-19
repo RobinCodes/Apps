@@ -610,6 +610,60 @@ ly_store_recent (LyStore *store, guint limit)
   return rows_from (stmt);
 }
 
+/* Grouping is done here rather than in SQL: the registrable domain of a URL
+ * is ly_uri_base_domain's answer, and teaching SQLite the public suffix list
+ * is not a trade worth making for a query that runs a few times an hour. */
+GPtrArray *
+ly_store_recent_hosts (LyStore *store, int days, int min_visits, guint limit)
+{
+  GPtrArray *out = g_ptr_array_new_with_free_func (g_free);
+  if (store->db == NULL || limit == 0)
+    return out;
+
+  sqlite3_stmt *stmt = prepare (store,
+    "SELECT url, visits FROM history "
+    "WHERE last_visit >= ?1 ORDER BY visits DESC, last_visit DESC LIMIT 4000;");
+  if (stmt == NULL)
+    return out;
+
+  gint64 cutoff = g_get_real_time () / G_USEC_PER_SEC - (gint64) days * 24 * 60 * 60;
+  sqlite3_bind_int64 (stmt, 1, cutoff);
+
+  /* site → visits so far; the first URL seen for a site is its busiest, which
+   * is the one the ORDER BY above already put first. */
+  g_autoptr (GHashTable) totals =
+    g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  g_autoptr (GPtrArray) order = g_ptr_array_new_with_free_func (g_free);
+  g_autoptr (GHashTable) best =
+    g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+
+  while (sqlite3_step (stmt) == SQLITE_ROW) {
+    const char *url = column_text (stmt, 0);
+    g_autofree char *site = ly_uri_base_domain (url);
+    if (site == NULL)
+      continue;
+
+    gpointer seen = NULL;
+    gboolean known = g_hash_table_lookup_extended (totals, site, NULL, &seen);
+    if (!known) {
+      g_ptr_array_add (order, g_strdup (site));
+      g_hash_table_insert (best, g_strdup (site), g_strdup (url));
+    }
+    g_hash_table_insert (totals, g_strdup (site),
+                         GINT_TO_POINTER (GPOINTER_TO_INT (seen) +
+                                          sqlite3_column_int (stmt, 1)));
+  }
+  sqlite3_finalize (stmt);
+
+  for (guint i = 0; i < order->len && out->len < limit; i++) {
+    const char *site = g_ptr_array_index (order, i);
+    if (GPOINTER_TO_INT (g_hash_table_lookup (totals, site)) < min_visits)
+      continue;
+    g_ptr_array_add (out, g_strdup (g_hash_table_lookup (best, site)));
+  }
+  return out;
+}
+
 void
 ly_store_forget_url (LyStore *store, const char *url)
 {
@@ -690,6 +744,49 @@ ly_store_remove_bookmark (LyStore *store, const char *url)
   sqlite3_bind_text (stmt, 1, url, -1, SQLITE_TRANSIENT);
   sqlite3_step (stmt);
   sqlite3_finalize (stmt);
+}
+
+gboolean
+ly_store_rename_bookmark (LyStore *store, const char *url, const char *title)
+{
+  if (store->db == NULL || url == NULL || *url == '\0' || title == NULL)
+    return FALSE;
+
+  g_autofree char *trimmed = g_strdup (title);
+  g_strstrip (trimmed);
+  if (*trimmed == '\0')
+    return FALSE;
+
+  sqlite3_stmt *stmt = prepare (store,
+    "UPDATE bookmarks SET title = ?2 WHERE url = ?1;");
+  if (stmt == NULL)
+    return FALSE;
+  sqlite3_bind_text (stmt, 1, url, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text (stmt, 2, trimmed, -1, SQLITE_TRANSIENT);
+  sqlite3_step (stmt);
+  sqlite3_finalize (stmt);
+
+  return sqlite3_changes (store->db) > 0;
+}
+
+char *
+ly_store_bookmark_title (LyStore *store, const char *url)
+{
+  if (store->db == NULL || url == NULL || *url == '\0')
+    return NULL;
+
+  sqlite3_stmt *stmt = prepare (store, "SELECT title FROM bookmarks WHERE url = ?1;");
+  if (stmt == NULL)
+    return NULL;
+  sqlite3_bind_text (stmt, 1, url, -1, SQLITE_TRANSIENT);
+
+  char *title = NULL;
+  if (sqlite3_step (stmt) == SQLITE_ROW) {
+    const unsigned char *text = sqlite3_column_text (stmt, 0);
+    title = g_strdup (text != NULL ? (const char *) text : "");
+  }
+  sqlite3_finalize (stmt);
+  return title;
 }
 
 GPtrArray *

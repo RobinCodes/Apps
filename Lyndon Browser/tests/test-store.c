@@ -11,7 +11,7 @@
  * what somebody is in the middle of typing.
  *
  * Only ly_data_dir is needed from the rest of the browser, and it is stubbed
- * here, so this links against store.c, glib and sqlite alone.
+ * here, so this links against store.c, util.c, glib and sqlite alone.
  */
 
 #include "store.h"
@@ -94,6 +94,32 @@ match_count (LyStore *store, const char *text)
 {
   g_autoptr (GPtrArray) rows = ly_store_complete (store, text, 8);
   return rows->len;
+}
+
+/* Where `site` comes in the sweep's shortlist, or -1 when it is not on it. */
+static int
+sweep_rank (LyStore *store, int days, int min_visits, const char *site)
+{
+  g_autoptr (GPtrArray) hosts = ly_store_recent_hosts (store, days, min_visits, 32);
+  for (guint i = 0; i < hosts->len; i++) {
+    g_autofree char *base = ly_uri_base_domain (g_ptr_array_index (hosts, i));
+    if (g_strcmp0 (base, site) == 0)
+      return (int) i;
+  }
+  return -1;
+}
+
+static char *
+sweep_entry (LyStore *store, int days, int min_visits, const char *site)
+{
+  g_autoptr (GPtrArray) hosts = ly_store_recent_hosts (store, days, min_visits, 32);
+  for (guint i = 0; i < hosts->len; i++) {
+    const char *url = g_ptr_array_index (hosts, i);
+    g_autofree char *base = ly_uri_base_domain (url);
+    if (g_strcmp0 (base, site) == 0)
+      return g_strdup (url);
+  }
+  return NULL;
 }
 
 static gint64
@@ -212,6 +238,77 @@ main (void)
   ly_store_record_visit (store, "https://twin.example/linked", "Twin", FALSE);
   expect_str (top_match (store, "twin.example"), "https://twin.example/typed",
               "having been typed is what breaks the tie");
+
+  printf ("the offline sweep's shortlist\n");
+
+  /* A site read a lot this week, one read a lot but long ago, and one barely
+   * touched: only the first is a site somebody is still reading. */
+  seed (store, "https://docs.sweep.example/a", "A", 9, 0, 30, 1);
+  seed (store, "https://docs.sweep.example/b", "B", 5, 0, 30, 2);
+  seed (store, "https://old.example/x",        "X", 40, 0, 30, 90);
+  seed (store, "https://once.example/y",       "Y", 1, 0, 30, 1);
+
+  expect_int (sweep_rank (store, 7, 3, "sweep.example") >= 0, TRUE,
+              "a site read this week is on the list");
+  expect_int (sweep_rank (store, 7, 3, "old.example"), -1,
+              "a site not read since the spring is not");
+  expect_int (sweep_rank (store, 7, 3, "once.example"), -1,
+              "nor is one opened a single time");
+  expect_int (sweep_rank (store, 120, 3, "old.example") >= 0, TRUE,
+              "a wider window reaches back far enough for it");
+
+  /* Pages add up per site, and the crawl should start from the busiest. */
+  expect_str (sweep_entry (store, 7, 14, "sweep.example"),
+              "https://docs.sweep.example/a",
+              "a site's pages count together, and its busiest one is the way in");
+  expect_int (sweep_rank (store, 7, 15, "sweep.example"), -1,
+              "one more visit than the site has is one too many");
+
+  /* -- bookmarks, and renaming one ------------------------------------- */
+  printf ("\nbookmarks\n");
+
+  ly_store_add_bookmark (store, "https://news.example/world", "World news");
+  expect_int (ly_store_is_bookmarked (store, "https://news.example/world"), TRUE,
+              "a bookmark is saved");
+  expect_str (ly_store_bookmark_title (store, "https://news.example/world"),
+              "World news", "with the label it was given");
+
+  expect_int (ly_store_rename_bookmark (store, "https://news.example/world",
+                                        "The news"), TRUE, "renaming one works");
+  expect_str (ly_store_bookmark_title (store, "https://news.example/world"),
+              "The news", "and the new label is what is stored");
+  expect_int (ly_store_is_bookmarked (store, "https://news.example/world"), TRUE,
+              "a rename does not unbookmark it");
+
+  expect_int (ly_store_rename_bookmark (store, "https://news.example/world",
+                                        "   Trimmed   "), TRUE,
+              "surrounding space is not a reason to refuse a name");
+  expect_str (ly_store_bookmark_title (store, "https://news.example/world"),
+              "Trimmed", "and is not kept either");
+
+  expect_int (ly_store_rename_bookmark (store, "https://news.example/world", "   "),
+              FALSE, "a name that is only space is refused");
+  expect_str (ly_store_bookmark_title (store, "https://news.example/world"),
+              "Trimmed", "and changes nothing");
+  expect_int (ly_store_rename_bookmark (store, "https://news.example/world", NULL),
+              FALSE, "so is no name at all");
+
+  expect_int (ly_store_rename_bookmark (store, "https://not-saved.example/", "Hello"),
+              FALSE, "renaming something that is not bookmarked reports so");
+  expect_str (ly_store_bookmark_title (store, "https://not-saved.example/"), NULL,
+              "and it still has no label, because it is still not a bookmark");
+
+  /* The page's own title is written over a bookmark that never had one. A
+   * name somebody chose is not a bookmark that never had one. */
+  ly_store_update_title (store, "https://news.example/world", "World News — Today");
+  expect_str (ly_store_bookmark_title (store, "https://news.example/world"),
+              "Trimmed", "a visit does not overwrite a name that was chosen");
+
+  ly_store_add_bookmark (store, "https://blank.example/", NULL);
+  ly_store_update_title (store, "https://blank.example/", "Blank Example");
+  expect_str (ly_store_bookmark_title (store, "https://blank.example/"),
+              "Blank Example",
+              "but it does fill in one that was saved before its title arrived");
 
   ly_store_free (store);
 

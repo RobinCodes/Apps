@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import os
 
-from . import winenv
+from . import theme as theming, winenv
 
 DIR = winenv.config_home("larenderer")
 PATH = os.path.join(DIR, "config.json")
 
 DEFAULTS = {
+    # -- the house style --------------------------------------------------
+    # The themes, the glass, and whether to follow the desktop between light
+    # and dark. The keys and their defaults come from theme.py, which every
+    # app here has the same copy of, so that adding a theme or changing the
+    # default pair is one edit rather than nine.
+    **theming.SETTINGS,
+
     "engine": "pdflatex",
     "auto_compile": True,
     "compile_delay_ms": 400,     # after the last keystroke
@@ -67,6 +74,8 @@ class Config(dict):
                 for key, value in data.items():
                     if key in DEFAULTS and isinstance(value, type(DEFAULTS[key])):
                         self[key] = value
+                # The house-style keys have their own rules — see theming.take.
+                theming.take(self, data)
         except (OSError, ValueError):
             pass
         return self

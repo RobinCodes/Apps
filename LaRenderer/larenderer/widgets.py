@@ -9,6 +9,8 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango  # noqa: E402
 
+from . import housestyle  # noqa: E402
+
 SEVERITY_ICON = {
     "error": "✕",      # a cross
     "warning": "⚠",    # a warning triangle
@@ -231,8 +233,16 @@ class ProblemsList(Gtk.ScrolledWindow):
 
 
 CSS = """
+/* The gutter is a DrawingArea beside the ScrolledWindow rather than inside
+   it, so it has to paint the same surface the text does or the editor reads
+   as two panes. It used to be a 3% tint over the window's own background,
+   which worked while that background was opaque Adwaita grey; under the
+   house style the window is glass, and a transparent strip down the side of
+   a block of code is a strip of wallpaper running through it. */
 .editor-gutter {
-  background: alpha(currentColor, 0.03);
+  background-color: @view_bg_color;
+  background-image: linear-gradient(alpha(currentColor, 0.03),
+                                    alpha(currentColor, 0.03));
 }
 .preview-area {
   background: @window_bg_color;
@@ -315,11 +325,23 @@ CSS = """
 """
 
 
-def install_css():
-    provider = Gtk.CssProvider()
-    provider.load_from_string(CSS)
-    display = Gdk.Display.get_default()
-    if display:
-        Gtk.StyleContext.add_provider_for_display(
-            display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
+def install_css(config=None):
+    """Put the house sheet, plus this app's own rules, on the display.
+
+    The house sheet is the palettes and the shared idiom — see housestyle.py —
+    and `CSS` above is only what is particular to this app. One provider,
+    reloaded in place, so a theme change takes effect on widgets that have
+    already been built.
+
+    `config` is optional so that a first install can happen before any
+    settings have been read; without one the house defaults are used, which
+    is the right answer for the one frame before a window exists.
+    """
+    scheme = housestyle.theming.get(housestyle.wanted_key(config))
+    glass = bool(housestyle.setting(config, "glass"))
+    housestyle.install(
+        scheme, CSS,
+        translucency=float(housestyle.setting(config, "translucency")),
+        window_radius=int(housestyle.setting(config, "rounding")),
+        blur=int(housestyle.setting(config, "glass_blur")) if glass else 0,
+        glass=glass)

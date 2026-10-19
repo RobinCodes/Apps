@@ -595,7 +595,7 @@ normalise_header (const char *text)
   return g_string_free (out, FALSE);
 }
 
-typedef enum { COL_URL, COL_USER, COL_PASS, COL_NAME, COL_N } ColumnKind;
+typedef enum { COL_URL, COL_USER, COL_PASS, COL_NAME, COL_NOTE, COL_N } ColumnKind;
 
 static const char *const COLUMN_NAMES[COL_N][10] = {
   [COL_URL]  = { "url", "urls", "uri", "loginuri", "loginurl", "weburl", "website",
@@ -604,6 +604,7 @@ static const char *const COLUMN_NAMES[COL_N][10] = {
                  "login", "account", "accountname", "email", NULL },
   [COL_PASS] = { "password", "loginpassword", "passwd", "pass", "secret", NULL },
   [COL_NAME] = { "name", "title", "displayname", "itemname", "site", NULL },
+  [COL_NOTE] = { "note", "notes", "comment", "comments", "extra", NULL },
 };
 
 /* Second-choice headers: matched only when nothing better was found, so that a
@@ -613,6 +614,7 @@ static const char *const COLUMN_FALLBACKS[COL_N][6] = {
   [COL_USER] = { "emailaddress", "identity", "usernameoremail", NULL },
   [COL_PASS] = { NULL },
   [COL_NAME] = { NULL },
+  [COL_NOTE] = { "description", "memo", NULL },
 };
 
 static gboolean
@@ -698,8 +700,16 @@ table_to_credentials (Table *table, guint *skipped, GError **error)
 
     if (origin == NULL) { dropped++; continue; }
 
-    g_ptr_array_add (credentials,
-                     ly_credential_new (origin, cell (row, column[COL_USER]), password));
+    LyCredential *credential =
+      ly_credential_new (origin, cell (row, column[COL_USER]), password);
+    /* Chrome's export has a note column and so does everyone else's; carrying
+     * it means an import is not quietly lossy. */
+    if (column[COL_NOTE] >= 0) {
+      const char *note = cell (row, column[COL_NOTE]);
+      if (*note != '\0')
+        credential->note = g_strdup (note);
+    }
+    g_ptr_array_add (credentials, credential);
   }
 
   if (skipped != NULL)
@@ -801,7 +811,7 @@ ly_pwfile_write_csv (const char *path, GPtrArray *credentials, GError **error)
     append_csv_field (out, credential->origin, FALSE);
     append_csv_field (out, credential->username ?: "", FALSE);
     append_csv_field (out, credential->password ?: "", FALSE);
-    append_csv_field (out, "", TRUE);
+    append_csv_field (out, credential->note ?: "", TRUE);
   }
 
   /* 0600: this file is plaintext, and the file manager should be the only

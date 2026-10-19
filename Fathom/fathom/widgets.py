@@ -9,7 +9,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, GObject, Gtk  # noqa: E402
 
-from . import filetypes  # noqa: E402
+from . import filetypes, housestyle  # noqa: E402
 from .units import human_percent, human_size  # noqa: E402
 
 
@@ -124,12 +124,15 @@ class Meter(Gtk.DrawingArea):
             return
         _rounded(ctx, 0, 0, max(filled, height), height, radius)
         # Green until it matters, amber when it starts to, red when it does.
-        if self.fraction < 0.75:
-            ctx.set_source_rgb(0.18, 0.76, 0.49)
-        elif self.fraction < 0.92:
-            ctx.set_source_rgb(0.90, 0.65, 0.04)
-        else:
-            ctx.set_source_rgb(0.88, 0.20, 0.20)
+        # The three come from the theme rather than from numbers here: the
+        # meaning is fixed, the hue is not, and a bar in a colour no other
+        # part of the window uses is the thing that makes an app look like
+        # two apps.
+        scheme = housestyle.current()
+        index = 2 if self.fraction < 0.75 else (3 if self.fraction < 0.92 else 1)
+        if not scheme.dark:
+            index += 8          # the light themes' darker half
+        ctx.set_source_rgb(*housestyle.theming.rgb(scheme.ansi[index]))
         ctx.fill()
 
 
@@ -335,10 +338,23 @@ CSS = """
 """
 
 
-def install_css():
-    provider = Gtk.CssProvider()
-    provider.load_from_string(CSS)
-    display = Gdk.Display.get_default()
-    if display:
-        Gtk.StyleContext.add_provider_for_display(
-            display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+def install_css(config=None):
+    """Put the house sheet, plus this app's own rules, on the display.
+
+    The house sheet is the palettes and the shared idiom — see housestyle.py —
+    and `CSS` above is only what is particular to this app. One provider,
+    reloaded in place, so a theme change takes effect on widgets that have
+    already been built.
+
+    `config` is optional so that a first install can happen before any
+    settings have been read; without one the house defaults are used, which
+    is the right answer for the one frame before a window exists.
+    """
+    scheme = housestyle.theming.get(housestyle.wanted_key(config))
+    glass = bool(housestyle.setting(config, "glass"))
+    housestyle.install(
+        scheme, CSS,
+        translucency=float(housestyle.setting(config, "translucency")),
+        window_radius=int(housestyle.setting(config, "rounding")),
+        blur=int(housestyle.setting(config, "glass_blur")) if glass else 0,
+        glass=glass)

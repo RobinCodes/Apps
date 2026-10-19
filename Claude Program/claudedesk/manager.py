@@ -34,6 +34,7 @@ from gi.repository import GLib
 
 from . import config
 from .backend import (
+    PERMISSION_MODES,
     REPORT_COMMANDS,
     STANDALONE_COMMANDS,
     Backend,
@@ -61,6 +62,10 @@ class Session:
         # In memory only: they are a few seconds of intent, not history.
         self.outbox = []
         self.commands = []
+        # Which model the child actually picked up. Worth keeping only for a
+        # session set to "default", where it is the one way to find out what
+        # Default means on this machine without reading Claude Code's mind.
+        self.live_model = ""
         self.live_delta = ""
         self.live_delta_kind = "text"
         self.last_activity = meta.last_used
@@ -271,6 +276,74 @@ class Session:
             self.backend.set_permission_mode(mode)
         self.manager.session_changed(self)
 
+    def _apply_child_mode(self, mode, error=""):
+        """Believe the child about which mode it is actually in.
+
+        Asking for a mode and being in it are different things: bypass is
+        refused where it has not been consented to, and a name the CLI does
+        not know becomes `default`. The dropdown showing what was asked for
+        would then be a promise nothing is keeping, and every prompt that
+        followed would look like the app ignoring it — so the echo wins, and
+        the difference is said out loud once.
+        """
+        if error:
+            self.manager.notify(f"Claude Code refused the permission mode: {error}")
+            return
+        if not mode or mode == self.meta.permission_mode:
+            return
+        asked = dict(PERMISSION_MODES).get(self.meta.permission_mode,
+                                           self.meta.permission_mode)
+        now = dict(PERMISSION_MODES).get(mode, mode)
+        self.meta.permission_mode = mode
+        self.manager.session_changed(self)
+        self.manager.notify(f"Claude Code is in “{now}”, not “{asked}”")
+        self.note(f"Permission mode is “{now}” — Claude Code would not take "
+                  f"“{asked}” in this session.")
+
+    def set_group(self, name):
+        """File this chat under Favourites or the archive, or under neither."""
+        name = config.clean_group(name)
+        if name == self.meta.group:
+            return
+        self.meta.group = name
+        self.manager.save()
+
+    def set_tags(self, names):
+        """Put exactly these tags on this chat, and no others.
+
+        The list of every tag in use follows from the chats wearing them
+        rather than being kept beside them: putting one on is what makes it
+        exist, and taking the last one off is what ends it.
+        """
+        names = config.clean_tags(names)
+        if names == self.meta.tags:
+            return
+        self.meta.tags = names
+        for name in names:
+            self.manager.config.remember_tag(name)
+        self.manager.config.prune_tags()
+        # config.save() rather than manager.save(): a tag is one line of the
+        # file, this runs from a menu that stays open to tick the next one,
+        # and naming the chat that changed is what lets a window refresh the
+        # one row instead of rebuilding the list under the open menu.
+        self.manager.config.save()
+        self.manager.session_changed(self)
+
+    def toggle_tag(self, name):
+        """Put this tag on the chat, or take it off again."""
+        name = config.clean_tag(name)
+        if not name:
+            return
+        kept = [tag for tag in self.meta.tags if tag != name]
+        self.set_tags(kept if len(kept) < len(self.meta.tags)
+                      else [*self.meta.tags, name])
+
+    def add_tag(self, name):
+        """Put this tag on the chat unless it is already wearing it."""
+        name = config.clean_tag(name)
+        if name and name not in self.meta.tags:
+            self.set_tags([*self.meta.tags, name])
+
     def rename(self, name):
         """Call this conversation something other than its opening line."""
         name = " ".join(name.split())[:60]
@@ -387,7 +460,16 @@ class Session:
             if data.get("session_id"):
                 self.meta.claude_session_id = data["session_id"]
             self.remember_commands(data.get("commands"))
+            self.live_model = data.get("model") or ""
+            if self.meta.model == "default" and self.live_model:
+                self.manager.default_model_seen(self.live_model)
+            # The init frame names the mode the child settled on, which is
+            # where a --permission-mode it would not take shows up.
+            self._apply_child_mode(data.get("permission_mode"))
             self.manager.session_changed(self)
+
+        elif kind == "mode":
+            self._apply_child_mode(data.get("mode"), data.get("error", ""))
 
         elif kind == "handshake":
             self.remember_commands(data.get("commands"))
@@ -720,14 +802,42 @@ class Manager:
             except Exception:  # noqa: BLE001 - one broken window must not stall the rest
                 pass
 
+    def notify(self, message):
+        """Say something to whichever windows are open. Usually a toast."""
+        for callback in list(self.notice_listeners):
+            try:
+                callback(message)
+            except Exception:  # noqa: BLE001 - one broken window must not stall the rest
+                pass
+
+    def default_model_seen(self, name):
+        """A child running on "default" has just said which model that is.
+
+        Authoritative in a way the settings file is not: an env var, a managed
+        policy or a flag can all have the last word, and this is the answer
+        after all of them.
+        """
+        if name and name != self.config.default_model:
+            self.config.default_model = name
+            self.session_changed()
+
+    def ordered_sessions(self):
+        """Every session in the order the sidebar lists them.
+
+        Grouped, and within a group left exactly as it was: a stable sort, so
+        favouriting a chat moves it into that section without reshuffling the
+        chats it lands among. Tags do not come into it — a chat can wear
+        several and a row can only be in one place, so they filter the list
+        rather than order it.
+        """
+        order = {name: index for index, name in enumerate(self.config.group_order())}
+        return sorted(self.sessions,
+                      key=lambda s: order.get(s.meta.group, order[""]))
+
     def usage_reported(self, info):
         """One child's rate-limit headers, filtered down to what is worth a word."""
         for message in self.rate_limits.notices(info):
-            for callback in list(self.notice_listeners):
-                try:
-                    callback(message)
-                except Exception:  # noqa: BLE001
-                    pass
+            self.notify(message)
 
     def remember_commands(self, commands):
         """Keep the child's command list on disk, so the next launch can
@@ -745,6 +855,12 @@ class Manager:
         )
         self.config.sessions.append(meta)
         self.config.last_cwd = meta.cwd
+        if cwd:
+            # Only a folder that was actually asked for counts as a use. A
+            # session that merely inherited last_cwd has not been pointed
+            # anywhere yet, and counting it would let one folder keep voting
+            # for itself every time the New Session button is pressed.
+            self.config.remember_folder(meta.cwd)
         session = Session(meta, self)
         self.sessions.append(session)
         self.save()
@@ -758,6 +874,9 @@ class Manager:
         if session.meta in self.config.sessions:
             self.config.sessions.remove(session.meta)
         self.queue = [item for item in self.queue if item[0] is not session]
+        # The chat may have been the last one wearing one of its tags, and a
+        # tag nothing wears is not offered -- see Config.prune_tags.
+        self.config.prune_tags()
         self.save()
 
     def save(self):

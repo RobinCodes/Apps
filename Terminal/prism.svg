@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Prism. A slab of dark glass with a prompt on it, and the light that
+       went through the glass coming out of the bottom corner as a spectrum.
+       Pure paths and rects — no text elements, so it does not depend on any
+       font being installed — and the prompt is drawn large enough that the
+       chevron and the caret are still two separate marks at 16px, which is
+       the only part that has to survive. -->
+  <defs>
+    <linearGradient id="slab" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#1b2740"/>
+      <stop offset="0.55" stop-color="#101a2d"/>
+      <stop offset="1" stop-color="#0a1120"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.05"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="beam" gradientUnits="userSpaceOnUse"
+                    x1="26" y1="100" x2="102" y2="100">
+      <stop offset="0" stop-color="#7FD1FF"/>
+      <stop offset="0.5" stop-color="#C792FF"/>
+      <stop offset="1" stop-color="#FF6B81"/>
+    </linearGradient>
+    <radialGradient id="glow" gradientUnits="userSpaceOnUse"
+                    cx="44" cy="30" r="56">
+      <stop offset="0" stop-color="#6FB4FF" stop-opacity="0.50"/>
+      <stop offset="1" stop-color="#5BDCE0" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Everything inside the glass is clipped to it, or the glow spills
+         past the rounded corners and the slab stops looking like a solid. -->
+    <clipPath id="inside">
+      <rect x="12" y="10" width="104" height="104" rx="24"/>
+    </clipPath>
+  </defs>
+
+  <!-- what the glass is lying on -->
+  <rect x="12" y="12" width="104" height="104" rx="24" fill="#070b14" opacity="0.28"
+        transform="translate(0,4)"/>
+
+  <!-- the slab -->
+  <rect x="12" y="10" width="104" height="104" rx="24" fill="url(#slab)"/>
+
+  <g clip-path="url(#inside)">
+    <!-- light pooling inside it -->
+    <ellipse cx="44" cy="30" rx="56" ry="44" fill="url(#glow)"/>
+    <!-- the thickness of the glass, caught along the top edge -->
+    <rect x="12" y="10" width="104" height="30" fill="url(#sheen)"/>
+
+    <!-- the prompt: a chevron and a caret -->
+    <path d="M38 50l16 15-16 15" fill="none" stroke="#DCE3F0" stroke-width="8"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="66" y="74" width="26" height="8" rx="4" fill="#7FD1FF"/>
+
+    <!-- the spectrum, which is what a prism is for -->
+    <path d="M26 99h76" stroke="url(#beam)" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
+  <!-- the rim, last, so it sits on top of everything -->
+  <rect x="12.5" y="10.5" width="103" height="103" rx="23.5" fill="none"
+        stroke="url(#rim)" stroke-width="1.6"/>
+</svg>

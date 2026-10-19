@@ -35,12 +35,20 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 
+from . import widgets  # noqa: E402
+from .config import DEFAULTS  # noqa: E402
+
 HIGHLIGHT_DEBOUNCE_MS = 80
 FULL_HIGHLIGHT_LIMIT = 250_000   # past this, only the visible region is tagged
 INDENT = "  "
 
 CURSOR = "\x00CURSOR\x00"
 SELECTION = "\x00SEL\x00"
+
+# What Ctrl+± and a pinch are allowed to reach. Below the first the gutter
+# stops being readable; above the second a line of prose has four words in it.
+MIN_FONT_SIZE = 6
+MAX_FONT_SIZE = 32
 
 
 # --------------------------------------------------------------- the rules --
@@ -138,7 +146,8 @@ class Editor(Gtk.Box):
 
         self._highlight_source = 0
         self._current_line = -1
-        self._font_size = 11
+        self._font_family = str(DEFAULTS["editor_font_family"])
+        self._font_size = int(DEFAULTS["editor_font_size"])
         self._loading = False
         self._focus_mode = False
         self._typewriter = False
@@ -244,13 +253,33 @@ class Editor(Gtk.Box):
         self.gutter.queue_draw()
 
     def _apply_font(self):
+        # A family that is not on this machine is no disaster: fontconfig
+        # substitutes, and `monospace` at the end means what it substitutes is
+        # at least still a fixed-width face.
+        family = widgets.css_font_family(self._font_family) or "monospace"
+        if family != "monospace":
+            family += ", monospace"
         self._css.load_from_string(
-            f".editor-text {{ font-family: monospace; font-size: {self._font_size}pt; }}")
+            f".editor-text {{ font-family: {family}; font-size: {self._font_size}pt; }}")
 
-    def set_font_size(self, points: int):
-        self._font_size = max(6, min(32, int(points)))
+    def _font_description(self) -> Pango.FontDescription:
+        """The same font as a Pango description, for the gutter to draw with."""
+        description = Pango.FontDescription()
+        description.set_family(self._font_family or "monospace")
+        description.set_size(self._font_size * Pango.SCALE)
+        return description
+
+    def set_font(self, family: str, points: int):
+        self._font_family = str(family or DEFAULTS["editor_font_family"])
+        self._font_size = max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, int(points)))
         self._apply_font()
         self.gutter.queue_draw()
+
+    def set_font_size(self, points: int):
+        self.set_font(self._font_family, points)
+
+    def get_font_family(self) -> str:
+        return self._font_family
 
     def get_font_size(self) -> int:
         return self._font_size
@@ -288,7 +317,7 @@ class Editor(Gtk.Box):
         last = view.get_line_at_y(visible.y + visible.height)[0].get_line()
 
         layout = self.gutter.create_pango_layout("")
-        layout.set_font_description(Pango.FontDescription(f"monospace {self._font_size}"))
+        layout.set_font_description(self._font_description())
 
         digits = max(2, len(str(max(1, buf.get_line_count()))))
         layout.set_text("0" * digits, -1)

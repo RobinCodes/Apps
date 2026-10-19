@@ -9,6 +9,7 @@
 #include "prefs.h"
 #include "blocker.h"
 #include "passwords.h"
+#include "pwcheck.h"
 #include "import.h"
 #include "pwfile.h"
 
@@ -24,6 +25,11 @@ typedef struct {
   GPtrArray            *login_rows;
   AdwPreferencesGroup  *keyword_group;
   GPtrArray            *keyword_rows;
+  AdwPreferencesGroup  *allow_group;
+  GPtrArray            *allow_rows;
+  AdwPreferencesGroup  *block_group;
+  GPtrArray            *block_rows;
+  GtkWidget            *offline_dir_row;
 } Prefs;
 
 typedef struct {
@@ -36,6 +42,7 @@ typedef struct {
 } Binding;
 
 static void  refresh_subscriptions (Prefs *prefs);
+static void  build_offline         (Prefs *prefs);
 static void  refresh_logins        (Prefs *prefs);
 static void  report_problem        (Prefs *prefs, const char *title, const char *body);
 static guint store_credentials     (Prefs *prefs, GPtrArray *credentials, GError **error);
@@ -55,6 +62,8 @@ free_prefs (gpointer data)
   g_clear_pointer (&prefs->subs_rows, g_ptr_array_unref);
   g_clear_pointer (&prefs->login_rows, g_ptr_array_unref);
   g_clear_pointer (&prefs->keyword_rows, g_ptr_array_unref);
+  g_clear_pointer (&prefs->allow_rows, g_ptr_array_unref);
+  g_clear_pointer (&prefs->block_rows, g_ptr_array_unref);
   g_free (prefs);
 }
 
@@ -233,6 +242,84 @@ add_page (Prefs *prefs, const char *title, const char *icon)
   return page;
 }
 
+/* One of the house themes, by name.
+ *
+ * Not `enum_row`: that binds a combo to an int, and these are stored as the
+ * theme's key rather than as its position in the table — so that reordering
+ * the palettes, or dropping one, cannot silently repaint everybody's browser
+ * in a different theme. Only the themes of the right polarity are offered:
+ * "use this one in a light session" with a black theme in the list is an
+ * invitation to make the one mistake the setting exists to prevent.
+ */
+typedef struct {
+  Prefs *prefs;
+  char **field;
+  GPtrArray *keys;     /* const char*, owned by the generated table */
+} ThemeBinding;
+
+static void
+free_theme_binding (gpointer data, GClosure *closure)
+{
+  ThemeBinding *b = data;
+  g_ptr_array_unref (b->keys);
+  g_free (b);
+}
+
+static void
+on_house_theme_changed (GObject *row, GParamSpec *pspec, gpointer data)
+{
+  ThemeBinding *b = data;
+  guint index = adw_combo_row_get_selected (ADW_COMBO_ROW (row));
+  if (index >= b->keys->len)
+    return;
+  const char *key = g_ptr_array_index (b->keys, index);
+  g_free (*b->field);
+  *b->field = g_strdup (key);
+
+  const LyHouseTheme *theme = ly_house_theme (key);
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (row),
+                               theme != NULL ? theme->blurb : "");
+  changed (b->prefs, FALSE);
+}
+
+static GtkWidget *
+house_theme_row (Prefs *prefs, AdwPreferencesGroup *group,
+                 const char *title, gboolean dark, char **field)
+{
+  GtkWidget *row = adw_combo_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), title);
+
+  GtkStringList *model = gtk_string_list_new (NULL);
+  GPtrArray *keys = g_ptr_array_new ();
+  guint selected = 0;
+  for (guint i = 0; i < LY_HOUSE_THEME_N; i++) {
+    if (LY_HOUSE_THEMES[i].dark != dark)
+      continue;
+    if (g_strcmp0 (LY_HOUSE_THEMES[i].key, *field) == 0)
+      selected = keys->len;
+    g_ptr_array_add (keys, (gpointer) LY_HOUSE_THEMES[i].key);
+    gtk_string_list_append (model, LY_HOUSE_THEMES[i].name);
+  }
+  adw_combo_row_set_model (ADW_COMBO_ROW (row), G_LIST_MODEL (model));
+  adw_combo_row_set_selected (ADW_COMBO_ROW (row), selected);
+
+  const LyHouseTheme *theme = ly_house_theme (
+    keys->len > 0 ? g_ptr_array_index (keys, selected) : NULL);
+  if (theme != NULL)
+    adw_action_row_set_subtitle (ADW_ACTION_ROW (row), theme->blurb);
+
+  ThemeBinding *b = g_new0 (ThemeBinding, 1);
+  b->prefs = prefs;
+  b->field = field;
+  b->keys  = keys;
+  g_signal_connect_data (row, "notify::selected",
+                         G_CALLBACK (on_house_theme_changed),
+                         b, free_theme_binding, 0);
+
+  adw_preferences_group_add (group, row);
+  return row;
+}
+
 /* ------------------------------------------------------------ appearance */
 
 static void
@@ -240,9 +327,16 @@ build_appearance (Prefs *prefs)
 {
   AdwPreferencesPage *page = add_page (prefs, "Appearance", "applications-graphics-symbolic");
 
-  AdwPreferencesGroup *theme = add_group (page, "Theme", NULL);
+  AdwPreferencesGroup *theme = add_group (page, "Theme",
+    "The same eight themes as the rest of the suite, so that choosing one "
+    "chooses it everywhere. Porcelain is the light one they are all tuned "
+    "for and Nocturne the dark one drawn to sit beside it.");
   static const char *const SCHEMES[] = { "Follow system", "Light", "Dark", NULL };
-  enum_row (prefs, theme, "Colour scheme", NULL, SCHEMES, (int *) &prefs->cfg->scheme);
+  enum_row (prefs, theme, "Colour scheme",
+            "Which of the pair below is in force", SCHEMES,
+            (int *) &prefs->cfg->scheme);
+  house_theme_row (prefs, theme, "When dark", TRUE, &prefs->cfg->dark_theme);
+  house_theme_row (prefs, theme, "When light", FALSE, &prefs->cfg->light_theme);
 
   static const char *const DARK_MODES[] = {
     "Off", "Smart — only sites without a dark theme", "Always", NULL
@@ -1003,6 +1097,8 @@ typedef struct {
   GtkWidget *origin_row;
   GtkWidget *username_row;
   GtkWidget *password_row;
+  GtkWidget *strength_label;
+  GtkWidget *note_view;       /* GtkTextView: a note runs to several lines */
   char      *old_origin;      /* NULL when adding a new login */
   char      *old_username;
 } LoginEditor;
@@ -1021,6 +1117,58 @@ on_editor_cancel (GtkButton *button, gpointer data)
 {
   LoginEditor *editor = data;
   adw_dialog_close (editor->dialog);
+}
+
+/* What Chrome shows beside a password it is about to keep. Drawn from the
+ * same estimate the checkup sorts by, so a password called weak here is a
+ * password the checkup will list. */
+static void
+on_editor_password_changed (GObject *row, GParamSpec *pspec, gpointer data)
+{
+  LoginEditor *editor = data;
+  const char *password = gtk_editable_get_text (GTK_EDITABLE (editor->password_row));
+
+  if (password == NULL || *password == '\0') {
+    gtk_label_set_text (GTK_LABEL (editor->strength_label), "");
+    return;
+  }
+
+  int score = ly_pw_strength (password);
+  g_autofree char *text = g_strdup_printf ("%s password", ly_pw_strength_label (score));
+  gtk_label_set_text (GTK_LABEL (editor->strength_label), text);
+
+  gtk_widget_remove_css_class (editor->strength_label, "error");
+  gtk_widget_remove_css_class (editor->strength_label, "warning");
+  gtk_widget_remove_css_class (editor->strength_label, "success");
+  gtk_widget_add_css_class (editor->strength_label,
+                            score <= 1 ? "error" : score == 2 ? "warning" : "success");
+}
+
+static void
+on_editor_generate (GtkButton *button, gpointer data)
+{
+  LoginEditor *editor = data;
+
+  g_autofree char *password = ly_pw_generate ();
+  if (password == NULL) {
+    adw_preferences_dialog_add_toast (editor->prefs->dialog,
+      adw_toast_new ("No random source to make a password from"));
+    return;
+  }
+
+  /* AdwPasswordEntryRow carries its own reveal button, so what went in can
+   * be read back without this having to arrange it. */
+  gtk_editable_set_text (GTK_EDITABLE (editor->password_row), password);
+  memset (password, 0, strlen (password));
+}
+
+static char *
+editor_note (LoginEditor *editor)
+{
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer (GTK_TEXT_VIEW (editor->note_view));
+  GtkTextIter start, end;
+  gtk_text_buffer_get_bounds (buffer, &start, &end);
+  return gtk_text_buffer_get_text (buffer, &start, &end, FALSE);
 }
 
 static void
@@ -1061,10 +1209,26 @@ on_editor_save (GtkButton *button, gpointer data)
     return;
   }
 
+  LyPasswords *passwords = ly_app_passwords (prefs->app);
+
   g_autoptr (GError) error = NULL;
-  gboolean ok = ly_passwords_update (ly_app_passwords (prefs->app),
+  gboolean ok = ly_passwords_update (passwords,
                                      editor->old_origin, editor->old_username,
                                      origin, username, password, &error);
+
+  if (ok) {
+    /* The note follows the login to wherever it has just been moved, and is
+     * then overwritten with whatever the box now says. Separate calls because
+     * a note is a separate item in the keyring — see passwords.h. */
+    ly_passwords_move_note (passwords, editor->old_origin, editor->old_username,
+                            origin, username);
+
+    g_autofree char *note = editor_note (editor);
+    g_autoptr (GError) note_error = NULL;
+    if (!ly_passwords_set_note (passwords, origin, username, note, &note_error))
+      g_warning ("passwords: could not store the note: %s", note_error->message);
+    memset (note, 0, strlen (note));
+  }
 
   adw_dialog_close (editor->dialog);
 
@@ -1078,8 +1242,8 @@ on_editor_save (GtkButton *button, gpointer data)
 }
 
 static void
-present_login_editor (Prefs *prefs, const char *origin,
-                      const char *username, const char *password)
+present_login_editor (Prefs *prefs, const char *origin, const char *username,
+                      const char *password, const char *note)
 {
   LoginEditor *editor = g_new0 (LoginEditor, 1);
   editor->prefs        = prefs;
@@ -1114,6 +1278,13 @@ present_login_editor (Prefs *prefs, const char *origin,
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (editor->password_row), "Password");
   gtk_editable_set_text (GTK_EDITABLE (editor->password_row), password ?: "");
 
+  GtkWidget *generate = gtk_button_new_from_icon_name ("dialog-password-symbolic");
+  gtk_widget_add_css_class (generate, "flat");
+  gtk_widget_set_valign (generate, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text (generate, "Suggest a strong password");
+  g_signal_connect (generate, "clicked", G_CALLBACK (on_editor_generate), editor);
+  adw_entry_row_add_suffix (ADW_ENTRY_ROW (editor->password_row), generate);
+
   GtkWidget *copy = gtk_button_new_from_icon_name ("edit-copy-symbolic");
   gtk_widget_add_css_class (copy, "flat");
   gtk_widget_set_valign (copy, GTK_ALIGN_CENTER);
@@ -1122,7 +1293,43 @@ present_login_editor (Prefs *prefs, const char *origin,
   adw_entry_row_add_suffix (ADW_ENTRY_ROW (editor->password_row), copy);
   adw_preferences_group_add (group, editor->password_row);
 
+  editor->strength_label = gtk_label_new ("");
+  gtk_widget_add_css_class (editor->strength_label, "caption");
+  gtk_widget_set_halign (editor->strength_label, GTK_ALIGN_END);
+  gtk_widget_set_margin_top (editor->strength_label, 4);
+  gtk_widget_set_margin_end (editor->strength_label, 4);
+  adw_preferences_group_add (group, editor->strength_label);
+
+  g_signal_connect (editor->password_row, "notify::text",
+                    G_CALLBACK (on_editor_password_changed), editor);
+
   adw_preferences_page_add (page, group);
+
+  /* A note, in the same store as the password: people keep recovery codes in
+   * them, which is the whole reason it is not in the history database. */
+  AdwPreferencesGroup *notes = ADW_PREFERENCES_GROUP (adw_preferences_group_new ());
+  adw_preferences_group_set_title (notes, "Note");
+  adw_preferences_group_set_description (notes,
+    "Kept in the keyring beside the password, and written out by an export.");
+
+  editor->note_view = gtk_text_view_new ();
+  gtk_text_view_set_wrap_mode (GTK_TEXT_VIEW (editor->note_view), GTK_WRAP_WORD_CHAR);
+  gtk_text_view_set_top_margin (GTK_TEXT_VIEW (editor->note_view), 6);
+  gtk_text_view_set_bottom_margin (GTK_TEXT_VIEW (editor->note_view), 6);
+  gtk_text_view_set_left_margin (GTK_TEXT_VIEW (editor->note_view), 6);
+  gtk_text_view_set_right_margin (GTK_TEXT_VIEW (editor->note_view), 6);
+  gtk_text_buffer_set_text (gtk_text_view_get_buffer (GTK_TEXT_VIEW (editor->note_view)),
+                            note ?: "", -1);
+
+  GtkWidget *note_frame = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (note_frame), editor->note_view);
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (note_frame),
+                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_widget_set_size_request (note_frame, -1, 96);
+  gtk_widget_add_css_class (note_frame, "card");
+  adw_preferences_group_add (notes, note_frame);
+
+  adw_preferences_page_add (page, notes);
 
   GtkWidget *cancel = gtk_button_new_with_label ("Cancel");
   g_signal_connect (cancel, "clicked", G_CALLBACK (on_editor_cancel), editor);
@@ -1141,6 +1348,7 @@ present_login_editor (Prefs *prefs, const char *origin,
   adw_dialog_set_child (dialog, GTK_WIDGET (toolbar));
 
   adw_dialog_present (dialog, GTK_WIDGET (prefs->dialog));
+  on_editor_password_changed (NULL, NULL, editor);
   gtk_widget_grab_focus (adding ? editor->origin_row : editor->password_row);
 }
 
@@ -1168,7 +1376,13 @@ on_credentials_for_edit (GPtrArray *credentials, gpointer data)
         break;
       }
     }
-    present_login_editor (prefs, request->origin, request->username, password);
+    /* One blocking read, on a path that has already been waiting for the
+     * keyring to answer about the password. */
+    g_autofree char *note = ly_passwords_note (ly_app_passwords (prefs->app),
+                                               request->origin, request->username);
+    present_login_editor (prefs, request->origin, request->username, password, note);
+    if (note != NULL)
+      memset (note, 0, strlen (note));
   }
 
   prefs_handle_free (request->handle);
@@ -1194,7 +1408,7 @@ on_edit_login (GtkButton *button, gpointer data)
 static void
 on_add_login (GtkButton *button, gpointer data)
 {
-  present_login_editor ((Prefs *) data, NULL, NULL, NULL);
+  present_login_editor ((Prefs *) data, NULL, NULL, NULL, NULL);
 }
 
 /* ------------------------------------------------------- import a file */
@@ -1256,6 +1470,9 @@ store_credentials (Prefs *prefs, GPtrArray *credentials, GError **error)
     if (!ly_passwords_save_sync (passwords, credential->origin, credential->username,
                                  credential->password, error))
       break;      /* a keyring that refused one row will refuse the rest */
+    if (credential->note != NULL)
+      ly_passwords_set_note (passwords, credential->origin, credential->username,
+                             credential->note, NULL);
     stored++;
   }
   return stored;
@@ -1331,6 +1548,17 @@ on_credentials_for_export (GPtrArray *credentials, gpointer data)
   Prefs *prefs = prefs_handle_live (request->handle);
 
   if (prefs != NULL) {
+    /* The list arrives without notes — autofill never needs them, so nothing
+     * else pays for reading them. An export is the one place that does, and
+     * it is a deliberate, one-off action. */
+    LyPasswords *passwords = ly_app_passwords (prefs->app);
+    for (guint i = 0; i < credentials->len; i++) {
+      LyCredential *credential = g_ptr_array_index (credentials, i);
+      if (credential->note == NULL)
+        credential->note = ly_passwords_note (passwords, credential->origin,
+                                              credential->username);
+    }
+
     g_autoptr (GError) error = NULL;
     if (!ly_pwfile_write_csv (request->path, credentials, &error)) {
       report_problem (prefs, "The file could not be written", error->message);
@@ -1403,6 +1631,245 @@ on_export_clicked (GtkButton *button, gpointer data)
   g_signal_connect (dialog, "response", G_CALLBACK (on_export_confirmed), prefs);
 
   adw_dialog_present (dialog, GTK_WIDGET (prefs->dialog));
+}
+
+/* --------------------------------------------------------------- checkup */
+
+/* Chrome's Password Checkup, as far as it can be had without Chrome's
+ * server: every saved login judged for weakness and reuse here on the
+ * machine, and — only if asked — looked up in a breach corpus by the first
+ * five characters of its hash. See pwcheck.h for what that does and does not
+ * send.
+ *
+ * The dialog is put up before any of it starts, because the keyring can take
+ * a moment to answer and a button that does nothing visible for a second is
+ * a button people press twice.
+ */
+
+typedef struct {
+  Prefs        *prefs;
+  GWeakRef      dialog_ref;
+  GtkWidget    *list;
+  GtkWidget    *spinner;
+  GtkWidget    *summary;
+  GPtrArray    *credentials;   /* held across the breach pass */
+  GCancellable *cancel;
+} Checkup;
+
+static void
+checkup_free (gpointer data)
+{
+  Checkup *checkup = data;
+  g_cancellable_cancel (checkup->cancel);
+  g_weak_ref_clear (&checkup->dialog_ref);
+  g_clear_pointer (&checkup->credentials, g_ptr_array_unref);
+  g_clear_object (&checkup->cancel);
+  g_free (checkup);
+}
+
+/* Alive only while its dialog is: everything below is reached from an answer
+ * that may arrive after somebody closed it. */
+static gboolean
+checkup_live (Checkup *checkup)
+{
+  g_autoptr (GObject) dialog = g_weak_ref_get (&checkup->dialog_ref);
+  return dialog != NULL && !g_cancellable_is_cancelled (checkup->cancel);
+}
+
+static char *
+finding_summary (LyPwFinding *finding)
+{
+  g_autoptr (GPtrArray) parts = g_ptr_array_new_with_free_func (g_free);
+
+  if (finding->issues & LY_PW_LEAKED)
+    g_ptr_array_add (parts, finding->leaked_count > 1
+      ? g_strdup_printf ("Found in a breach %u times", finding->leaked_count)
+      : g_strdup ("Found in a breach"));
+  if (finding->issues & LY_PW_REUSED)
+    g_ptr_array_add (parts, g_strdup_printf ("Also used on %u other site%s",
+                                             finding->shared_with,
+                                             finding->shared_with == 1 ? "" : "s"));
+  if (finding->issues & LY_PW_WEAK)
+    g_ptr_array_add (parts, g_strdup_printf ("%s password",
+                                             ly_pw_strength_label (finding->strength)));
+
+  g_ptr_array_add (parts, NULL);
+  return g_strjoinv (" · ", (char **) parts->pdata);
+}
+
+static void
+checkup_draw (Checkup *checkup, GPtrArray *findings, const char *error)
+{
+  GtkWidget *child;
+  while ((child = gtk_widget_get_first_child (checkup->list)) != NULL)
+    gtk_list_box_remove (GTK_LIST_BOX (checkup->list), child);
+
+  if (error != NULL) {
+    gtk_label_set_text (GTK_LABEL (checkup->summary), error);
+    return;
+  }
+
+  guint leaked = 0, reused = 0, weak = 0;
+  for (guint i = 0; findings != NULL && i < findings->len; i++) {
+    LyPwFinding *finding = g_ptr_array_index (findings, i);
+    if (finding->issues & LY_PW_LEAKED) leaked++;
+    if (finding->issues & LY_PW_REUSED) reused++;
+    if (finding->issues & LY_PW_WEAK)   weak++;
+  }
+
+  if (findings == NULL || findings->len == 0) {
+    gtk_label_set_text (GTK_LABEL (checkup->summary),
+      checkup->credentials != NULL && checkup->credentials->len == 0
+        ? "There are no saved logins to check."
+        : "Nothing to report: no weak or reused passwords.");
+    return;
+  }
+
+  g_autofree char *summary = g_strdup_printf (
+    "%u breached · %u reused · %u weak, out of %u saved login%s",
+    leaked, reused, weak,
+    checkup->credentials != NULL ? checkup->credentials->len : 0,
+    (checkup->credentials != NULL && checkup->credentials->len == 1) ? "" : "s");
+  gtk_label_set_text (GTK_LABEL (checkup->summary), summary);
+
+  for (guint i = 0; i < findings->len; i++) {
+    LyPwFinding *finding = g_ptr_array_index (findings, i);
+
+    GtkWidget *row = adw_action_row_new ();
+    g_autofree char *title = g_strdup_printf ("%s — %s",
+      (finding->username && *finding->username) ? finding->username : "(no username)",
+      finding->origin);
+    adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), title);
+    adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
+
+    g_autofree char *why = finding_summary (finding);
+    adw_action_row_set_subtitle (ADW_ACTION_ROW (row), why);
+
+    GtkWidget *badge = gtk_image_new_from_icon_name (
+      (finding->issues & LY_PW_LEAKED) ? "dialog-warning-symbolic"
+                                       : "dialog-information-symbolic");
+    gtk_widget_set_valign (badge, GTK_ALIGN_CENTER);
+    if (finding->issues & LY_PW_LEAKED)
+      gtk_widget_add_css_class (badge, "error");
+    adw_action_row_add_prefix (ADW_ACTION_ROW (row), badge);
+
+    /* Straight into the editor, where there is a generator to replace it
+     * with: a list of problems with nothing to press is a list nobody acts
+     * on. */
+    GtkWidget *fix = gtk_button_new_from_icon_name ("document-edit-symbolic");
+    gtk_widget_add_css_class (fix, "flat");
+    gtk_widget_set_valign (fix, GTK_ALIGN_CENTER);
+    gtk_widget_set_tooltip_text (fix, "Change this password");
+    g_object_set_data_full (G_OBJECT (fix), "lyndon-origin",
+                            g_strdup (finding->origin), g_free);
+    g_object_set_data_full (G_OBJECT (fix), "lyndon-username",
+                            g_strdup (finding->username), g_free);
+    g_signal_connect (fix, "clicked", G_CALLBACK (on_edit_login), checkup->prefs);
+    adw_action_row_add_suffix (ADW_ACTION_ROW (row), fix);
+
+    gtk_list_box_append (GTK_LIST_BOX (checkup->list), row);
+  }
+}
+
+static void
+on_checkup_breaches (GPtrArray *findings, const char *error, gpointer data)
+{
+  Checkup *checkup = data;
+
+  if (checkup_live (checkup)) {
+    gtk_widget_set_visible (checkup->spinner, FALSE);
+    checkup_draw (checkup, findings, error);
+  }
+  /* The dialog owns the Checkup and frees it when it closes; this callback
+   * is the end of the work, not the end of the dialog. */
+}
+
+static void
+on_checkup_credentials (GPtrArray *credentials, gpointer data)
+{
+  Checkup *checkup = data;
+
+  if (!checkup_live (checkup))
+    return;
+
+  g_clear_pointer (&checkup->credentials, g_ptr_array_unref);
+  checkup->credentials = g_ptr_array_ref (credentials);
+
+  GPtrArray *findings = ly_pwcheck_local (credentials);
+  checkup_draw (checkup, findings, NULL);
+
+  if (!checkup->prefs->cfg->password_leak_check || credentials->len == 0) {
+    gtk_widget_set_visible (checkup->spinner, FALSE);
+    g_ptr_array_unref (findings);
+    return;
+  }
+
+  /* The findings array is extended in place by the breach pass and handed
+   * back to the callback, which is also where it is drawn again. */
+  ly_pwcheck_breaches (credentials, findings, checkup->cancel,
+                       on_checkup_breaches, checkup);
+  g_ptr_array_unref (findings);
+}
+
+static void
+on_checkup_closed (AdwDialog *dialog, gpointer data)
+{
+  /* Stops the breach pass where it is, if it is still going. */
+  g_cancellable_cancel (((Checkup *) data)->cancel);
+}
+
+static void
+on_checkup_clicked (GtkButton *button, gpointer data)
+{
+  Prefs *prefs = data;
+
+  AdwDialog *dialog = adw_dialog_new ();
+  adw_dialog_set_title (dialog, "Password checkup");
+  adw_dialog_set_content_width (dialog, 580);
+  adw_dialog_set_content_height (dialog, 620);
+
+  Checkup *checkup = g_new0 (Checkup, 1);
+  checkup->prefs  = prefs;
+  checkup->cancel = g_cancellable_new ();
+  g_weak_ref_init (&checkup->dialog_ref, dialog);
+  g_object_set_data_full (G_OBJECT (dialog), "lyndon-checkup", checkup, checkup_free);
+
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+  gtk_widget_set_margin_start (box, 12);
+  gtk_widget_set_margin_end (box, 12);
+  gtk_widget_set_margin_top (box, 12);
+  gtk_widget_set_margin_bottom (box, 12);
+
+  checkup->summary = gtk_label_new (prefs->cfg->password_leak_check
+    ? "Checking saved logins, and asking the breach database about them…"
+    : "Checking saved logins…");
+  gtk_label_set_wrap (GTK_LABEL (checkup->summary), TRUE);
+  gtk_label_set_xalign (GTK_LABEL (checkup->summary), 0.0);
+  gtk_box_append (GTK_BOX (box), checkup->summary);
+
+  checkup->spinner = adw_spinner_new ();
+  gtk_widget_set_size_request (checkup->spinner, 24, 24);
+  gtk_widget_set_halign (checkup->spinner, GTK_ALIGN_START);
+  gtk_box_append (GTK_BOX (box), checkup->spinner);
+
+  checkup->list = gtk_list_box_new ();
+  gtk_list_box_set_selection_mode (GTK_LIST_BOX (checkup->list), GTK_SELECTION_NONE);
+  gtk_widget_add_css_class (checkup->list, "boxed-list");
+
+  GtkWidget *scroller = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), checkup->list);
+  gtk_widget_set_vexpand (scroller, TRUE);
+  gtk_box_append (GTK_BOX (box), scroller);
+
+  AdwToolbarView *toolbar = ADW_TOOLBAR_VIEW (adw_toolbar_view_new ());
+  adw_toolbar_view_add_top_bar (toolbar, adw_header_bar_new ());
+  adw_toolbar_view_set_content (toolbar, box);
+  adw_dialog_set_child (dialog, GTK_WIDGET (toolbar));
+
+  g_signal_connect (dialog, "closed", G_CALLBACK (on_checkup_closed), checkup);
+  adw_dialog_present (dialog, GTK_WIDGET (prefs->dialog));
+
+  ly_passwords_list (ly_app_passwords (prefs->app), on_checkup_credentials, checkup);
 }
 
 /* ------------------------------------------------------------- the list */
@@ -1524,8 +1991,16 @@ build_passwords (Prefs *prefs)
 
   bool_row (prefs, main, "Offer to save logins", NULL, &prefs->cfg->save_passwords);
   bool_row (prefs, main, "Fill saved logins automatically",
-            "Only on an exact origin match, and never inside a third-party frame.",
+            "Never inside a third-party frame. A site with one saved login is "
+            "filled; a site with several asks which account, the way Chrome "
+            "does. A login saved elsewhere under the same domain is offered "
+            "when the page itself has none.",
             &prefs->cfg->password_autofill);
+
+  bool_row (prefs, main, "Suggest a password on sign-up forms",
+            "A box asking for a new password is offered a generated one: "
+            "twenty characters from the system's random source.",
+            &prefs->cfg->password_suggest);
 
   GtkWidget *status = adw_action_row_new ();
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (status), "Keyring");
@@ -1535,6 +2010,24 @@ build_passwords (Prefs *prefs)
   gtk_widget_set_valign (badge, GTK_ALIGN_CENTER);
   adw_action_row_add_suffix (ADW_ACTION_ROW (status), badge);
   adw_preferences_group_add (main, status);
+
+  AdwPreferencesGroup *checkup = add_group (page, "Checkup",
+    "Weakness and reuse are worked out here, from the logins already in the "
+    "keyring. Nothing about them leaves the machine unless the breach check "
+    "below is on.");
+
+  button_row (checkup, "Check saved passwords",
+              "Looks for weak passwords, and for one password used on several sites.",
+              "Check…", G_CALLBACK (on_checkup_clicked), prefs);
+
+  bool_row (prefs, checkup, "Also check against known breaches",
+            "Sends the first five characters of each password's SHA-1 to "
+            "api.pwnedpasswords.com, which answers with every hash it holds "
+            "under that prefix — tens of thousands of them — and the match is "
+            "made here. The password, the username and the site never leave "
+            "the machine. Off until you turn it on, because this is the one "
+            "part that reaches a service that is not Lyndon's.",
+            &prefs->cfg->password_leak_check);
 
   prefs->login_group = add_group (page, "Saved logins",
     "Passwords are shown only inside the editor. Removing a row deletes it "
@@ -1622,6 +2115,263 @@ build_permissions (Prefs *prefs)
   }
 }
 
+
+/* -------------------------------------------------------------- offline */
+
+/* The allow and block lists are the same widget twice, so they are built from
+ * one function with the list, the group and the row cache passed in. */
+typedef struct {
+  Prefs               *prefs;
+  GPtrArray           *hosts;
+  AdwPreferencesGroup *group;
+  GPtrArray           *rows;
+} HostList;
+
+static void refresh_host_list (HostList *list);
+
+static void
+on_remove_host (GtkButton *button, gpointer data)
+{
+  HostList *list = data;
+  const char *host = g_object_get_data (G_OBJECT (button), "lyndon-host");
+
+  for (guint i = 0; i < list->hosts->len; i++) {
+    if (g_strcmp0 (g_ptr_array_index (list->hosts, i), host) == 0) {
+      g_ptr_array_remove_index (list->hosts, i);
+      break;
+    }
+  }
+  ly_config_touch (list->prefs->cfg);
+  refresh_host_list (list);
+}
+
+/* Takes an address as readily as a host name: nobody wants to edit a URL down
+ * to its host by hand to paste it in here. */
+static void
+on_add_host (GtkWidget *row, gpointer data)
+{
+  HostList *list = data;
+  const char *text = gtk_editable_get_text (GTK_EDITABLE (row));
+  if (text == NULL || *text == '\0')
+    return;
+
+  g_autofree char *trimmed = g_strdup (text);
+  g_strstrip (trimmed);
+
+  g_autofree char *host = ly_uri_host (trimmed);
+  if (host == NULL) {
+    g_autofree char *guess = g_strconcat ("https://", trimmed, NULL);
+    host = ly_uri_host (guess);
+  }
+  if (host == NULL) {
+    adw_preferences_dialog_add_toast (list->prefs->dialog,
+                                      adw_toast_new ("That is not a site name"));
+    return;
+  }
+
+  for (guint i = 0; i < list->hosts->len; i++)
+    if (g_ascii_strcasecmp (g_ptr_array_index (list->hosts, i), host) == 0) {
+      gtk_editable_set_text (GTK_EDITABLE (row), "");
+      return;
+    }
+
+  g_ptr_array_add (list->hosts, g_steal_pointer (&host));
+  gtk_editable_set_text (GTK_EDITABLE (row), "");
+  ly_config_touch (list->prefs->cfg);
+  refresh_host_list (list);
+}
+
+static void
+refresh_host_list (HostList *list)
+{
+  for (guint i = 0; i < list->rows->len; i++)
+    adw_preferences_group_remove (list->group, g_ptr_array_index (list->rows, i));
+  g_ptr_array_set_size (list->rows, 0);
+
+  for (guint i = 0; i < list->hosts->len; i++) {
+    const char *host = g_ptr_array_index (list->hosts, i);
+
+    GtkWidget *row = adw_action_row_new ();
+    adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), host);
+    adw_preferences_row_set_title_selectable (ADW_PREFERENCES_ROW (row), TRUE);
+
+    GtkWidget *remove = gtk_button_new_from_icon_name ("user-trash-symbolic");
+    gtk_widget_add_css_class (remove, "flat");
+    gtk_widget_set_valign (remove, GTK_ALIGN_CENTER);
+    g_object_set_data_full (G_OBJECT (remove), "lyndon-host", g_strdup (host), g_free);
+    g_signal_connect (remove, "clicked", G_CALLBACK (on_remove_host), list);
+    adw_action_row_add_suffix (ADW_ACTION_ROW (row), remove);
+
+    adw_preferences_group_add (list->group, row);
+    g_ptr_array_add (list->rows, row);
+  }
+
+  GtkWidget *add = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (add),
+                                 "Add a site, then press Enter");
+  g_signal_connect (add, "entry-activated", G_CALLBACK (on_add_host), list);
+  adw_preferences_group_add (list->group, add);
+  g_ptr_array_add (list->rows, add);
+}
+
+static HostList *
+host_list_new (Prefs *prefs, GPtrArray *hosts, AdwPreferencesGroup *group,
+               GPtrArray *rows)
+{
+  HostList *list = g_new0 (HostList, 1);
+  list->prefs = prefs;
+  list->hosts = hosts;
+  list->group = group;
+  list->rows  = rows;
+
+  /* Owned by the group it draws into, so it lives exactly as long as the
+   * rows that call back into it. */
+  g_object_set_data_full (G_OBJECT (group), "lyndon-host-list", list, g_free);
+  refresh_host_list (list);
+  return list;
+}
+
+static void
+on_offline_folder_picked (GObject *source, GAsyncResult *result, gpointer data)
+{
+  Prefs *prefs = data;
+  g_autoptr (GError) error = NULL;
+  g_autoptr (GFile) folder =
+    gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), result, &error);
+  if (folder == NULL)
+    return;
+
+  g_autofree char *path = g_file_get_path (folder);
+  if (path == NULL)
+    return;
+
+  g_free (prefs->cfg->offline_dir);
+  prefs->cfg->offline_dir = g_steal_pointer (&path);
+  if (prefs->offline_dir_row != NULL)
+    gtk_editable_set_text (GTK_EDITABLE (prefs->offline_dir_row), prefs->cfg->offline_dir);
+  changed (prefs, FALSE);
+}
+
+static void
+on_choose_offline_folder (GtkButton *button, gpointer data)
+{
+  Prefs *prefs = data;
+  g_autoptr (GtkFileDialog) dialog = gtk_file_dialog_new ();
+  gtk_file_dialog_set_title (dialog, "Where to keep offline sites");
+
+  g_autofree char *current = ly_archive_base_dir (prefs->cfg);
+  g_autoptr (GFile) initial = g_file_new_for_path (current);
+  gtk_file_dialog_set_initial_folder (dialog, initial);
+
+  GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (button));
+  gtk_file_dialog_select_folder (dialog, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
+                                 NULL, on_offline_folder_picked, prefs);
+}
+
+static void
+on_open_offline_folder (GtkButton *button, gpointer data)
+{
+  Prefs *prefs = data;
+  g_autofree char *path = ly_archive_base_dir (prefs->cfg);
+  g_mkdir_with_parents (path, 0755);
+
+  g_autoptr (GFile) file = g_file_new_for_path (path);
+  g_autoptr (GtkFileLauncher) launcher = gtk_file_launcher_new (file);
+  gtk_file_launcher_launch (launcher, NULL, NULL, NULL, NULL);
+}
+
+static void
+on_sweep_now (GtkButton *button, gpointer data)
+{
+  Prefs *prefs = data;
+  ly_archive_sweep (ly_app_archive (prefs->app), ly_app_store (prefs->app));
+  adw_preferences_dialog_add_toast (prefs->dialog,
+                                    adw_toast_new ("Looking for sites to mirror…"));
+}
+
+static void
+build_offline (Prefs *prefs)
+{
+  AdwPreferencesPage *page = add_page (prefs, "Offline", "drive-harddisk-symbolic");
+  LyConfig *cfg = prefs->cfg;
+
+  AdwPreferencesGroup *main = add_group (page, "Offline sites",
+    "Keeps whole sites on disk as ordinary folders of HTML, so they read the "
+    "same with no network. Pages are fetched outside the browser's own "
+    "session, which means you get the logged-out view of a site and never "
+    "anything that needed a password to see.");
+
+  bool_row (prefs, main, "Keep sites for offline reading",
+            "Adds a button to the toolbar and an entry to the menu.",
+            &cfg->offline_enabled);
+  bool_row (prefs, main, "Ask where to put each one",
+            "Off: saved sites go to the folder below, under Saved.",
+            &cfg->offline_ask_where);
+
+  AdwPreferencesGroup *where = add_group (page, "Folder",
+    "Sites you ask for land in Saved, and sites the sweep takes land in "
+    "Automatic, each in a folder of its own.");
+
+  prefs->offline_dir_row = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (prefs->offline_dir_row),
+                                 "Where offline sites are kept");
+  g_autofree char *current = ly_archive_base_dir (cfg);
+  gtk_editable_set_text (GTK_EDITABLE (prefs->offline_dir_row), current);
+
+  Binding *binding = g_new0 (Binding, 1);
+  binding->prefs  = prefs;
+  binding->string = &cfg->offline_dir;
+  g_signal_connect_data (prefs->offline_dir_row, "notify::text",
+                         G_CALLBACK (on_entry_changed), binding, free_binding, 0);
+
+  GtkWidget *choose = gtk_button_new_from_icon_name ("folder-open-symbolic");
+  gtk_widget_add_css_class (choose, "flat");
+  gtk_widget_set_valign (choose, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text (choose, "Choose a folder");
+  g_signal_connect (choose, "clicked", G_CALLBACK (on_choose_offline_folder), prefs);
+  adw_entry_row_add_suffix (ADW_ENTRY_ROW (prefs->offline_dir_row), choose);
+  adw_preferences_group_add (where, prefs->offline_dir_row);
+
+  button_row (where, "Open the folder", NULL, "Open",
+              G_CALLBACK (on_open_offline_folder), prefs);
+
+  AdwPreferencesGroup *sweep = add_group (page, "Automatic",
+    "Mirrors the sites you have actually been reading, a few hours apart and "
+    "one at a time. A site is taken again only once its copy is older than "
+    "the same window.");
+
+  bool_row (prefs, sweep, "Mirror sites I read often", NULL, &cfg->offline_automatic);
+  spin_row (prefs, sweep, "Days of history to look at",
+            "A site read inside this window counts as one you are still reading.",
+            1, 365, 1, NULL, &cfg->offline_days);
+  spin_row (prefs, sweep, "Visits before a site counts",
+            "Across all of its pages. Stops a site you opened once from being "
+            "mirrored.",
+            1, 100, 1, NULL, &cfg->offline_min_visits);
+  button_row (sweep, "Run the sweep now", NULL, "Run",
+              G_CALLBACK (on_sweep_now), prefs);
+
+  AdwPreferencesGroup *limits = add_group (page, "Limits",
+    "Per site, and applied to the automatic sweep and to a site you ask for "
+    "alike. A crawl stops at whichever it reaches first.");
+
+  spin_row (prefs, limits, "Pages at most", NULL, 1, 5000, 10,
+            NULL, &cfg->offline_max_pages);
+  spin_row (prefs, limits, "Links deep at most",
+            "How far from the page you started on.", 0, 12, 1,
+            NULL, &cfg->offline_max_depth);
+  spin_row (prefs, limits, "Megabytes at most", NULL, 1, 20000, 50,
+            NULL, &cfg->offline_max_mb);
+
+  prefs->allow_group = add_group (page, "Only these sites",
+    "Leave empty to allow any site. A name here covers its subdomains too.");
+  host_list_new (prefs, cfg->offline_allow, prefs->allow_group, prefs->allow_rows);
+
+  prefs->block_group = add_group (page, "Never these sites",
+    "Checked before everything else, including a site you ask for by hand.");
+  host_list_new (prefs, cfg->offline_block, prefs->block_group, prefs->block_rows);
+}
+
 /* ------------------------------------------------------------------ api */
 
 void
@@ -1633,6 +2383,8 @@ ly_prefs_present (LyApp *app, GtkWidget *parent)
   prefs->subs_rows  = g_ptr_array_new ();
   prefs->login_rows   = g_ptr_array_new ();
   prefs->keyword_rows = g_ptr_array_new ();
+  prefs->allow_rows   = g_ptr_array_new ();
+  prefs->block_rows   = g_ptr_array_new ();
   prefs->dialog = ADW_PREFERENCES_DIALOG (adw_preferences_dialog_new ());
 
   adw_dialog_set_title (ADW_DIALOG (prefs->dialog), "Preferences");
@@ -1644,6 +2396,7 @@ ly_prefs_present (LyApp *app, GtkWidget *parent)
   build_privacy (prefs);
   build_passwords (prefs);
   build_blocking (prefs);
+  build_offline (prefs);
   build_permissions (prefs);
 
   g_object_set_data_full (G_OBJECT (prefs->dialog), "lyndon-prefs", prefs, free_prefs);

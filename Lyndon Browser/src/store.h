@@ -58,6 +58,13 @@ GPtrArray *ly_store_complete      (LyStore *store, const char *text, guint limit
  * longer. Anchored and cheap: meant to be called on every keystroke. */
 char      *ly_store_autocomplete  (LyStore *store, const char *text);
 GPtrArray *ly_store_recent        (LyStore *store, guint limit);
+/* One URL per site read in the last `days` days and visited at least
+ * `min_visits` times across its pages, busiest first: what the offline sweep
+ * means by "a site you are still reading". The URL is that site's most-read
+ * page, which is where a crawl of it should start. Caller frees the array of
+ * char* with g_ptr_array_unref. */
+GPtrArray *ly_store_recent_hosts  (LyStore *store, int days, int min_visits,
+                                   guint limit);
 void       ly_store_forget_url    (LyStore *store, const char *url);
 void       ly_store_clear_history (LyStore *store);
 guint      ly_store_history_count (LyStore *store);
@@ -66,6 +73,15 @@ guint      ly_store_history_count (LyStore *store);
 gboolean   ly_store_is_bookmarked  (LyStore *store, const char *url);
 void       ly_store_add_bookmark   (LyStore *store, const char *url, const char *title);
 void       ly_store_remove_bookmark(LyStore *store, const char *url);
+/* The label, and only the label: a bookmark is identified by its URL, so
+ * renaming one never moves it. An empty or blank name is refused rather than
+ * stored, because a row with no label draws as its own URL and the rename
+ * would look like it had been ignored. TRUE when a row was changed. */
+gboolean   ly_store_rename_bookmark(LyStore *store, const char *url, const char *title);
+/* The label stored for `url`, or NULL when it is not bookmarked. The rename
+ * dialog opens on this rather than on whatever the row happens to be drawing,
+ * which for a bookmark with no label of its own is the URL. */
+char      *ly_store_bookmark_title (LyStore *store, const char *url);
 GPtrArray *ly_store_bookmarks      (LyStore *store, guint limit);
 
 /* -- per-site zoom ------------------------------------------------------ */

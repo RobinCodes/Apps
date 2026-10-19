@@ -100,19 +100,112 @@ once it has painted. Which one you get is substituted into the page when the
 request is served rather than scripted in afterwards, so a blank start page
 paints nothing instead of painting itself and then taking itself away again.
 
+**Whole sites can be kept on disk, and read with no network at all.** Not
+"Save Page As" — that already exists and writes one MHTML file. This is a
+crawler: it walks a site over plain HTTP, keeps every page and every
+stylesheet, image, script and font those pages need, and rewrites the links
+between them, so what lands in the folder is an ordinary tree of HTML that
+browses offline from `file://`.
+
+Press the disk button in the toolbar (or `Ctrl Shift S`) and the site you are
+on is mirrored to `~/Documents/Websites/Saved/<site>/`. Switch the sweep on
+and the sites you have *actually been reading* — in history inside the last
+few days, and visited enough times to mean it — are mirrored to
+`~/Documents/Websites/Automatic/<site>/` in the background, one at a time, a
+few hours apart. Both folders are configurable; so is whether you are asked
+where to put each one.
+
+The things worth knowing about how it behaves:
+
+*Links are rewritten from what arrived, not from what was hoped for.* A crawl
+cannot know while it is running whether a link's target will make it under the
+limits, so nothing is rewritten until the fetching stops. Then every saved
+page and stylesheet is read back once and relinked from the finished set:
+pages that are in the mirror become relative paths, pages that are not stay
+absolute URLs that still work online. A mirror that was cancelled halfway, or
+that hit its page limit, is therefore still coherent — every local link
+resolves, and the rest of the site is one click back onto the network.
+
+*It is polite by construction.* `robots.txt` is fetched before the first page
+and honoured, including `Crawl-delay`. Four requests at a time at most, spaced
+out, and never more than one site being mirrored at once.
+
+*It stays inside the site.* Pages are followed only within the same
+registrable domain. Subresources are taken from wherever the page points,
+because a page without its CDN stylesheet is not a copy of anything, and
+anything borrowed from another host lands visibly under `_hosts/<host>/`.
+
+*It fetches outside your session, which is the point.* The crawler is libsoup,
+not WebKit, and carries none of your cookies. What you get is the logged-out
+view of a site, and never a page that needed a password to see — mirroring a
+logged-in session would write private pages into a folder with no access
+control on it. Private windows do not archive at all.
+
+*Limits are per site and enforced as it goes*: pages, link depth and total
+megabytes, 200 / 3 / 200 MB by default, whichever is reached first. An
+allow list and a block list decide which sites are eligible, the block list
+winning over everything including a site you asked for by hand.
+
+Every mirror carries a `lyndon-archive.ini` saying where it came from, when,
+how much of it there is and whether it finished — which is also how the sweep
+knows not to fetch a site again the day after it last did. Where a URL lands
+on disk and how two of those places link to each other are
+[unit tested](tests/test-archive.c), because a mirror whose links are wrong is
+a folder of files rather than a copy of a site.
+
 **Passwords live in your keyring, not in a file Lyndon invented.** Logins are
 stored through the Secret Service API via libsecret — GNOME Keyring, KWallet,
 KeePassXC, whatever your desktop already runs, and Windows Credential Manager
 on the Windows build. Lyndon rolls no crypto of its own and writes no password
 to its own files. Capture and fill are done by a
 script injected into the **top frame only**: a third-party iframe that could
-read a filled password would defeat the entire point. Autofill requires an
-exact origin match, and never submits a form for you.
+read a filled password would defeat the entire point. Autofill never submits a
+form for you.
 
-Saved logins can be edited in place — site, username and password — or added by
-hand, from Preferences → Passwords. They come in from a CSV, a `.xlsx` or a
-`.ods` file, or straight out of another browser's own encrypted store, and they
-go back out as the CSV that Chrome, Firefox and Bitwarden all read.
+**One account is filled; several are offered.** A page with one saved login is
+filled as soon as its form is found. A page with more than one is not guessed
+at — a bar names the accounts and fills the one that is chosen, because filling
+the first of them is how somebody ends up signed in as the wrong account, or
+locked out by a site counting failures against a password that was never meant
+for it. Matching is on the exact origin first; failing that, on saved logins
+under the same registrable domain, so a password saved at `example.com` fills
+the form at `accounts.example.com`. That fallback is only ever a fallback: a
+site that keeps separate logins per subdomain means it, and a login saved over
+`https` is never filled into a page served over `http`.
+
+**A box asking for a new password is offered one.** Focus a field the page has
+marked `autocomplete="new-password"`, or one sitting beside its own confirmation
+field, and Lyndon offers twenty characters from the system's cryptographic
+random source, with one of each character class guaranteed. Taking it fills the
+confirmation field too. Nothing is stored at that point: the ordinary save
+offer, after the form is submitted, is what asks about keeping it — so a
+password that was generated and not used leaves nothing behind.
+
+**Checkup**, in Preferences → Passwords, is Chrome's Password Checkup as far as
+it can be had without Chrome's server. Weakness and reuse are worked out on the
+machine, from the logins already in the keyring: weak means short or one of the
+passwords that sit at the top of every breach summary, and reuse is counted per
+site, so two accounts of yours on one site are not reported as a shared secret.
+The breach check is the only part that reaches the network and it is **off until
+you turn it on**. When it is on, the first five characters of each password's
+SHA-1 are sent to `api.pwnedpasswords.com`, which answers with every hash it
+holds under that prefix — tens of thousands of them — and the comparison
+happens here. The password, the username and the site never leave the machine.
+That is the same k-anonymity shape Chrome's own checkup is built on, and the
+reason this can be asked of a service that is not ours. The
+[arithmetic is unit tested](tests/test-pwcheck.c), including the parse of what
+comes back, because a mistake there would quietly report every password as safe.
+
+Saved logins can be edited in place — site, username, password and a **note** —
+or added by hand, from Preferences → Passwords. The editor says how strong the
+password is as you type it and will suggest a better one. A note is kept as its
+own item in the keyring beside the login rather than as an attribute of it:
+attributes are the login's identity, so adding one would make every noted login
+a second row beside the one it was meant to annotate — and a note is as likely
+to hold a recovery code as the password field is, which is why it is not in the
+history database either. Logins come in from a CSV, a `.xlsx` or a `.ods` file,
+or straight out of another browser's own encrypted store, notes included, and
+they go back out as the CSV that Chrome, Firefox and Bitwarden all read.
 
 **A half-read login is still offered, with a box to fill in the rest.** When a
 form gives up a password but nothing that names the account, the save bar grows
@@ -121,6 +214,23 @@ read — a single-page app that wipes the field in its own submit handler — it
 grows a password field instead, and Save stays greyed out until there is
 something to save. Two-step logins that ask for the name on one screen and the
 password on the next are stitched back together without asking anything.
+
+**Bookmarks can be renamed, from either place they appear.** Right-click one —
+in the bookmarks bar or in the Bookmarks dialog — for Open in New Tab, Rename,
+Copy Address and Remove. A bookmark is identified by its URL, so renaming one
+never moves it, and a name you chose is never written over by the page's own
+title on a later visit; a bookmark saved before its title arrived still gets
+that title filled in. The rename box opens on what is *stored*, not on what the
+row happens to be drawing, which for a bookmark with no label of its own is its
+address.
+
+**Files and addresses can be dropped on the window.** Drop a file on the page
+and it opens there; drop it on the chrome — the header, the bookmarks bar, the
+tab strip — and it opens in a new tab, which is where Chrome puts one too.
+Several at once open as several tabs. Dropped text that is not a path or an
+address is searched for. The page gets first refusal on anything dropped over
+it, so a site's own upload box and its editable fields keep working exactly as
+before: this is reached only by drops that nothing inside the window wanted.
 
 **The address bar finishes the address, and knows which one you meant.** Type
 `driv` and the rest of `drive.google.com` appears, already selected, so Enter
@@ -227,13 +337,86 @@ zlib and OpenSSL. NSS is optional and only enables Firefox password import.
 make deps      # verify dependencies and print versions
 make           # build
 make run       # build and launch
-make check     # unit tests: filter compiler, URL handling, address-bar ranking
+make check     # unit tests: filter compiler, URL handling, address-bar
+               # ranking, offline mirror paths
 make LTO=1     # link-time optimised
 make DEBUG=1   # asan + ubsan
-sudo make install
+
+make user-install   # ~/.local/bin/lyndon -> lyndon.py, and a .desktop file
+sudo make install   # a packaged copy in /usr/local that cannot self-update
 ```
 
+**Install it with `make user-install`.** It needs no root: it links
+`~/.local/bin/lyndon` to `lyndon.py` in this checkout and writes a `.desktop`
+file that runs it, which is the same shape as every other app in the
+repository. `sudo make install` is still there for packaging, and puts a copy
+in `/usr/local` — but a copy is all it is. It has no checkout under it and no
+write permission over itself, so it never updates and quietly goes stale.
+Which of the two runs is down to `PATH` order and to where the desktop file
+is read from, both of which normally prefer the one in your home directory;
+`sudo make uninstall` removes the other so there is no question.
+
 ---
+
+## Updating itself
+
+Lyndon runs out of this checkout and keeps itself current, the way the Python
+apps beside it do. The difference is that it is compiled, so a new version is
+not the source but a build of one, and building takes a minute that nobody
+should have to wait through.
+
+`lyndon.py` is what the `.desktop` file starts, and it does four things:
+
+1. Swaps in a build finished last time, from `dist-next/` — now, while it is
+   not the binary anyone is running.
+2. Fast-forwards the checkout to commits fetched earlier. Local git only, a
+   few milliseconds.
+3. **Starts Lyndon**, from `dist/`. Nothing above this line touches the
+   network, so a link clicked in another program opens at the speed it always
+   did.
+4. Then, behind the running browser: fetches, and if `dist/` was not built
+   from the source now checked out, builds that into `dist-next/`.
+
+When step 4 lands, the launcher writes `.update-ready`. The running Lyndon is
+watching that one file, and offers a toast — *A newer Lyndon is ready*, with a
+**Restart** on it, which does not time out. Restart quits this browser and
+asks the launcher to bring the new one up once this process is gone, so the
+swap in step 1 is free to happen. Ignore it and the swap happens at the next
+start anyway.
+
+`src/update.c` is the whole of the browser's share of this: it watches a file
+and spawns the launcher. It never fetches and never runs git — a browser is
+the wrong process to be doing either from — and started any way other than
+through the launcher it does not exist at all, so `make run` and
+`./dist/lyndon` behave exactly as they did.
+
+Only a fast-forward is ever made, so a checkout with commits of its own is
+left alone, and uncommitted edits never trigger a build: a checkout being
+worked on is rebuilt by hand, as before. What a build was made from is kept
+beside it in `.source`, which is the git tree of this folder alone — a commit
+touching only the other apps is not a reason to rebuild. `APPS_NO_UPDATE=1`
+turns the whole thing off, and anything that goes wrong is written to
+`update.log`.
+
+Lyndon is also the default browser, so the launcher runs every time anything
+opens a link, not only when someone starts the browser. The fetch is
+throttled to once every half hour for that reason; the swap and the
+fast-forward, being local, happen every time.
+
+---
+
+## The house style
+
+The chrome wears the same ten themes as the rest of the suite — see
+[`house/`](../house/README.md). Lyndon is C and has no Python package to
+vendor `theme.py` into, so `house/sync.py` generates `src/house-themes.h`
+from it instead: the same numbers, as a C table that `apply_style` emits
+libadwaita's whole named palette from. `lyndon.css` is written against those
+names, so one table recolours every rule in it.
+
+**Porcelain** is the light default and **Moss** the dark one.
+`color-scheme` chooses between them — *Follow system* uses the desktop's
+answer — and both are in Preferences → Appearance.
 
 ## Configuration
 
@@ -243,7 +426,9 @@ start. It is meant to be hand-editable.
 
 ```ini
 [appearance]
-color-scheme  = system       ; system | light | dark
+color-scheme  = system       ; system | light | dark — which of the pair below
+dark-theme    = moss         ; one of the ten house themes
+light-theme   = porcelain
 effects       = full         ; full | reduced | off
 opacity       = 0.82         ; chrome alpha at the "full" level
 start-page    = full         ; full | minimal | blank
@@ -275,6 +460,8 @@ languages               = en-GB, en        ; Accept-Language; empty sends none
 search-keywords         = w=https://en.wikipedia.org/w/index.php?search=%s;
 save-passwords          = true             ; offer to save form logins
 password-autofill       = true
+password-suggest        = true             ; offer a generated one on sign-up
+password-leak-check     = false            ; ask a breach service; see Checkup
 password-never          = example.com;     ; origins that are never asked
 remember-history        = true
 
@@ -294,6 +481,20 @@ subscriptions = https://easylist.to/easylist/easylist.txt;
 geolocation   = ask          ; ask | allow | deny
 notifications = deny
 camera        = ask
+
+[offline]
+enabled        = false       ; the whole feature, off until asked for
+directory      =             ; empty means ~/Documents/Websites
+ask-where      = false       ; choose a folder on every save
+automatic      = false       ; mirror the sites you keep reading
+days           = 7           ; how far back "keep reading" looks, and how
+                             ; stale a mirror has to be before it is retaken
+minimum-visits = 3           ; across all of a site's pages
+allow          =             ; empty allows any site not blocked
+block          = bank.example;
+max-pages      = 200         ; per site, whichever limit comes first
+max-depth      = 3           ; links from the page you started on
+max-megabytes  = 200
 
 [session]
 restore          = true      ; reopen last session's tabs on launch
@@ -329,6 +530,7 @@ syntax. Preferences → Blocking → Edit opens it.
 | `Ctrl Shift D` | duplicate tab |
 | `Ctrl U` | view page source |
 | `Ctrl S` | save page |
+| `Ctrl Shift S` | save this whole site for offline reading |
 | `Ctrl I` | site information |
 | `F7` | caret browsing |
 | `Ctrl H` | history |
@@ -420,17 +622,32 @@ import.c    bookmarks, history and logins from other browsers' own stores
 passwords.c form capture and fill; storage via libsecret
 credentials.c the credential struct and the origin rule, shared with Windows
 pwfile.c    passwords in and out of CSV, TSV, .xlsx and .ods files
+pwcheck.c   weak, reused and breached passwords; the generator (unit tested)
 abp.c       Adblock Plus syntax → WebKit content-blocker JSON  (unit tested)
+archive.c   the site crawler: fetch, map URLs onto paths, relink (unit tested)
+update.c    noticing a newer build and restarting into it (shared)
 config.c    the GKeyFile model
 prefs.c     the preferences dialog
 downloads.c the shared download list
 util.c      URL normalisation, eTLD+1, formatting
+
+lyndon.py       the launcher: swap in, fast-forward, start, build behind it
+tools/updater.py  the fast-forward itself, the same file every app carries
 ```
 
 One `WebKitWebContext` and one `WebKitNetworkSession` are shared by every tab in
 every window, so the whole browser runs a single network process. Each tab gets
 its own `WebKitUserContentManager`, which is what makes a per-site protection
 toggle a matter of not installing a filter rather than recompiling one.
+
+`archive.c` is the one part that does not go through WebKit at all. A crawl has
+to run without a web view, without a tab and without the browser's cookies, so
+it is libsoup and a hand-written tag scanner — tolerant rather than correct,
+copying anything it does not understand through untouched, which is the only
+behaviour that keeps a document it cannot parse coming out of the mirror
+exactly as it went in. Requests outlive the crawl that started them when the
+browser is closed mid-mirror, so each one holds a refcounted anchor that a late
+callback checks before it touches anything.
 
 ### The filter compiler
 
@@ -482,13 +699,70 @@ unsupported syntax, and JSON escaping.
   automatically; without it that one import explains itself and points at the
   CSV route. Everything else builds and runs the same.
 - **Autofill fills, it never submits.** By design.
+- **The password manager is not Chrome's, and four of Chrome's features are
+  not reachable from here.** There is no sync: logins live in the desktop
+  keyring, which is the right place for them on this platform, and there is no
+  Lyndon account to sync them to. There are no **passkeys** — WebKitGTK exposes
+  no credential-provider API for a browser to register itself against, so this
+  is a WebKit limitation rather than a decision. There is no **biometric or
+  OS re-authentication** before a password is revealed or filled; the keyring's
+  own unlock prompt is the only gate, which is the same gate the rest of the
+  desktop uses. And there is no **password sharing**. What is here is the rest:
+  capture, fill, the account chooser, same-domain matching, generation, notes,
+  import and export, and Checkup.
+- **Checkup's reuse grouping approximates the Public Suffix List.** Reuse is
+  counted per registrable domain, and that domain comes from
+  `ly_uri_base_domain`, which carries a short list of multi-label suffixes
+  rather than the real PSL. `co.uk` and `com.au` come out right; a hosting
+  provider whose customers each own a subdomain does not, and logins there are
+  grouped together when they should not be. The same approximation is what
+  autofill's same-domain fallback uses, where being wrong this way round costs
+  an offer that should not have been made — which is why the fallback only runs
+  when the page has no login of its own, and never downgrades `https` to
+  `http`.
+- **The breach check asks a third party, one request per distinct password.**
+  It is off until it is turned on. Nothing identifying goes — five characters
+  of a hash, padded responses — but the requests do go to
+  `api.pwnedpasswords.com` rather than to anything of Lyndon's, and a store
+  with more than 400 distinct passwords stops there.
 - **Session restore stores URLs, not scroll position or form state.**
 - **No extensions.** There is no WebExtensions runtime and no plan for one; it
   is the single largest source of browser attack surface, and the blocking
   extensions exist for is built in.
 - **No form autofill for addresses or payment cards.** Passwords only.
+- **A dropped file the page took is the page's.** Anything dropped over the
+  content area reaches the web view first, because that is what keeps upload
+  boxes and editable fields working. A page that claims a drop and then ignores
+  it swallows it, and Lyndon never sees that drop to open the file itself.
+  Dropping on the chrome always opens.
 - **Save page writes MHTML**, which is the only complete-page format WebKit
   produces.
+- **An offline mirror is a copy of the public site, and only roughly a copy.**
+  The crawler is not a browser: it does not run JavaScript, so a site that
+  builds its pages in the client arrives as whatever its HTML said before the
+  scripts ran, and anything reachable only by clicking is not reachable at all.
+  Links are found by reading markup, so a URL assembled at runtime is invisible
+  to it. Responses larger than 32 MB are skipped, as is video and audio over
+  8 MB, because a mirror is for reading rather than for hoarding media.
+- **`robots.txt` is read for the site the crawl is rooted on**, and applied to
+  every page it follows; subresources are fetched regardless, as a browser
+  would.
+- **Updating itself needs the launcher.** Started any other way — `make run`,
+  `./dist/lyndon`, or a copy put in `/usr/local` by `sudo make install` —
+  Lyndon has no update machinery in it, says nothing, and stays at the
+  version it is. That is deliberate: the browser does not fetch and does not
+  run git, so without something above it doing that there is nothing for it
+  to notice.
+- **A new version is built behind the running one**, which means a `make -j`
+  for about a minute on whatever core is free, once, after a commit that
+  touched this folder lands. Nothing waits on it — Lyndon has already
+  started — but it is not nothing, and `APPS_NO_UPDATE=1` turns it off.
+- **A restart is a restart.** The offer quits the browser and starts it
+  again; open tabs come back through session restore, and anything typed
+  into a page does not.
+- **The sweep is per site, not per page.** It mirrors a whole site starting
+  from the busiest page you have read on it, which is not necessarily the page
+  you want kept. Ask for that one by hand.
 - **The tab context menu acts on the tab you right-clicked**, which libadwaita
   reports through `setup-menu`; if that ever returns nothing the menu falls
   back to the selected tab.
@@ -536,8 +810,8 @@ there.
 
 `src/lyndon.h` drops the toolkit includes under `_WIN32`, and that is the
 whole of what porting the shared half took — **`abp.c`, `config.c`, `store.c`,
-`util.c`, `import.c`, `credentials.c` and `pwfile.c` compile from `src/`
-unchanged** and are the same code the Linux build runs. The filter translator,
+`util.c`, `import.c`, `credentials.c`, `pwfile.c` and `update.c` compile from
+`src/` unchanged** and are the same code the Linux build runs. The filter translator,
 the config file, the SQLite history store, the URL helpers, the browser
 importer, the rule that decides what an origin is and the CSV and spreadsheet
 readers are therefore not forked, and a change to any of them lands on both.
@@ -552,6 +826,9 @@ readers are therefore not forked, and a change to any of them lands on both.
 | Browser import | `src/import.c` | the same file |
 | Password files | `src/pwfile.c` | the same file |
 | Origin matching | `src/credentials.c` | the same file |
+| Offline site mirrors | `src/archive.c` | not ported |
+| Noticing a new build | `src/update.c` | the same file |
+| Offering the restart | an `AdwToast` | `win32/notice.c`, drawn |
 
 ### The blocker
 
@@ -693,6 +970,11 @@ never heard of Lyndon.
   says so, because they are real settings that the Linux build reads from the
   same file — hiding them would make the two look like different products.
 * **Per-tab process control.** WebView2 decides that; Lyndon does not.
+* **Offline site mirroring.** `archive.c` is libsoup, which the Windows build
+  does not link, so there is no crawler here and no Offline page in
+  Preferences. The `[offline]` settings still survive a round trip through
+  `config.c`, which both builds share, so a profile used on both machines does
+  not lose them.
 * **File associations.** The Linux build ships a `.desktop` file that claims
   `http`, `https` and `application/pdf`; `windows/install.ps1` only makes Start
   Menu shortcuts, so Lyndon cannot yet be made the default browser from inside

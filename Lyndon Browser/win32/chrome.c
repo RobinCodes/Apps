@@ -3,6 +3,7 @@
 #include "chrome.h"
 #include "login.h"
 #include "panel.h"
+#include "notice.h"
 #include "prefs.h"
 
 #include <dwmapi.h>
@@ -26,6 +27,7 @@ static guint window_count;
 /* Every live window, so that the environment becoming ready can reach the
  * ones created before it did. Not owned: WM_DESTROY removes them. */
 static GPtrArray *windows;
+static LyUpdate  *the_update;   /* NULL unless lyndon.py started us */
 static gboolean env_ok;
 static gboolean env_settled;
 static char    *env_message;
@@ -112,6 +114,7 @@ struct _LyWindow {
 };
 
 static void layout (LyWindow *win);
+static void offer_restart (LyWindow *win);
 static void redraw_chrome (LyWindow *win);
 static void refresh_bookmark_state (LyWindow *win);
 static void toggle_bookmark (LyWindow *win);
@@ -1244,6 +1247,7 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_SIZE:
       layout (win);
       ly_login_reanchor (hwnd, page_screen_rect (win));
+      ly_notice_reanchor (hwnd, page_screen_rect (win));
       /* Tracked as it changes rather than only on close: the process can be
        * ended without any window being asked to close. The config save is
        * debounced, so a drag-resize costs one write once it settles. */
@@ -1252,6 +1256,7 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_MOVE:
       ly_login_reanchor (hwnd, page_screen_rect (win));
+      ly_notice_reanchor (hwnd, page_screen_rect (win));
       return 0;
 
     case WM_DPICHANGED: {
@@ -1411,6 +1416,7 @@ window_proc (HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DESTROY: {
       KillTimer (hwnd, TIMER_PROGRESS);
       ly_login_dismiss ();
+      ly_notice_dismiss ();
       save_geometry (win);
       save_session (win);
       if (win->panel)
@@ -1646,6 +1652,11 @@ ly_window_new (HINSTANCE instance, LyConfig *cfg, LyStore *store,
     return win;
   }
 
+  /* A build that landed while Lyndon was closed: the live signal has already
+   * been and gone, so the window asks instead. */
+  if (ly_update_ready (the_update))
+    offer_restart (win);
+
   /* A URL on the command line wins over the saved session: it is what the
    * user asked for just now. */
   if (url && *url)
@@ -1666,6 +1677,72 @@ guint
 ly_window_count (void)
 {
   return window_count;
+}
+
+/* ---------------------------------------------------------------- updates */
+
+/* The window the notice should sit over: the one in front, or the only one. */
+static LyWindow *
+front_window (void)
+{
+  if (windows == NULL || windows->len == 0)
+    return NULL;
+
+  HWND active = GetForegroundWindow ();
+  for (guint i = 0; i < windows->len; i++) {
+    LyWindow *win = g_ptr_array_index (windows, i);
+    if (win->hwnd == active)
+      return win;
+  }
+  return g_ptr_array_index (windows, 0);
+}
+
+static void
+on_restart_pressed (gpointer data)
+{
+  g_autoptr (GError) error = NULL;
+
+  /* Only quit once something is actually coming back. */
+  if (!ly_update_restart (the_update, &error)) {
+    g_message ("updates: could not restart: %s", error->message);
+    return;
+  }
+
+  /* Close the windows rather than posting WM_QUIT at the loop: each one
+   * writes its geometry and its tabs on the way out, and the last to go
+   * posts the quit itself. Jumping straight to the quit would restart into
+   * a browser that had forgotten what was open. The list is copied because
+   * WM_DESTROY removes from it as we go. */
+  if (windows == NULL)
+    return;
+  g_autoptr (GPtrArray) closing = g_ptr_array_new ();
+  for (guint i = 0; i < windows->len; i++)
+    g_ptr_array_add (closing, g_ptr_array_index (windows, i));
+  for (guint i = 0; i < closing->len; i++)
+    DestroyWindow (((LyWindow *) g_ptr_array_index (closing, i))->hwnd);
+}
+
+static void
+offer_restart (LyWindow *win)
+{
+  if (win == NULL || the_update == NULL)
+    return;
+  ly_notice_show (win->hwnd, win->instance, page_screen_rect (win), win->dpi,
+                  win->theme.dark, "A newer Lyndon is ready", "Restart",
+                  on_restart_pressed, NULL);
+}
+
+static void
+on_update_ready (LyUpdate *update, gpointer data)
+{
+  offer_restart (front_window ());
+}
+
+void
+ly_window_set_update (LyUpdate *update)
+{
+  the_update = update;
+  ly_update_set_ready_callback (update, on_update_ready, NULL);
 }
 
 void
