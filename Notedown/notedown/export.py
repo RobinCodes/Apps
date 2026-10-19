@@ -235,7 +235,11 @@ def _text_blocks(blocks) -> list[str]:
     out: list[str] = []
     for block in blocks:
         if block.kind in ("heading", "para"):
-            out.append(markdown.spans_text(block.spans).strip())
+            # Breaks become real newlines here and nowhere else: this is the
+            # one caller for which a line the author broke is content rather
+            # than an accident of wrapping.
+            text = markdown.spans_text(block.spans, "\n").strip()
+            out.extend(text.split("\n"))
             out.append("")
         elif block.kind == "code":
             out.extend("    " + line for line in block.text.split("\n"))

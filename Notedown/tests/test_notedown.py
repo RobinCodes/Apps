@@ -204,9 +204,21 @@ def test_dollars_are_maths_or_money_by_what_is_between_them():
 
 
 def test_hard_breaks_are_two_spaces_or_a_backslash():
-    spans = markdown.inline("one  \ntwo\\\nthree\nfour")
+    """Markdown's own two ways of asking for a break, which still work.
+
+    Asserted with `breaks=False`, because that is the only mode in which the
+    question means anything: with the house default on, *every* newline is a
+    break and the two syntaxes are indistinguishable from a plain one. What
+    this pins is that turning the house rule off gets Markdown back exactly,
+    which is what the setting is for.
+    """
+    spans = markdown.inline("one  \ntwo\\\nthree\nfour", breaks=False)
     assert [n.kind for n in spans].count("break") == 2
     assert markdown.spans_text(spans).replace(" ", "") == "onetwothreefour"
+
+    # And with the default on, the third newline counts too.
+    spans = markdown.inline("one  \ntwo\\\nthree\nfour")
+    assert [n.kind for n in spans].count("break") == 3
 
 
 def test_escapes_stop_syntax_from_meaning_anything():
@@ -365,6 +377,63 @@ def test_the_recent_list_has_no_duplicates_and_a_limit():
     assert config["recent_files"] == ["/d", "/c", "/a"], config["recent_files"]
     config.forget_file("/c")
     assert "/c" not in config["recent_files"]
+
+
+def test_a_new_line_is_a_new_line():
+    """The one place this parser leaves Markdown on purpose.
+
+    Markdown joins consecutive lines into one paragraph and wants two
+    trailing spaces for a break, which in a window that soft-wraps for you is
+    an invisible difference between what you typed and what you see. So a
+    newline is a break here — and `breaks=False` still gets the original
+    rule, because an exported document may be read by something that follows
+    it.
+    """
+    spans = markdown.parse("one\ntwo\n").blocks[0].spans
+    assert [n.kind for n in spans] == ["text", "break", "text"]
+    assert [n.text for n in spans if n.kind == "text"] == ["one", "two"]
+
+    classic = markdown.parse("one\ntwo\n", breaks=False).blocks[0].spans
+    assert [n.kind for n in classic] == ["text"]
+    assert classic[0].text == "one two"
+
+
+def test_a_new_line_does_not_make_a_new_paragraph():
+    """A break is not a paragraph, and a blank line still is one.
+
+    The distinction matters for spacing: two paragraphs are set apart, two
+    lines of one paragraph are not, and conflating them would turn every
+    hand-wrapped note into a column of gaps.
+    """
+    doc = markdown.parse("one\ntwo\n\nthree\n")
+    assert [b.kind for b in doc.blocks] == ["para", "para"]
+    assert sum(1 for n in doc.blocks[0].spans if n.kind == "break") == 1
+    assert not [n for n in doc.blocks[1].spans if n.kind == "break"]
+
+
+def test_the_new_line_rule_reaches_inside_the_other_blocks():
+    """Lists, quotes and emphasis hold paragraphs too, as far as this goes."""
+    item = markdown.parse("- one\n  two\n").blocks[0].items[0]
+    assert [n.kind for n in item.children[0].spans] == ["text", "break", "text"]
+
+    quote = markdown.parse("> one\n> two\n").blocks[0]
+    assert [n.kind for n in quote.children[0].spans] == ["text", "break", "text"]
+
+    emph = markdown.parse("*one\ntwo*\n").blocks[0].spans[0]
+    assert emph.kind == "emph"
+    assert [n.kind for n in emph.children] == ["text", "break", "text"]
+
+
+def test_a_new_line_inside_a_code_span_is_not_a_break():
+    """The newline rule only ever sees ordinary text.
+
+    A code span is consumed whole by the branch that opens it, so a newline
+    inside one never reaches the rule above — which is what keeps a span
+    spelled the same whether or not it was written across two lines.
+    """
+    spans = markdown.parse("`one\ntwo`\n").blocks[0].spans
+    assert [n.kind for n in spans] == ["code"]
+    assert "break" not in [n.kind for n in spans]
 
 
 def test_a_font_chosen_is_a_font_remembered():
@@ -832,12 +901,12 @@ def test_the_page_is_drawn_in_the_font_the_settings_say(window):
     window.config["preview_font_family"] = "Serif"
     window.config["preview_font_size"] = 12
     window._apply_fonts()
-    pump(300)
+    settle(lambda: "serif" in paragraph_font().get_family().lower())
     small = paragraph_font()
 
     window.config["preview_font_size"] = 24
     window._apply_fonts()
-    pump(300)
+    settle(lambda: paragraph_font().get_size() > small.get_size())
     large = paragraph_font()
 
     # The page is a tree of widgets and the font is one rule on the display;
@@ -926,6 +995,28 @@ def pump(milliseconds):
         while context.pending():
             context.iteration(False)
         GLib.usleep(2000)
+
+
+def settle(predicate, milliseconds=3000):
+    """Pump until `predicate()` is true, or give up and let the caller fail.
+
+    For anything that waits on a *style* change rather than on an idle
+    callback. Loading a provider does not restyle a widget there and then;
+    GTK does it on the next style pass, which is driven by the frame clock,
+    and a window that is not drawing may not get one for a while. A fixed
+    `pump(300)` is therefore a coin toss — which is exactly how the preview
+    font check behaved, passing or failing with the same code depending on
+    how fast the compositor was feeling.
+    """
+    deadline = GLib.get_monotonic_time() + milliseconds * 1000
+    context = GLib.MainContext.default()
+    while GLib.get_monotonic_time() < deadline:
+        if predicate():
+            return True
+        while context.pending():
+            context.iteration(False)
+        GLib.usleep(2000)
+    return predicate()
 
 
 def main():

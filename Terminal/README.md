@@ -88,8 +88,8 @@ blue palette looks like two themes fighting.
 
 | | |
 |---|---|
-| **Moss** | Forest black under sage. The quiet one, and the dark default. |
-| **Lacquer** | Black lacquer and brass. Porcelain with the light turned down. |
+| **Hearth** | A lamplit room in winter. Warm, soft and easy to sit in. The dark default. |
+| **Moss** | Forest black under sage. The quiet one. |
 | **Petrol** | Deep blue-green glass lit by copper. A cold room and a warm lamp. |
 | **Aurora** | Deep blue glass over slow northern light. |
 | **Obsidian** | Neutral black glass. Nothing competes with the text. |

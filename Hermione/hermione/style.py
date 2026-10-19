@@ -90,19 +90,17 @@ window.hermione .window-contents {
   border-radius: %(radius)dpx;
   padding: %(gap)dpx;
   background-color: alpha(%(chrome)s, %(slab_alpha).3f);
-  /* Two very faint gradients — a sheen falling from the top left, and a
-     lift at the very top edge where the light would catch — over the
-     theme's aurora. The sheen is the nearer surface, so it is listed
-     first; the aurora is the slow light the other apps paint behind their
-     glass, sitting still. */
+  /* The diagonal sheen and the aurora are drawn by `glass.Slab` from a
+     cached texture rather than listed here. Five gradients in a CSS
+     `background-image` are five full-slab blends on every repaint —
+     measured at 62 ms a frame against 6 for a flat slab — and this is the
+     biggest surface in the window. See housestyle.aurora_texture.
+     What stays is the one-pixel lift along the very top edge, which is a
+     device pixel and must not be scaled with the rest. */
   background-image:
-    linear-gradient(145deg,
-      alpha(%(sheen)s, %(sheen_top).3f) 0%%,
-      alpha(%(sheen)s, 0.0) 42%%),
     linear-gradient(to bottom,
       alpha(%(sheen)s, %(sheen_edge).3f) 0px,
-      alpha(%(sheen)s, 0.0) 2px),
-    %(aurora)s;
+      alpha(%(sheen)s, 0.0) 2px);
   box-shadow:
     inset 0 1px 0 alpha(%(sheen)s, %(rim_top).3f),
     inset 0 0 0 1px alpha(%(sheen)s, %(rim).3f),
@@ -663,7 +661,7 @@ popover.menu separator {
 .preview-kind { font-size: 0.82em; color: alpha(currentColor, 0.55); }
 .preview-image {
   border-radius: 10px;
-  box-shadow: 0 6px 20px alpha(%(shadow)s, 0.30),
+  box-shadow: 0 4px 12px alpha(%(shadow)s, 0.28),
               inset 0 0 0 1px alpha(%(sheen)s, 0.08);
 }
 .preview-text {
@@ -990,28 +988,7 @@ def _numbers(config, dark: bool) -> dict:
     palette_blur = (f"backdrop-filter: blur({min(blur + 14, 90)}px) saturate(160%);"
                     if blur else "")
 
-    # The aurora, as three very large radial gradients across the slab. The
-    # three apps with a `glass.py` paint this layer by hand and animate it;
-    # here it is the same colours sitting still, which is most of the effect
-    # — what it stops is a large pane of one tint reading as a painted
-    # rectangle. Each is 70% of the slab wide and placed off-centre and
-    # off-edge so none has a visible middle.
-    # Low, and lower than it looks like it should be — see the same number
-    # in housestyle.chrome(). A warm hue reads far stronger than a cold one
-    # at the same alpha, and this is the background of every empty area.
-    glow = 0.22 if dark else 0.14
-    hues = (list(scheme.aurora) * 3)[:3]
-    # The `%%` are doubled because this string is built with the `%`
-    # operator; the text that comes out has single ones, and it is pasted
-    # into the template rather than formatted again.
-    aurora = ",\n    ".join(
-        "radial-gradient(circle at %d%% %d%%, "
-        "alpha(%s, %.3f) 0%%, alpha(%s, 0.0) 68%%)"
-        % (x, y, hue, glow, hue)
-        for hue, (x, y) in zip(hues, ((12, 8), (88, 26), (46, 104))))
-
     return {
-        "aurora": aurora,
         "radius": radius,
         "gap": GAP,
         # A card inside a rounded slab wants a smaller radius than the slab

@@ -414,7 +414,7 @@ from it instead: the same numbers, as a C table that `apply_style` emits
 libadwaita's whole named palette from. `lyndon.css` is written against those
 names, so one table recolours every rule in it.
 
-**Porcelain** is the light default and **Moss** the dark one.
+**Porcelain** is the light default and **Hearth** the dark one.
 `color-scheme` chooses between them — *Follow system* uses the desktop's
 answer — and both are in Preferences → Appearance.
 
@@ -427,7 +427,7 @@ start. It is meant to be hand-editable.
 ```ini
 [appearance]
 color-scheme  = system       ; system | light | dark — which of the pair below
-dark-theme    = moss         ; one of the ten house themes
+dark-theme    = hearth       ; one of the ten house themes
 light-theme   = porcelain
 effects       = full         ; full | reduced | off
 opacity       = 0.82         ; chrome alpha at the "full" level

@@ -12,6 +12,27 @@ python3 notedown.py notes.md
 python3 notedown.py -n notes.md   # in a window of its own
 ```
 
+## A new line is a new line
+
+Markdown says consecutive lines are one paragraph, and that a line break has
+to be asked for with two trailing spaces or a backslash. That rule comes from
+a world of 80-column terminals where a paragraph was wrapped by hand. In a
+window that soft-wraps for you it is an invisible difference between what you
+typed and what you see: you press Return and nothing happens.
+
+So here a newline is a line break — in the preview, in the HTML export and in
+the plain-text export, which all agree. A **blank** line still starts a new
+paragraph, and paragraphs are still set further apart than the lines inside
+one, so the structure of a hand-wrapped note is visible rather than a uniform
+column.
+
+A code span is unaffected: a newline inside backticks never reaches the rule,
+so a span reads the same whether or not it was written across two lines.
+
+*Preferences → Writing → A new line is a new line* turns it off, which gets
+Markdown's own rule back exactly — worth it if a document is going somewhere
+that follows it.
+
 ## The preview is not a browser
 
 Almost every Markdown editor renders its preview in a web view, which means
@@ -131,8 +152,8 @@ and the same material. The window paints nothing itself — everything sits on
 one rounded, translucent slab of glass inside it, with a highlight that
 follows the pointer and the theme's own slow light drifting behind.
 
-**Porcelain** is the light default — warm paper under glass — and **Moss**
-the dark one, a desaturated forest black under sage. With **Follow the desktop** on, which it
+**Porcelain** is the light default — warm paper under glass — and **Hearth**
+the dark one, a lamplit room in winter. With **Follow the desktop** on, which it
 is by default, the app uses one in a light session and the other in a dark
 one and switches when the desktop does. The rest of the eight are in
 Preferences → Look, along with how translucent the glass is, how far a

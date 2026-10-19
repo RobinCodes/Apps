@@ -5,7 +5,7 @@ The look every app in this repository is drawn in, in one place.
 | | |
 |---|---|
 | `theme.py` | The ten palettes, and the glass each one is made of. No GTK import, so a settings file can read it before a toolkit exists. |
-| `housestyle.py` | libadwaita's named palette restated in a theme's colours, the shared idiom on top of that, the two widgets CSS cannot draw, the preference rows, and `Geometry` — the one implementation of remembering a window's size. |
+| `housestyle.py` | libadwaita's named palette restated in a theme's colours, the shared idiom on top of that, the widgets CSS cannot draw, the preference rows, `aurora_texture` (the light, baked once) and `Geometry` (remembering a window's size). |
 | `sync.py` | Copies both into every app, and `--check` says whether a copy has drifted. |
 | `test_house.py` | Measures the palettes, parses the sheet, and runs `sync.py --check`. |
 
@@ -110,5 +110,20 @@ list.
 
 **The aurora is quieter than it looks like it should be.** It is the
 background of every empty area in a window, and a warm hue reads far stronger
-than a cold one at the same alpha: 0.30 turned Lacquer's near-black into milky
+than a cold one at the same alpha: 0.30 turned Hearth's warm ground into milky
 coffee. 0.22 on a dark theme, 0.14 on a light one.
+
+**Decoration goes in a texture, not in `background-image`.** GSK re-blends
+every layer of a CSS `background-image` over the whole box on every repaint
+and caches nothing, and the slab is the biggest surface in the window.
+Measured at 1100×700: a flat slab 6.3 ms a frame, the two sheen gradients
+took it to 23.2, and each aurora blob added about 13 more — 62 ms for the
+layer. `aurora_texture()` draws the lot once with Cairo at 256×160 and
+`Slab.do_snapshot` blits it scaled: 11.2 ms, and nothing in it is sharp
+enough to notice the upscale.
+
+**A soft shadow costs by its blur radius, not by the size of the box.**
+Twelve popover-sized boxes measured 16.8 ms a frame at `0 10px 34px` and
+6.2 ms at `0 4px 12px`. Every popover, toast, tooltip and dialog in nine apps
+had the big one, and that was what "the popups are laggy" meant. A shadow
+says "this floats"; it does not have to be the deepest one that can be drawn.

@@ -186,10 +186,23 @@ def _blank(line: str) -> bool:
 # ------------------------------------------------------------ the parser ----
 
 
-def parse(text: str) -> Document:
-    """Markdown source to a Document. Never raises."""
+def parse(text: str, breaks: bool = True) -> Document:
+    """Markdown source to a Document. Never raises.
+
+    `breaks` is what a single newline inside a paragraph means. Markdown's own
+    answer is "nothing": consecutive lines are one paragraph, and a line break
+    has to be asked for with two trailing spaces or a backslash. That rule
+    comes from a world of 80-column terminals where a paragraph was wrapped by
+    hand, and in a window that soft-wraps for you it is an invisible
+    difference between what you typed and what you see — press Return, nothing
+    happens.
+
+    So on by default here: a new line in the text is a new line on the page.
+    `line_breaks` in the settings turns it off for anyone exporting to a
+    renderer that follows the original rule.
+    """
     try:
-        return _parse(text)
+        return _parse(text, breaks)
     except Exception:  # noqa: BLE001 - a preview must never fail to render
         import traceback
 
@@ -199,7 +212,7 @@ def parse(text: str) -> Document:
                         {}, {}, "", lines)
 
 
-def _parse(text: str) -> Document:
+def _parse(text: str, breaks: bool = True) -> Document:
     raw = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     lines = [_expand(line) for line in raw.split("\n")]
 
@@ -215,14 +228,16 @@ def _parse(text: str) -> Document:
 
     refs: dict[str, tuple[str, str]] = {}
     footnotes: dict[str, Block] = {}
-    blocks = _blocks(lines, start, len(lines), refs, footnotes, base=start)
+    blocks = _blocks(lines, start, len(lines), refs, footnotes,
+                     base=start, breaks=breaks)
 
     if frontmatter:
         blocks.insert(0, Block("frontmatter", 0, text=frontmatter, end_line=start - 1))
     return Document(blocks, refs, footnotes, frontmatter, lines)
 
 
-def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None):
+def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None,
+            breaks=True):
     """Parse lines[start:stop] into blocks.
 
     `offsets` maps an index in `lines` to where that line really came from, as
@@ -253,7 +268,8 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None):
         # not a paragraph at all.
         joined = _take_ref_defs(joined, refs)
         if joined.strip():
-            out.append(Block("para", para_line, spans=inline(joined, refs),
+            out.append(Block("para", para_line,
+                             spans=inline(joined, refs, breaks),
                              end_line=para_line + joined.count("\n")))
         para = []
 
@@ -351,7 +367,7 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None):
             inner, inner_offsets, index = _gather_quote(
                 lines, index, stop, source_line, source_column)
             children = _blocks(inner, 0, len(inner), refs, footnotes,
-                               offsets=inner_offsets)
+                               offsets=inner_offsets, breaks=breaks)
             out.append(Block("quote",
                              inner_offsets[0][0] if inner_offsets else source_line(index),
                              children=children,
@@ -389,7 +405,8 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None):
                 index += 1
             block = Block("footnote", body_offsets[0][0], label=label,
                           children=_blocks(body, 0, len(body), refs, footnotes,
-                                           offsets=body_offsets))
+                                           offsets=body_offsets,
+                                           breaks=breaks))
             footnotes[label] = block
             continue
 
@@ -397,7 +414,7 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None):
         if _BULLET.match(line) or _ORDERED.match(line):
             flush_para()
             block, index = _list(lines, index, stop, refs, footnotes,
-                                 source_line, source_column)
+                                 source_line, source_column, breaks)
             out.append(block)
             continue
 
@@ -561,7 +578,8 @@ def _fit(cells, width):
     return cells + [""] * (width - len(cells))
 
 
-def _list(lines, index, stop, refs, footnotes, source_line, source_column):
+def _list(lines, index, stop, refs, footnotes, source_line, source_column,
+          breaks=True):
     """A whole list: its items, and whether it is tight or loose.
 
     An item's content is everything indented past its marker, plus lazily
@@ -642,7 +660,7 @@ def _list(lines, index, stop, refs, footnotes, source_line, source_column):
             item_lines[0] = check.group(3) or ""
 
         children = _blocks(item_lines, 0, len(item_lines), refs, footnotes,
-                           offsets=item_offsets)
+                           offsets=item_offsets, breaks=breaks)
         items.append(ListItem(children, task=task, task_line=task_line,
                               task_column=task_column, line=item_offsets[0][0]))
 
@@ -686,15 +704,19 @@ _MATHY = re.compile(r"[\\^_{}=<>]|[A-Za-z0-9]\s*[-+*/]\s*[A-Za-z0-9(\\]|[A-Za-z]
 _LONE_TOKEN = re.compile(r"[A-Za-z]\w{0,2}|\d+(?:\.\d+)?")
 
 
-def inline(text: str, refs: dict | None = None) -> list[Node]:
-    """Inline Markdown to a list of Nodes. Never raises."""
+def inline(text: str, refs: dict | None = None,
+           breaks: bool = True) -> list[Node]:
+    """Inline Markdown to a list of Nodes. Never raises.
+
+    `breaks` is described on `parse`.
+    """
     try:
-        return _inline(text or "", refs or {})
+        return _inline(text or "", refs or {}, breaks=breaks)
     except Exception:  # noqa: BLE001 - see the module docstring
         return [Node("text", text or "")]
 
 
-def _inline(text, refs, depth=0):
+def _inline(text, refs, depth=0, breaks=True):
     if depth > 12:            # pathological nesting; stop pretending
         return [Node("text", text)]
 
@@ -725,8 +747,12 @@ def _inline(text, refs, depth=0):
                 continue
 
         if char == "\n":
+            # A newline reaching here is always one in ordinary text: a
+            # newline inside a code span or a maths span was swallowed whole
+            # by the branch that consumed it, so this is the only place the
+            # question is asked.
             trailing = len("".join(buf)) - len("".join(buf).rstrip(" "))
-            if trailing >= 2:
+            if breaks or trailing >= 2:
                 while buf and buf[-1] == " ":
                     buf.pop()
                 if buf and buf[-1].endswith(" "):
@@ -770,7 +796,8 @@ def _inline(text, refs, depth=0):
 
         # -- images and links ----------------------------------------------
         if char == "!" and index + 1 < size and text[index + 1] == "[":
-            node, after = _link(text, index + 1, refs, depth, image=True)
+            node, after = _link(text, index + 1, refs, depth, image=True,
+                                breaks=breaks)
             if node is not None:
                 flush()
                 out.append(node)
@@ -784,7 +811,8 @@ def _inline(text, refs, depth=0):
                 out.append(Node("footref", footnote.group(1)))
                 index += footnote.end()
                 continue
-            node, after = _link(text, index, refs, depth, image=False)
+            node, after = _link(text, index, refs, depth, image=False,
+                                breaks=breaks)
             if node is not None:
                 flush()
                 out.append(node)
@@ -826,13 +854,14 @@ def _inline(text, refs, depth=0):
                         if kind == "codetag":
                             out.append(Node("code", inner))
                         else:
-                            out.append(Node(kind, children=_inline(inner, refs, depth + 1)))
+                            out.append(Node(kind, children=_inline(inner, refs, depth + 1,
+                                                   breaks)))
                         index = text.index(">", close) + 1
                         continue
 
         # -- emphasis ------------------------------------------------------
         if char in "*_~=":
-            node, after = _emphasis(text, index, refs, depth)
+            node, after = _emphasis(text, index, refs, depth, breaks)
             if node is not None:
                 flush()
                 out.append(node)
@@ -941,7 +970,7 @@ def is_math(body: str) -> bool:
     return bool(_LONE_TOKEN.fullmatch(stripped))
 
 
-def _emphasis(text, index, refs, depth):
+def _emphasis(text, index, refs, depth, breaks=True):
     """A run of `*`, `_`, `~` or `=` that opens a span, and its contents."""
     char = text[index]
     run = _run_length(text, index, char)
@@ -967,7 +996,7 @@ def _emphasis(text, index, refs, depth):
     inner = text[index + run:close]
     if not inner.strip():
         return None, index
-    children = _inline(inner, refs, depth + 1)
+    children = _inline(inner, refs, depth + 1, breaks)
 
     if char == "~":
         return Node("strike", children=children), close + run
@@ -1007,7 +1036,7 @@ def _find_close(text, start, char, run):
     return -1
 
 
-def _link(text, index, refs, depth, image):
+def _link(text, index, refs, depth, image, breaks=True):
     """A link or image starting at `[`. Returns (node, index after) or (None, _)."""
     close = _matching_bracket(text, index)
     if close == -1:
@@ -1039,9 +1068,9 @@ def _link(text, index, refs, depth, image):
 
     if image:
         return Node("image", text=label, url=url, title=title,
-                    children=_inline(label, refs, depth + 1)), after
+                    children=_inline(label, refs, depth + 1, breaks)), after
     return Node("link", url=url, title=title,
-                children=_inline(label, refs, depth + 1)), after
+                children=_inline(label, refs, depth + 1, breaks)), after
 
 
 def _matching_bracket(text, start):
@@ -1123,19 +1152,25 @@ def slug(text: str) -> str:
     return re.sub(r"[\s_]+", "-", plain).strip("-") or "section"
 
 
-def node_text(node: Node) -> str:
-    """The plain text of a span, for anchors, titles and the word count."""
+def node_text(node: Node, break_text: str = " ") -> str:
+    """The plain text of a span, for anchors, titles and the word count.
+
+    A line break is a space by default, because every one of those callers
+    wants one line: an anchor with a newline in it is not an anchor, and a
+    heading that wrapped is still one heading. The plain-text *export* is the
+    exception and passes `"\n"` — there the break is content.
+    """
     if node.kind in ("text", "code", "math"):
         return node.text
     if node.kind == "break":
-        return " "
+        return break_text
     if node.kind == "image":
         return node.text
-    return "".join(node_text(child) for child in node.children)
+    return "".join(node_text(child, break_text) for child in node.children)
 
 
-def spans_text(spans) -> str:
-    return "".join(node_text(node) for node in spans or [])
+def spans_text(spans, break_text: str = " ") -> str:
+    return "".join(node_text(node, break_text) for node in spans or [])
 
 
 def outline(document: Document) -> list[tuple[int, str, int, str]]:

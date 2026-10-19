@@ -207,8 +207,13 @@ CSS = r"""
   opacity: 0.72;
 }
 
+/* The gap between paragraphs has to beat the gap between the lines inside
+   one, and it only just did while a line break needed two trailing spaces
+   and so almost never happened. Now that a newline is a break (see
+   markdown.parse), a hand-wrapped note is mostly broken lines and 12px
+   against a 1.6 line-height left the two readings about the same. */
 .md-para {
-  margin-bottom: 12px;
+  margin-bottom: 18px;
   line-height: 1.6;
 }
 

@@ -47,14 +47,14 @@ against:
 | | |
 |---|---|
 | **Porcelain** | Warm paper under glass, the colour of gallery walls. The light default. |
-| **Moss** | A desaturated forest black under sage. The dark default. Green is the hue the eye resolves most sharply, which is exactly why a dull one makes such a restful ground: all of the acuity and none of the pull. The accent is sage rather than a leaf green — bright enough to find, dull enough to live with for a working day. |
+| **Hearth** | A lamplit room in winter. The dark default, and the counterpart to Porcelain: Porcelain is paper by daylight, this is the same room after dark with the lamps on. Ember is the coal and this is the room around it — the ground is lifted well off black so it reads as a lit surface rather than a hole, and the accent is a soft apricot rather than a bright amber. Nothing in it is trying to catch the eye, which is what makes it comfortable for a long evening. |
 
-Two more dark themes were drawn alongside it and kept, because the dark half
-is no longer the one with no choice in it: **Lacquer**, black lacquer and
-brass — Porcelain with the light turned down — and **Petrol**, a deep
-blue-green under a copper accent, a cold room and a warm lamp. Then Aurora,
-Obsidian, Ember, Studio and Monochrome, and Daylight in the light half: ten in
-all.
+Two more dark themes were drawn along the way and kept, because the dark half
+is no longer the one with no choice in it: **Moss**, a desaturated forest
+black under sage — green is the hue the eye resolves most sharply, which is
+why a dull one makes such a restful ground — and **Petrol**, a deep blue-green
+under a copper accent, a cold room and a warm lamp. Then Aurora, Obsidian,
+Ember, Studio and Monochrome, and Daylight in the light half: ten in all.
 
 Every one of them carries more than the colour of text: the tint of its glass,
 how much light comes through it, how bright its edges catch that light, and
@@ -66,6 +66,26 @@ Every app follows the desktop between light and dark by default — the pair it
 switches between is yours to choose — and the question is put to the XDG
 settings portal rather than to libadwaita, whose answer stops being the
 desktop's as soon as anything forces a colour scheme.
+
+### Switching the whole desktop
+
+`Mod+Shift+D`, or `theme-mode` from a terminal
+(`theme-mode light|dark|toggle|--print`). There is no single switch on this
+machine, because two things have to be told and neither tells the other:
+
+* **`gsettings org.gnome.desktop.interface color-scheme`** is the desktop's
+  preference. `xdg-desktop-portal-gtk` republishes it as
+  `org.freedesktop.appearance color-scheme`, which is what every well-behaved
+  application actually watches — all nine here, GTK4 and libadwaita generally,
+  Firefox, Qt apps built against the portal. They repaint the moment it
+  changes; nothing restarts.
+* **`noctalia msg theme-mode-set`** is the bar, the dock, the launcher and the
+  OSDs. noctalia keeps its own mode and does not watch the portal, so setting
+  the first alone leaves the shell behind.
+
+`theme-mode` sets both, and lives in
+`Scripts/Arch/theme/theme-mode` with the key bound in
+`~/.config/niri/apps-theme-mode.kdl`.
 
 None of this is a matter of taste alone. `house/test_house.py` measures every
 theme's text, every colour in it that carries meaning, every label that lands

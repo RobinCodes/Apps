@@ -203,7 +203,7 @@ window.prism {{
 .prism taboverview .card {{
   border-radius: 12px;
   background: alpha({scheme.glass}, 0.85);
-  box-shadow: 0 6px 22px alpha(black, 0.35);
+  box-shadow: 0 4px 12px alpha(black, 0.32);
 }}
 
 /* ---- the gap between split panes ---- */
@@ -303,7 +303,11 @@ window.prism {{
   color: {fg};
   border: 1px solid {line};
   border-radius: 12px;
-  box-shadow: 0 10px 30px alpha(black, 0.45);
+/* Modest on purpose: GSK blurs an offscreen to draw a soft shadow and
+   the cost goes with the radius, not with the size of the thing casting
+   it. A popover at 34px measured nearly three times the cost of one at
+   12px — see the note in housestyle.chrome(). */
+  box-shadow: 0 4px 12px alpha(black, 0.40);
 }}
 .prism popover modelbutton {{ border-radius: 7px; color: {fg}; }}
 .prism popover modelbutton:hover {{ background: {hover}; }}

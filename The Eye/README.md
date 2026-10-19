@@ -153,7 +153,7 @@ makes every photograph on it look cold. **Studio** takes that to its
 conclusion: an 18% grey surround, the condition a print is judged in, with the
 panels kept dark.
 
-**Porcelain** is the light default and **Moss** the dark one. With
+**Porcelain** is the light default and **Hearth** the dark one. With
 **Follow the desktop** on, which it is by default, The Eye uses one in a light
 session and the other in a dark one. `T` still cycles through all ten, and
 picking one that way turns the following off — otherwise the next change of

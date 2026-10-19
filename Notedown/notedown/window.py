@@ -336,7 +336,6 @@ class MainWindow(Adw.ApplicationWindow):
         size.append("Smaller Text", "win.zoom-out")
         size.append("Reset Text Size", "win.zoom-reset")
         size.append("Fonts…", "win.fonts")
-        size.append("Appearance…", "win.appearance")
         menu.append_submenu("Text", size)
 
         tools = Gio.Menu()
@@ -345,6 +344,7 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append_section(None, tools)
 
         about = Gio.Menu()
+        about.append("Preferences", "win.preferences")
         about.append("Keyboard Shortcuts", "win.shortcuts")
         about.append("About Notedown", "win.about")
         about.append("Quit", "app.quit")
@@ -428,7 +428,7 @@ class MainWindow(Adw.ApplicationWindow):
             "zoom-out": lambda: self.zoom(-1),
             "zoom-reset": lambda: self.zoom(0),
             "fonts": self.show_fonts,
-            "appearance": self.show_appearance,
+            "preferences": self.show_preferences,
             "clear-recent": self.clear_recent,
             "noop": lambda: None,
             # Formatting.
@@ -536,6 +536,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("win.save", ["<Control>s"]),
             ("win.save-as", ["<Control><Shift>s"]),
             ("win.close-tab", ["<Control>w"]),
+            ("win.preferences", ["<Control>comma"]),
             ("win.find", ["<Control>f"]),
             ("win.replace", ["<Control>h"]),
             ("win.find-next", ["<Control>g", "F3"]),
@@ -1302,16 +1303,47 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.set_default_response("close")
         dialog.present(self)
 
-    def show_appearance(self):
-        """The theme and the glass — the house Look page, and nothing else.
+    def show_preferences(self):
+        """The theme and the glass — the house Look page.
 
-        A dialog of its own rather than a settings window: everything else in
-        this app is a toggle in the menu, and the two things that are not are
-        the fonts and these.
+        Named and placed the way every other app here names and places it,
+        which is the whole point: the first version of this put the themes
+        on an "Appearance…" item inside the *text size* section, and the
+        answer that came back was that Notedown had no themes. Everything
+        else in this app stays a toggle in the menu, where it is already
+        easier to reach than a settings page.
         """
-        dialog = Adw.PreferencesDialog(title="Appearance")
+        dialog = Adw.PreferencesDialog(title="Preferences")
         dialog.add(housestyle.look_page(self.config, self.glazing.restyle))
+        dialog.add(self._writing_page())
         dialog.present(self)
+
+    def _writing_page(self):
+        """The handful of settings that are about the text rather than the app."""
+        page = Adw.PreferencesPage(title="Writing",
+                                   icon_name="document-edit-symbolic")
+        group = Adw.PreferencesGroup(
+            title="The page",
+            description="How the rendered half reads what you type.")
+
+        row = Adw.SwitchRow(
+            title="A new line is a new line",
+            subtitle="Off, consecutive lines run together into one paragraph "
+                     "and a break needs two trailing spaces — which is what "
+                     "Markdown itself says, and what a renderer you export to "
+                     "will do.",
+            active=bool(self.config["line_breaks"]))
+
+        def toggled(switch, _param):
+            self.config["line_breaks"] = switch.get_active()
+            self.config.save()
+            for document in self.documents:
+                document.render_now()
+
+        row.connect("notify::active", toggled)
+        group.add(row)
+        page.add(group)
+        return page
 
     def show_fonts(self):
         """Choose the font for each half. It applies as it is chosen."""

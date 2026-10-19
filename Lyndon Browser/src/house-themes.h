@@ -30,11 +30,11 @@ typedef struct {
 } LyHouseTheme;
 
 static const LyHouseTheme LY_HOUSE_THEMES[] = {
-  { "moss", "Moss", "Forest black under sage. The quiet one, and the default.", TRUE, "#0D1310", "#E3EADF", "#93A390", "#C4D39A", "#0A0A0C", "#121A15", "#111714", "#181E1B", "#1F2522", "rgba(255,255,255,0.11)", "#7FD093", "#E0C277", "#EC8A80" },
+  { "hearth", "Hearth", "A lamplit room in winter. Warm, soft, and easy to sit in. The dark default.", TRUE, "#1A1512", "#F2E7DA", "#AD9D8D", "#F0A878", "#0A0A0C", "#221B16", "#1D1916", "#24201D", "#2B2724", "rgba(255,255,255,0.11)", "#9FD39A", "#F5C479", "#FF9484" },
   { "aurora", "Aurora", "Deep blue glass over slow northern light.", TRUE, "#0A0D14", "#DCE3F0", "#8A93A8", "#6FB4FF", "#0A0A0C", "#0C1322", "#0E1118", "#15181F", "#1C1F26", "rgba(255,255,255,0.11)", "#5CE2A7", "#F2C97D", "#FF6B81" },
   { "ember", "Ember", "Warm smoked glass, lit from below. Kind at night.", TRUE, "#13100E", "#EDE2D8", "#A2958A", "#FFBE5C", "#0A0A0C", "#1B1512", "#171412", "#1E1B19", "#252220", "rgba(255,255,255,0.11)", "#B8CE6A", "#FFBE5C", "#FF7A66" },
-  { "lacquer", "Lacquer", "Black lacquer and brass. Porcelain with the light turned down.", TRUE, "#141210", "#EDE7DD", "#A09486", "#D9B779", "#0A0A0C", "#1C1813", "#181614", "#1F1D1B", "#262422", "rgba(255,255,255,0.11)", "#9CC98E", "#E0BE72", "#E8837A" },
   { "mono", "Monochrome", "Grey glass. Colour only where the content depends on it.", TRUE, "#0D0D0D", "#E8E8E8", "#9B9B9B", "#C4C4C4", "#0A0A0C", "#141414", "#111111", "#181818", "#1F1F1F", "rgba(255,255,255,0.11)", "#A8A8A8", "#DADADA", "#C9C9C9" },
+  { "moss", "Moss", "Forest black under sage. The quiet one.", TRUE, "#0D1310", "#E3EADF", "#93A390", "#C4D39A", "#0A0A0C", "#121A15", "#111714", "#181E1B", "#1F2522", "rgba(255,255,255,0.11)", "#7FD093", "#E0C277", "#EC8A80" },
   { "obsidian", "Obsidian", "Neutral black glass. Nothing at all competes with the content.", TRUE, "#0B0B0C", "#E4E6EA", "#8C8F96", "#B9C6D8", "#0A0A0C", "#131416", "#0F0F10", "#161617", "#1D1D1E", "rgba(255,255,255,0.11)", "#7FD08C", "#E7C36B", "#F0796E" },
   { "petrol", "Petrol", "Deep blue-green glass, lit by copper. A cold room and a warm lamp.", TRUE, "#081316", "#DEE9E8", "#8CA3A3", "#E2906A", "#0A0A0C", "#0C1B1F", "#0C1719", "#131E20", "#1B2527", "rgba(255,255,255,0.11)", "#58CFA5", "#E8C277", "#F08271" },
   { "studio", "Studio", "An 18% neutral grey surround — the condition a print is judged in — with the panels kept dark. For colour work.", TRUE, "#202020", "#ECECEC", "#A4A4A4", "#D6D6D6", "#0A0A0C", "#272727", "#232323", "#2A2A2A", "#313131", "rgba(255,255,255,0.11)", "#9AD6A6", "#E3C98A", "#F09A95" },
@@ -44,5 +44,5 @@ static const LyHouseTheme LY_HOUSE_THEMES[] = {
 
 #define LY_HOUSE_THEME_N G_N_ELEMENTS (LY_HOUSE_THEMES)
 
-#define LY_HOUSE_DARK_DEFAULT  "moss"
+#define LY_HOUSE_DARK_DEFAULT  "hearth"
 #define LY_HOUSE_LIGHT_DEFAULT "porcelain"

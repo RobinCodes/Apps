@@ -101,6 +101,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build(self) -> None:
         self.slab = glass.Slab(orientation=Gtk.Orientation.VERTICAL)
+        self._relight()
 
         self.toasts = Adw.ToastOverlay()
         self.overlay = Gtk.Overlay()
@@ -1166,11 +1167,23 @@ class MainWindow(Adw.ApplicationWindow):
     def show_settings(self) -> None:
         prefs.show(self, self.config, self._setting_changed)
 
+    def _relight(self) -> None:
+        """Hand the slab the current theme's light.
+
+        Called when the window is built and whenever the theme or the glass
+        settings change — the texture is cached per theme, so this is a
+        dictionary lookup in the common case.
+        """
+        self.slab.set_light(style.scheme_for(self.config, _is_dark()),
+                            float(self.config["translucency"]),
+                            bool(self.config["glass"]))
+
     def _setting_changed(self, key: str) -> None:
         if key in ("theme", "follow_system", "dark_theme", "light_theme",
                    "glass", "glass_blur", "translucency", "rounding",
                    "colour_icons", "row_height"):
             style.update(self.config, _is_dark())
+            self._relight()
             self.sheen.set_strength(0.05 if self.config["glass"] else 0.0)
         if key in ("columns", "icon_size", "show_preview", "show_status",
                    "thumbnail_limit_mb", "colour_icons", "row_height"):

@@ -201,7 +201,8 @@ class Document:
             self._render_timer = 0
         text = self.text()
         if self.is_markdown:
-            self.parsed = markdown.parse(text)
+            self.parsed = markdown.parse(
+                text, breaks=bool(self.config["line_breaks"]))
         else:
             # Not Markdown: show it as what it is rather than inventing
             # emphasis out of a shell script's asterisks.

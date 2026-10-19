@@ -24,17 +24,34 @@ minute after the last dialog closes. It is deliberately not the same process
 as the user's own Hermione: a file chooser that dies takes a file chooser
 with it, not the window somebody was working in.
 
-**The bus name is taken before libadwaita is imported, and that order is not
-a style choice.** `xdg-desktop-portal` builds its backend proxies while it
-starts up, and `StartServiceByName` blocks it until the backend owns its
-name. Importing libadwaita reads the system's colour scheme from
-`org.freedesktop.portal.Settings` — which is the same daemon, synchronously,
-with D-Bus's default 25-second timeout. Start GTK first and the two of them
-wait for each other for exactly that long, the portal gives up with "Failed
-to create file chooser proxy", and then it exports no FileChooser interface
-at all until it is restarted: not a slow file dialog, *no* file dialog, for
-every program on the desktop. So `main` takes the name with nothing but Gio
-loaded, and only then brings up the toolkit.
+**The toolkit is not loaded until a dialog needs it, and that is not
+laziness.** There is a deadlock here with two ways to lose, and both have
+been hit.
+
+`xdg-desktop-portal` builds its backend proxies while it starts up, and
+`StartServiceByName` blocks it until the backend owns its name. Initialising
+GTK opens a display, and opening a display reads the system's colour scheme
+from `org.freedesktop.portal.Settings` — the same daemon, synchronously, with
+D-Bus's default 25-second timeout.
+
+*Loading GTK before taking the name* is the bad way to lose: the two wait for
+each other, the portal gives up with "Failed to create file chooser proxy",
+and it then exports no FileChooser interface at all until it is restarted —
+not a slow file dialog, *no* file dialog, for every program on the desktop.
+So `main` takes the name with nothing but Gio loaded.
+
+*Loading GTK before the main loop runs* is the quiet way to lose, and it
+cost 25 seconds of every boot until 2026-10-19. The name is ours, so the
+portal proceeds — and immediately calls us, and we are still inside GTK's
+startup and answer nothing. D-Bus times out, the portal starts anyway, and
+nothing is logged. The only visible symptom is that the first app launched
+after logging in sits with no window for half a minute, because GDK asks
+that same portal and waits behind it.
+
+So the toolkit is built in `FileChooserPortal.ensure_app`, on the first call
+that actually needs a window. By then the loop is running, the portal has
+long since finished starting, and the colour-scheme read it does is answered
+at once.
 """
 
 from __future__ import annotations
@@ -235,9 +252,9 @@ class FileChooserPortal:
     """One D-Bus object, and one window per call in flight."""
 
     def __init__(self, app):
-        # Set by `_build_app` once the toolkit is up; a call cannot arrive
-        # before then, because the name is not ours until it is.
-        self.app = app
+        # Built on the first call that needs a window rather than at
+        # startup — see `ensure_app`. None until then.
+        self._app = app
         # What `main`'s idle watch reads to decide whether this process has
         # any reason to go on existing.
         self.in_flight = 0
@@ -291,9 +308,38 @@ class FileChooserPortal:
             self.in_flight -= 1
             self.last_activity = time.monotonic()
 
-        window = chooser.present(self.app, ask, done)
+        window = chooser.present(self.ensure_app(), ask, done)
         self._requests[handle] = window
         self._watch(handle)
+
+    def ensure_app(self):
+        """The toolkit, loaded the first time a dialog actually needs it.
+
+        Not at startup, and this is the whole reason the service starts
+        promptly. Initialising GTK opens a display, and opening a display
+        does a *synchronous* read of the settings portal — which is
+        xdg-desktop-portal, which at this moment is blocked waiting for
+        this process to answer the call it just made to us. Neither side
+        moves until D-Bus gives up 25 seconds later. The portal then starts
+        normally, so nothing is broken and nothing is logged; it just costs
+        25 seconds of every boot, and every app that opens a window during
+        those seconds waits too, because GDK asks the same portal.
+
+        Deferring the toolkit to the first dialog breaks the cycle: the main
+        loop is running by then, this process answers the portal
+        immediately, and by the time anyone opens a file chooser the portal
+        has long since finished starting. It also means a session where no
+        file dialog is ever opened never loads GTK here at all, which on a
+        4 GB machine is 70 MB that stays free.
+        """
+        if self._app is None:
+            self._app = _build_app(self)
+        return self._app
+
+    @property
+    def app(self):
+        """The application, or None if nothing has needed one yet."""
+        return self._app
 
     def _reply(self, invocation, response: int, answer) -> None:
         results = (results_variant(answer) if answer is not None
@@ -409,7 +455,7 @@ def _build_app(portal: FileChooserPortal):
     # window and nothing holding it has nothing to wait for, and this
     # process has to wait for a method call it has not been sent yet.
     app.register(None)
-    portal.app = app
+    portal._app = app
     return app
 
 
@@ -430,7 +476,10 @@ def main() -> int:
         print(f"hermione portal: {BUS_NAME} is already owned", file=sys.stderr)
         return 0
 
-    _build_app(portal)
+    # The toolkit is deliberately *not* loaded here — see
+    # `FileChooserPortal.ensure_app`. Going straight to the loop is what
+    # lets this process answer xdg-desktop-portal at once instead of 25
+    # seconds from now.
 
     # Our own loop, and our own idea of when to stop. A dialog on screen or
     # a reply still owed is a reason to stay; a minute and a half of

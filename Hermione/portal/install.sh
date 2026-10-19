@@ -86,6 +86,56 @@ if [ ! -f "$config_file" ]; then
     } > "$config_file"
 fi
 
+# Drop backends that are not installed.
+#
+# This is not tidiness, it is 25 seconds of every boot. The preference lists
+# name backends by basename, and xdg-desktop-portal tries each in turn by
+# D-Bus *activation* — so a name with no .portal file behind it is not
+# skipped, it is waited for until the bus gives up. niri's stock file says
+# `default=gnome;gtk;`, and on a machine with only the gtk backend installed
+# that one word cost 25.3s in `systemd-analyze blame --user`, blocking every
+# app that asks the portal anything during startup.
+#
+# So each list is filtered down to the backends that actually exist, with
+# ours added (this script is what installs it) and `gtk` as the floor, since
+# a list that empties would leave the interface with no backend at all.
+prune_missing_backends() {
+    local file="$1" installed="hermione"
+    local dir name
+    for dir in $(printf '%s' "${XDG_DATA_HOME:-$HOME/.local/share}:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" | tr ':' ' '); do
+        for portal in "$dir"/xdg-desktop-portal/portals/*.portal; do
+            [ -f "$portal" ] || continue
+            name=$(basename "$portal" .portal)
+            case ";$installed;" in
+                *";$name;"*) ;;
+                *) installed="$installed;$name" ;;
+            esac
+        done
+    done
+
+    INSTALLED="$installed" awk -F= '
+        /^[[:space:]]*(#|\[|$)/ { print; next }
+        NF < 2 { print; next }
+        {
+            key = $1
+            value = substr($0, index($0, "=") + 1)
+            n = split(value, want, ";")
+            kept = ""
+            for (i = 1; i <= n; i++) {
+                b = want[i]
+                gsub(/^[ \t]+|[ \t]+$/, "", b)
+                if (b == "") continue
+                # "none" and "*" are wildcards rather than backend names.
+                if (b == "none" || b == "*" || index(";" ENVIRON["INSTALLED"] ";", ";" b ";")) {
+                    kept = kept b ";"
+                }
+            }
+            if (kept == "") kept = "gtk;"
+            print key "=" kept
+        }
+    ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
 if grep -q "^$INTERFACE=" "$config_file"; then
     sed -i "s|^$INTERFACE=.*|$INTERFACE=hermione;gtk;|" "$config_file"
 else
@@ -97,6 +147,7 @@ else
         printf '[preferred]\n%s=hermione;gtk;\n' "$INTERFACE" >> "$config_file"
     fi
 fi
+prune_missing_backends "$config_file"
 echo "wrote $config_file"
 
 # D-Bus caches the list of activatable services, so without this the first

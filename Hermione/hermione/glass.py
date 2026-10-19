@@ -40,6 +40,39 @@ class Slab(Gtk.Box):
         super().__init__(**kwargs)
         self.add_css_class("slab")
         self.set_overflow(Gtk.Overflow.HIDDEN)
+        self._aurora = None
+
+    def set_light(self, scheme, translucency: float = 1.0,
+                  enabled: bool = True) -> None:
+        """Which theme's light to draw behind the cards, or none at all.
+
+        The texture comes from `housestyle.aurora_texture`, which is the
+        same light every other app here draws, and the reason it is a
+        texture rather than the gradients it used to be is in that
+        function's docstring: five gradients in a CSS `background-image`
+        are five full-slab blends on every repaint.
+        """
+        from . import housestyle
+
+        self._aurora = (housestyle.aurora_texture(scheme, translucency)
+                        if enabled else None)
+        self.queue_draw()
+
+    def do_snapshot(self, snapshot: Gtk.Snapshot) -> None:
+        """The light first, then the cards laid on it.
+
+        GTK has drawn the CSS background and the rim by the time this runs,
+        so the texture lands on the slab's own tint and under every card —
+        which is where light coming through glass belongs.
+        """
+        texture = self._aurora
+        if texture is not None:
+            width, height = self.get_width(), self.get_height()
+            if width > 0 and height > 0:
+                snapshot.append_scaled_texture(
+                    texture, Gsk.ScalingFilter.LINEAR,
+                    Graphene.Rect().init(0, 0, width, height))
+        Gtk.Box.do_snapshot(self, snapshot)
 
     def set_square(self, square: bool) -> None:
         """Corners off, for a window that covers the whole screen.

@@ -160,7 +160,8 @@ THEMES: dict[str, Theme] = {}
 # shared. The Eye's blue theme was called Vitreous and Prism's was called
 # Aurora; they were the same theme drawn twice, so now they are one and the
 # old name resolves to it rather than falling back to the default.
-ALIASES = {"vitreous": "aurora", "nocturne": "moss", "noir": "moss"}
+ALIASES = {"vitreous": "aurora", "nocturne": "hearth",
+           "noir": "hearth", "lacquer": "hearth"}
 
 
 def _add(theme: Theme) -> Theme:
@@ -171,32 +172,40 @@ def _add(theme: Theme) -> Theme:
 # ---------------------------------------------------------------- dark ----
 
 _add(Theme(
-    key="lacquer", name="Lacquer", dark=True,
-    blurb="Black lacquer and brass. Porcelain with the light turned down.",
-    # The dark half of the house and the counterpart to Porcelain, which is
-    # the point of it: same warmth, same restraint, the light turned down
-    # rather than a different taste in a darker room.
+    key="hearth", name="Hearth", dark=True,
+    blurb="A lamplit room in winter. Warm, soft, and easy to sit in. "
+          "The dark default.",
+    # The warm dark one, and the counterpart to Porcelain: Porcelain is paper
+    # by daylight, this is the same room after dark with the lamps on.
     #
-    # Three things keep it from being another warm dark theme. The ground is
-    # warm but barely — #141210 is a neutral black you would call warm only
-    # beside a cold one — so the warmth is something the glass carries and
-    # the text never fights. The palette is held well below the chroma of a
-    # jewel-tone theme, at one lightness, so a line of coloured output reads
-    # as a line of text rather than as a row of lights. And the accent is
-    # brass rather than gold: #D9B779 is the colour of an unpolished fitting,
-    # which is what lets it sit on a page without becoming the page.
+    # Ember is the coal; this is the room around it, and the difference is
+    # the whole design. Ember's ground is nearly black and its accent is a
+    # saturated amber, which is dramatic — light coming *at* you. Here the
+    # ground is deliberately lifted well off black to #1A1512, a warm
+    # brown-grey with enough value in it to read as a lit surface rather than
+    # as a hole, and the accent is a soft apricot rather than a bright amber.
+    # Nothing in it is trying to catch the eye; that is what makes it
+    # comfortable for a long evening.
     #
-    # The aurora is almost still — four browns and ochres a step apart, so
-    # what it does is stop a large pane of one tint reading as paint, and
-    # nothing else. That restraint is the whole theme.
-    bg="#141210", fg="#EDE7DD", dim="#A09486", accent="#D9B779",
-    cursor="#D9B779", matte="#0B0B0B",
-    ansi=["#201C18", "#E8837A", "#9CC98E", "#E0BE72",
-          "#8FB6CE", "#C79CBE", "#79C7BE", "#C9BEB0",
-          "#6B6055", "#F2A49C", "#B9DEAC", "#F2D694",
-          "#B0CFE2", "#DCBAD4", "#9FDDD6", "#F6F1E8"],
-    glass="#1C1813", glass_alpha=0.91, rim=0.95,
-    aurora=["#3A2A16", "#2A1F14", "#44331C", "#211913"]))
+    # The lifted ground costs contrast, so the palette is correspondingly
+    # lighter than the other dark themes' — on #1A1512 a saturated colour
+    # does not clear 4.5:1 and a pale one does. That it comes out gentler is
+    # the happy part of the arithmetic rather than a compromise.
+    bg="#1A1512", fg="#F2E7DA", dim="#AD9D8D", accent="#F0A878",
+    cursor="#F0A878", matte="#0E0E0E",
+    ansi=["#261F1A", "#FF9484", "#9FD39A", "#F5C479",
+          "#9DBFDA", "#D7A6D0", "#86D2C4", "#D6C8B8",
+          "#766457", "#FFAEA1", "#BCE4B8", "#FFD79B",
+          "#BBD4E9", "#E9C1E4", "#A6E2D7", "#FBF3E9"],
+    glass="#221B16", glass_alpha=0.90, rim=0.9,
+    # Embers seen through the glass rather than in it, and kept very close
+    # to the glass's own tint. This is the one theme where the ground is
+    # already warm, so an aurora with any real chroma in it does not read as
+    # light on a surface, it reads as brown paint — the first cut used
+    # terracottas two steps brighter than these and turned the whole pane
+    # the colour of weak coffee. What is wanted is a surface that is not
+    # quite even, not a second colour.
+    aurora=["#3A2318", "#2A1C14", "#412D1C", "#231A14"]))
 
 _add(Theme(
     key="petrol", name="Petrol", dark=True,
@@ -216,7 +225,7 @@ _add(Theme(
 
 _add(Theme(
     key="moss", name="Moss", dark=True,
-    blurb="Forest black under sage. The quiet one, and the default.",
+    blurb="Forest black under sage. The quiet one.",
     # Nothing else in the house is green, and green is the hue the eye
     # resolves most sharply, which is exactly why a *desaturated* one makes
     # such a restful ground: all the acuity and none of the pull. The accent
@@ -327,11 +336,12 @@ _add(Theme(
 
 
 # The two the house is built on, and what `follow_system` reaches for. Both
-# were chosen rather than inherited: Porcelain is the light theme, and Moss
-# is the dark one — picked from three that were drawn for the job, which is
-# why the other two are still here rather than deleted.
+# were chosen rather than inherited: Porcelain is the light theme and Hearth
+# is the dark one. The dark half has more of a choice in it than it used to
+# because the first few attempts missed — Moss and Petrol were drawn for this
+# job too, and stayed.
 LIGHT_DEFAULT = "porcelain"
-DARK_DEFAULT = "moss"
+DARK_DEFAULT = "hearth"
 DEFAULT = DARK_DEFAULT
 
 

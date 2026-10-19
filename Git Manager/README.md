@@ -19,8 +19,8 @@ and the same material. The window paints nothing itself — everything sits on
 one rounded, translucent slab of glass inside it, with a highlight that
 follows the pointer and the theme's own slow light drifting behind.
 
-**Porcelain** is the light default — warm paper under glass — and **Moss**
-the dark one, a desaturated forest black under sage. With **Follow the desktop** on, which it
+**Porcelain** is the light default — warm paper under glass — and **Hearth**
+the dark one, a lamplit room in winter. With **Follow the desktop** on, which it
 is by default, the app uses one in a light session and the other in a dark
 one and switches when the desktop does. The rest of the eight are in
 Preferences → Look, along with how translucent the glass is, how far a

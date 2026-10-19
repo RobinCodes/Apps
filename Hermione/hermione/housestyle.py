@@ -205,26 +205,6 @@ def chrome(scheme: theming.Theme, translucency: float = 1.0,
     card = max(0.0, min(1.0, translucency + (1.0 - translucency) * 0.45))
     slab = max(0.0, min(1.0, translucency * (0.34 if dark else 0.42)))
 
-    # The aurora, as three very large radial gradients across the slab. The
-    # three apps with a `glass.py` paint this layer by hand and animate it;
-    # everywhere else it is this, which is the same colours sitting still.
-    # Still is most of the effect: what the drifting adds is that the chrome
-    # is not quite the colour it was a minute ago, and what both do is stop a
-    # large pane of one tint from reading as a painted rectangle. Each one is
-    # 70% of the slab wide, placed off-centre and off-edge so none of them has
-    # a visible middle, and the alpha is low enough that on a light theme it
-    # is a warmth rather than a colour.
-    # Low, and lower than it looks like it should be. A warm hue reads far
-    # stronger than a cold one at the same alpha — the first cut of this had
-    # the ochres at 0.30 and turned a near-black pane the colour of milky
-    # coffee — and the aurora is the background of every empty area in the
-    # window, so it has to be something you notice only when it is taken away.
-    glow = 0.22 if dark else 0.14
-    hues = (list(s.aurora) * 3)[:3]
-    aurora_layers = ",\n    ".join(
-        f"radial-gradient(circle at {x}% {y}%, "
-        f"alpha({hue}, {glow:.3f}) 0%, alpha({hue}, 0.0) 68%)"
-        for hue, (x, y) in zip(hues, ((12, 8), (88, 26), (46, 104))))
     blur_rule = (f"backdrop-filter: blur({int(blur)}px) saturate(145%);"
                  if blur and glass else "")
     radius = int(window_radius)
@@ -247,13 +227,15 @@ window.house, window.house > contents, window.house .window-contents {{
   border-radius: {radius}px;
   padding: {GAP}px;
   background-color: alpha(@house_glass, {slab:.3f});
-  /* Two very faint linear gradients — a sheen falling from the top left and
-     a lift along the very top edge where the light would catch — over the
-     aurora. Order matters: the sheen is the nearer surface. */
-  background-image:
-    linear-gradient(145deg, alpha(white, {sheen_top:.3f}) 0%, alpha(white, 0.0) 42%),
-    linear-gradient(to bottom, alpha(white, {sheen_top * 2:.3f}) 0px, alpha(white, 0.0) 2px),
-    {aurora_layers if glass else "none"};
+  /* The sheen and the aurora are *not* here, and that is a performance
+     decision rather than a stylistic one. They used to be five gradients in
+     `background-image`, and GSK re-blends every one of them over the whole
+     slab on every repaint: measured on this machine, a flat slab cost 6.3 ms
+     a frame, the two sheen gradients took it to 23.2, and each aurora blob
+     added about 13 more — 62 ms for the lot, on the largest surface in the
+     window, every time anything damaged it. They are drawn once into a small
+     texture instead and blitted by `Slab.do_snapshot`; the layer is so soft
+     that upscaling it from 256 px wide is indistinguishable. */
   box-shadow:
     inset 0 1px 0 alpha(white, {rim_top:.3f}),
     inset 0 0 0 1px alpha(white, {rim_all:.3f}),
@@ -297,7 +279,17 @@ window.maximized .slab, window.fullscreen .slab, .slab.squared {{
 
 /* Anything that floats clear of the layout: a palette, a sheet, a progress
    overlay. This is the one place a blur is worth its offscreen pass, because
-   behind it is content with real detail rather than a flat tint. */
+   behind it is content with real detail rather than a flat tint.
+
+   The drop shadow is deliberately modest, and so is every other one below.
+   GSK renders a soft shadow by blurring an offscreen, and the cost goes with
+   the blur radius rather than with the size of the thing casting it: twelve
+   popover-sized boxes measured 16.8 ms a frame at `0 10px 34px` and 6.2 ms
+   at `0 4px 12px` — nearly three times, for a difference you have to be told
+   about to see. Past a frame's budget a menu stops feeling attached to the
+   click that opened it, which on a 4 GB laptop is most of what "the popups
+   are laggy" means. A shadow here says "this floats"; it does not have to be
+   the deepest shadow that can be drawn. */
 .floating {{
   background-color: alpha(@house_glass, {0.72 if dark else 0.80:.3f});
   {blur_rule}
@@ -305,7 +297,7 @@ window.maximized .slab, window.fullscreen .slab, .slab.squared {{
   box-shadow:
     inset 0 1px 0 alpha(white, {rim_top * 1.1:.3f}),
     inset 0 0 0 1px alpha(white, {rim_all:.3f}),
-    0 18px 48px alpha(black, {0.55 if dark else 0.22:.3f});
+    0 6px 16px alpha(black, {0.45 if dark else 0.18:.3f});
 }}
 
 /* A strip inside a card is lifted with light, never cut in with a darker
@@ -425,10 +417,10 @@ scale highlight {{ background: {accent}; border-radius: {PILL_RADIUS}px;
 scale slider {{
   background: #FFFFFF; border-radius: {PILL_RADIUS}px;
   min-width: 14px; min-height: 14px; margin: 0;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.45);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.40);
   transition: transform 110ms {EASE};
 }}
-scale:hover slider {{ box-shadow: 0 1px 5px rgba(0,0,0,0.55); }}
+scale:hover slider {{ box-shadow: 0 1px 3px rgba(0,0,0,0.50); }}
 scale marks, scale marks indicator {{ color: {dim}; }}
 
 switch {{ background: {sunk}; border: none; box-shadow: none; }}
@@ -497,11 +489,19 @@ columnview header button:hover {{ background: {hover}; }}
    whatever is underneath, which in a viewer is a photograph. A popover is
    also its own Wayland surface, so there is nothing of ours behind it to
    blur and the blur would cost an offscreen pass to change nothing. */
-popover > contents, popover > arrow {{
+popover > contents {{
   background: {floating}; color: {fg};
   border: 1px solid {line};
   border-radius: 14px;
-  box-shadow: 0 10px 34px rgba(0,0,0,{0.55 if dark else 0.22});
+  box-shadow: 0 4px 12px rgba(0,0,0,{0.40 if dark else 0.16});
+}}
+/* The arrow is a dozen pixels of triangle underneath the contents. Giving it
+   the same shadow buys nothing and costs a second blurred offscreen on every
+   menu that opens. */
+popover > arrow {{
+  background: {floating}; color: {fg};
+  border: 1px solid {line};
+  box-shadow: none;
 }}
 popover modelbutton, popover.menu button {{ border-radius: 8px; color: {fg}; }}
 popover modelbutton:hover {{ background: {hover}; }}
@@ -515,7 +515,7 @@ preferencesgroup > box > label {{ color: {fg}; }}
 toast > widget, .toast {{
   background: {floating}; color: {fg}; border-radius: {PILL_RADIUS}px;
   border: 1px solid {line};
-  box-shadow: 0 8px 26px rgba(0,0,0,{0.50 if dark else 0.20});
+  box-shadow: 0 3px 10px rgba(0,0,0,{0.38 if dark else 0.15});
 }}
 tooltip, tooltip.background {{
   background: {floating}; color: {fg}; border-radius: 10px;
@@ -690,22 +690,31 @@ class SystemScheme:
     So the question is put to the source instead: the XDG settings portal's
     `org.freedesktop.appearance` `color-scheme`, which is 1 for "prefer dark",
     2 for "prefer light" and 0 for "no preference". It is the same value
-    libadwaita itself reads, it is available under every compositor that has
-    a portal — which here is the same one the file dialogs come from — and it
-    keeps answering honestly after the scheme has been forced.
+    libadwaita itself reads, and it keeps answering honestly after the scheme
+    has been forced.
 
-    Everything is optional. No portal, no D-Bus, no session: the value
-    captured before the first force stands, and `follow_system` degrades to
-    "whatever it was at startup" rather than to an exception.
+    **Nothing here blocks, and that is the whole design.** The first version
+    used `new_for_bus_sync` + `call_sync`, which looks harmless and is not:
+    a synchronous proxy with auto-start *activates* the portal if it is not
+    running, and then waits for it. On this machine
+    `systemd-analyze blame --user` put `xdg-desktop-portal.service` at 25.3
+    seconds after boot, so the first app started after logging in sat there
+    with no window on screen for the whole of it. Hence: the proxy is created
+    asynchronously, with `DO_NOT_AUTO_START` so it never starts the service
+    itself, and the value is read asynchronously too. Until an answer arrives
+    the one taken at startup stands, and when it arrives the watchers are told
+    and the theme follows. An app's first frame never waits on a bus.
     """
 
     PORTAL = ("org.freedesktop.portal.Desktop",
               "/org/freedesktop/portal/desktop",
               "org.freedesktop.portal.Settings")
+    NAMESPACE = "org.freedesktop.appearance"
+    KEY = "color-scheme"
 
     def __init__(self):
         # Taken before `install()` can force anything, so it is still the
-        # desktop's own answer even if the portal turns out to be missing.
+        # desktop's own answer however the portal turns out.
         self._dark = self._initial()
         self._proxy = None
         self._listeners: list = []
@@ -714,48 +723,59 @@ class SystemScheme:
     @staticmethod
     def _initial() -> bool:
         try:
-            manager = Adw.StyleManager.get_default()
-            if manager.get_color_scheme() != Adw.ColorScheme.DEFAULT:
-                return bool(manager.get_dark())
-            return bool(manager.get_dark())
+            return bool(Adw.StyleManager.get_default().get_dark())
         except Exception:
             return True
 
     def _connect(self) -> None:
+        """Ask the portal, without starting it and without waiting for it."""
         try:
             from gi.repository import Gio
 
-            self._proxy = Gio.DBusProxy.new_for_bus_sync(
-                Gio.BusType.SESSION, Gio.DBusProxyFlags.NONE, None,
-                *self.PORTAL, None)
-            value = self._proxy.call_sync(
-                "ReadOne",
-                __import__("gi").repository.GLib.Variant(
-                    "(ss)", ("org.freedesktop.appearance", "color-scheme")),
-                Gio.DBusCallFlags.NONE, 1200, None)
-            self._take(value.unpack()[0])
-            self._proxy.connect("g-signal", self._on_signal)
+            Gio.DBusProxy.new_for_bus(
+                Gio.BusType.SESSION,
+                Gio.DBusProxyFlags.DO_NOT_AUTO_START
+                | Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES,
+                None, *self.PORTAL, None, self._proxy_ready, None)
         except Exception:
-            # Older portals have no ReadOne, only Read; and a machine with no
-            # portal at all is a machine where the startup value is the best
-            # answer there is.
-            self._read_legacy()
+            pass          # no Gio, no bus, no session: the startup value stands
 
-    def _read_legacy(self) -> None:
-        if self._proxy is None:
-            return
+    def _proxy_ready(self, _source, result, _data) -> None:
+        from gi.repository import Gio, GLib
+
         try:
-            from gi.repository import Gio, GLib
-
-            value = self._proxy.call_sync(
-                "Read",
-                GLib.Variant("(ss)", ("org.freedesktop.appearance",
-                                      "color-scheme")),
-                Gio.DBusCallFlags.NONE, 1200, None)
-            self._take(value.unpack()[0])
-            self._proxy.connect("g-signal", self._on_signal)
+            self._proxy = Gio.DBusProxy.new_for_bus_finish(result)
         except Exception:
-            pass
+            return
+        # DO_NOT_AUTO_START means a portal that is not up yet simply has no
+        # owner. It will have one later, so watch for that rather than
+        # giving up — this is what makes the answer arrive on its own a
+        # few seconds into the session instead of never.
+        self._proxy.connect("g-signal", self._on_signal)
+        self._proxy.connect("notify::g-name-owner",
+                            lambda *_a: self._read())
+        self._read()
+
+    def _read(self) -> None:
+        if self._proxy is None or not self._proxy.get_name_owner():
+            return
+        from gi.repository import Gio, GLib
+
+        def answered(proxy, result, method):
+            try:
+                value = proxy.call_finish(result)
+            except Exception:
+                if method == "ReadOne":
+                    ask("Read")       # an older portal has only Read
+                return
+            self._take(value.unpack())
+
+        def ask(method):
+            self._proxy.call(
+                method, GLib.Variant("(ss)", (self.NAMESPACE, self.KEY)),
+                Gio.DBusCallFlags.NO_AUTO_START, 5000, None, answered, method)
+
+        ask("ReadOne")
 
     def _take(self, raw) -> bool:
         """A portal answer, which arrives wrapped in a variant or two."""
@@ -767,9 +787,19 @@ class SystemScheme:
             number = int(raw)
         except (TypeError, ValueError):
             return self._dark
+        before = self._dark
         if number in (1, 2):
             self._dark = number == 1
+        if self._dark != before:
+            self._announce()
         return self._dark
+
+    def _announce(self) -> None:
+        for callback in list(self._listeners):
+            try:
+                callback(self._dark)
+            except Exception:
+                pass
 
     def _on_signal(self, _proxy, _sender, signal, params) -> None:
         if signal != "SettingChanged":
@@ -778,15 +808,8 @@ class SystemScheme:
             namespace, key, value = params.unpack()
         except Exception:
             return
-        if namespace != "org.freedesktop.appearance" or key != "color-scheme":
-            return
-        before = self._dark
-        if self._take(value) != before:
-            for callback in list(self._listeners):
-                try:
-                    callback(self._dark)
-                except Exception:
-                    pass
+        if namespace == self.NAMESPACE and key == self.KEY:
+            self._take(value)
 
     @property
     def dark(self) -> bool:
@@ -849,6 +872,97 @@ gi.require_version("Graphene", "1.0")
 from gi.repository import Graphene, Gsk  # noqa: E402
 
 
+# ------------------------------------------------------------- the light ----
+
+# How big the aurora texture is drawn before being scaled up to fill a slab.
+# The layer is four very soft blobs and a diagonal sheen; there is nothing in
+# it with an edge, so a quarter-megapixel is already more than the eye can
+# use and the upscale costs nothing.
+AURORA_WIDTH = 256
+AURORA_HEIGHT = 160
+
+_aurora_cache: dict[tuple, "Gdk.Texture"] = {}
+
+
+def aurora_texture(scheme: theming.Theme, translucency: float = 1.0):
+    """The sheen and the drifting light, baked once into a small texture.
+
+    This used to be five gradients in the slab's CSS `background-image`, and
+    the reason it is not any more is worth the paragraph. GSK re-blends every
+    layer of a `background-image` over the whole box on every repaint, and
+    the slab is the largest surface in the window — so the cost was paid
+    again on every keystroke, scroll and popover that damaged it. Measured
+    here at 1100x700: a flat slab 6.3 ms a frame, the two sheen gradients
+    took it to 23.2, and each of the three aurora blobs added about 13 more.
+    62 ms for the whole layer, for something nobody is supposed to notice.
+
+    Drawn into a texture it is one scaled blit, and because every stop in it
+    is soft the 256 px original is indistinguishable from the real thing at
+    any window size. Cairo rather than GSK, so this needs no renderer and can
+    be built before the window is realised; cached per theme, because a theme
+    change is the only thing that invalidates it.
+
+    Returns None when Cairo is missing, and the caller simply draws no light.
+    """
+    key = (scheme.key, round(float(translucency), 2))
+    if key in _aurora_cache:
+        return _aurora_cache[key]
+    try:
+        import cairo
+    except ImportError:
+        return None
+
+    from gi.repository import GLib
+
+    width, height = AURORA_WIDTH, AURORA_HEIGHT
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    context = cairo.Context(surface)
+
+    # Low, and lower than it looks like it should be. A warm hue reads far
+    # stronger than a cold one at the same alpha — an early cut had the
+    # ochres at 0.30 and turned a near-black pane the colour of milky coffee
+    # — and this is the background of every empty area in the window, so it
+    # has to be something you notice only when it is taken away.
+    glow = 0.22 if scheme.dark else 0.14
+    hues = (list(scheme.aurora) * 4)[:4]
+    # Placed off-centre and off-edge so that none of them has a visible
+    # middle, and wide enough to overlap, which is what makes one field of
+    # colour rather than three spots.
+    spots = ((0.12, 0.08), (0.88, 0.26), (0.46, 1.04), (0.72, 0.72))
+    for hue, (fx, fy) in zip(hues, spots):
+        red, green, blue = theming.rgb(hue)
+        cx, cy = fx * width, fy * height
+        radius = 0.68 * width
+        gradient = cairo.RadialGradient(cx, cy, 0.0, cx, cy, radius)
+        gradient.add_color_stop_rgba(0.0, red, green, blue, glow)
+        gradient.add_color_stop_rgba(1.0, red, green, blue, 0.0)
+        context.set_source(gradient)
+        context.paint()
+
+    # The sheen: a wide diagonal highlight as if the light sat above and to
+    # the left, and a one-pixel lift along the very top edge where a real
+    # edge would catch it. The edge is drawn in device pixels rather than
+    # scaled, so it is added by the caller, not baked in here.
+    sheen = (0.075 if scheme.dark else 0.34) * scheme.rim
+    diagonal = cairo.LinearGradient(0, 0, width * 0.75, height * 0.75)
+    diagonal.add_color_stop_rgba(0.0, 1, 1, 1, sheen)
+    diagonal.add_color_stop_rgba(0.42, 1, 1, 1, 0.0)
+    context.set_source(diagonal)
+    context.paint()
+
+    surface.flush()
+    texture = Gdk.MemoryTexture.new(
+        width, height, Gdk.MemoryFormat.B8G8R8A8_PREMULTIPLIED,
+        GLib.Bytes.new(bytes(surface.get_data())), surface.get_stride())
+    _aurora_cache[key] = texture
+    return texture
+
+
+def forget_aurora() -> None:
+    """Drop the cached textures. For a settings change that retunes them."""
+    _aurora_cache.clear()
+
+
 class Slab(Gtk.Box):
     """The window's one pane of glass: rounded, and rounded all the way down.
 
@@ -862,6 +976,30 @@ class Slab(Gtk.Box):
         super().__init__(**kwargs)
         self.add_css_class("slab")
         self.set_overflow(Gtk.Overflow.HIDDEN)
+        self._aurora = None
+
+    def set_light(self, scheme, translucency: float = 1.0,
+                  enabled: bool = True) -> None:
+        """Which theme's light to draw behind the content, or none at all."""
+        self._aurora = (aurora_texture(scheme, translucency) if enabled
+                        else None)
+        self.queue_draw()
+
+    def do_snapshot(self, snapshot: Gtk.Snapshot) -> None:
+        """The light first, then whatever the box holds.
+
+        GTK has already drawn the CSS background and border by the time this
+        runs, so the texture lands on the slab's own colour and under every
+        child — which is where light coming through glass belongs.
+        """
+        texture = self._aurora
+        if texture is not None:
+            width, height = self.get_width(), self.get_height()
+            if width > 0 and height > 0:
+                snapshot.append_scaled_texture(
+                    texture, Gsk.ScalingFilter.LINEAR,
+                    Graphene.Rect().init(0, 0, width, height))
+        Gtk.Box.do_snapshot(self, snapshot)
 
     def set_square(self, square: bool) -> None:
         """Corners off, for a window that covers the whole screen.
@@ -1061,7 +1199,7 @@ class Glazing:
         """
         if self._watching is not None:
             return
-        self._watching = lambda _dark: self.apply()
+        self._watching = lambda _dark: (self.apply(), self.relight())
         system().watch(self._watching)
         self.window.connect("destroy", lambda *_: self.stop())
 
@@ -1103,6 +1241,8 @@ class Glazing:
         # so it is the only painted surface in the window and has to be
         # strong enough to read against a wallpaper. See `.slab.sheet`.
         self.slab.add_css_class("sheet")
+        self.slab.set_light(self.scheme, float(self._get("translucency", 1.0)),
+                            bool(self._get("glass", True)))
         self.overlay = Gtk.Overlay()
         content.set_vexpand(True)
         self.overlay.set_child(content)
@@ -1134,6 +1274,13 @@ class Glazing:
         slab.set_square(bool(self.window.is_maximized()
                              or self.window.is_fullscreen()))
 
+    def relight(self) -> None:
+        """Hand the slab the current theme's light again, after a change."""
+        slab = getattr(self, "slab", None)
+        if slab is not None:
+            slab.set_light(self.scheme, float(self._get("translucency", 1.0)),
+                           bool(self._get("glass", True)))
+
     def restyle(self) -> None:
         """Reinstall the sheet and push the glass settings back into the slab.
 
@@ -1141,6 +1288,7 @@ class Glazing:
         changes, so that `apply` stays the one that only touches colour.
         """
         self.apply()
+        self.relight()
         sheen = getattr(self, "sheen", None)
         if sheen is not None:
             sheen.set_strength(0.05 if self._get("glass", True) else 0.0)

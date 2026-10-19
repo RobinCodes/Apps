@@ -29,6 +29,10 @@ DEFAULTS = {
     "typewriter": False,        # keep the current line in the middle
     "spell_check": False,
 
+    # How the preview reads the text. `line_breaks` is the one rule here that
+    # departs from Markdown on purpose — see markdown.parse.
+    "line_breaks": True,
+
     # The preview.
     "preview_font_family": "",      # "" = the desktop's own document font
     "preview_font_size": 13,        # points, the size the rest is a ratio of
@@ -41,7 +45,10 @@ DEFAULTS = {
     # Saving.
     "auto_save": False,
     "auto_save_delay_ms": 1500,
-    "trim_trailing_space": False,   # off: two spaces are a line break here
+    # Off by default, historically because two trailing spaces were the only
+    # way to ask for a line break. `line_breaks` has made that spelling
+    # redundant, but a document written elsewhere may still use it.
+    "trim_trailing_space": False,
     "final_newline": True,
     "backup_on_save": False,
 

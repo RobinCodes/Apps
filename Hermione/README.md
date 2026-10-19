@@ -78,7 +78,7 @@ drags the window.
 
 The colours are the house's — the same ten themes as the rest of the suite,
 from [`house/theme.py`](../house/README.md), with **Porcelain** the light
-default and **Moss** the dark one, and **Follow the desktop** on by
+default and **Hearth** the dark one, and **Follow the desktop** on by
 default so the window uses one in a light session and the other in a dark one.
 What the sheet below is written against is libadwaita's named palette, and
 what those names *mean* is restated from the chosen theme, so one list of

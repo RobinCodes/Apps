@@ -1143,6 +1143,43 @@ def test_the_portal_takes_its_bus_name_before_it_loads_the_toolkit():
         "deadlock with xdg-desktop-portal on a cold start")
 
 
+def test_the_portal_serves_before_the_toolkit_is_loaded():
+    """The second half of the same deadlock, and the expensive half.
+
+    Taking the name first stops the portal giving up on us, but it does not
+    stop it *waiting*: if the toolkit is loaded before the main loop runs,
+    the portal's first call to the backend goes unanswered, D-Bus times out
+    after 25 seconds, and the portal starts anyway with nothing logged. The
+    only symptom is that the first app launched after logging in sits with
+    no window for half a minute, because GDK waits on that same portal —
+    which is exactly what it did until 2026-10-19.
+
+    So `main` must reach its main loop without building the application.
+    Checked by reading the module rather than by running it: `main` is a
+    D-Bus service that would take its real bus name.
+    """
+    import ast
+
+    source = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "hermione", "portal.py")
+    tree = ast.parse(open(source, encoding="utf-8").read())
+    main = next(node for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == "main")
+    called = {node.func.id for node in ast.walk(main)
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    assert "_build_app" not in called, (
+        "main() builds the toolkit before its main loop runs — the portal "
+        "will wait 25 seconds for an answer it cannot get")
+
+    # And the thing that does build it is reachable from the one call that
+    # needs a window, rather than having been dropped altogether.
+    portal_src = open(source, encoding="utf-8").read()
+    assert "def ensure_app" in portal_src
+    assert "ensure_app()" in portal_src, (
+        "nothing calls ensure_app, so no dialog would ever get a window")
+
+
 def test_every_dialog_builds(app):
     """Build each one and look at it. None of them is presented.
 
@@ -1376,6 +1413,8 @@ def main():
           test_the_portal_answers_in_the_types_the_bus_declared)
     check("the portal takes its bus name before it loads the toolkit",
           test_the_portal_takes_its_bus_name_before_it_loads_the_toolkit)
+    check("the portal serves before the toolkit is loaded",
+          test_the_portal_serves_before_the_toolkit_is_loaded)
 
     print("the window")
     from gi.repository import Adw, Gio, GLib

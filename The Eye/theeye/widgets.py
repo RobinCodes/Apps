@@ -210,7 +210,11 @@ popover > contents, popover > arrow {{
   background: {card}; color: {fg};
   border: 1px solid rgba(255,255,255,{0.10 if scheme.dark else 0.55});
   border-radius: 14px;
-  box-shadow: 0 10px 34px rgba(0,0,0,{0.55 if scheme.dark else 0.22});
+/* Modest on purpose: GSK blurs an offscreen to draw a soft shadow and
+   the cost goes with the radius, not with the size of the thing casting
+   it. A popover at 34px measured nearly three times the cost of one at
+   12px — see the note in housestyle.chrome(). */
+  box-shadow: 0 4px 12px rgba(0,0,0,{0.40 if scheme.dark else 0.16});
 }}
 popover.menu button {{ border-radius: 8px; }}
 .card, dialog, .dialog-page, window.dialog {{
@@ -223,7 +227,7 @@ preferencesgroup > box > label {{ color: {fg}; }}
 toast > widget, .toast {{
   background: {card}; color: {fg}; border-radius: 999px;
   border: 1px solid rgba(255,255,255,{0.12 if scheme.dark else 0.5});
-  box-shadow: 0 8px 26px rgba(0,0,0,0.5);
+  box-shadow: 0 3px 10px rgba(0,0,0,0.38);
 }}
 
 tooltip, tooltip.background {{
