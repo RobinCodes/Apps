@@ -247,8 +247,11 @@ windowcontrols button {
 .statusbar label { color: alpha(currentColor, 0.72); }
 .statusbar .strong { color: alpha(currentColor, 0.95); font-weight: 600; }
 
-/* The layers that really do float over content, and so really are blurred. */
-.floating {
+/* The layers that really do float over content, and so really are blurred.
+   Not a dialog, though: libadwaita puts `.floating` on every in-window
+   Adw.Dialog, and a blur there re-renders the whole window behind it on
+   every repaint — see the dialogs below. */
+.floating:not(dialog) {
   background-color: alpha(%(chrome)s, %(float_alpha).3f);
   %(blur)s
   border-radius: %(panel_radius)dpx;
@@ -747,16 +750,19 @@ popover.menu separator {
 
 /* -------------------------------------------------------------- dialogs --- */
 
-/* Adw.Dialog is drawn inside the window, so this blur is real. */
+/* Adw.Dialog is drawn inside the window, so a blur here would be real — and
+   that is exactly why there is none. It re-renders and blurs the whole
+   window behind the dialog on every repaint inside it, a hover included:
+   5 ms a frame without, 23 ms with, measured on this machine's GPU. The
+   window behind is dimmed by libadwaita anyway, so the glass is just made a
+   little more solid instead, and libadwaita's own sheet carries the shadow. */
 dialog.hermione-dialog > contents,
 .dialog-glass {
   border-radius: 20px;
   background-color: alpha(%(chrome)s, %(dialog_alpha).3f);
-  %(blur)s
   box-shadow:
     inset 0 1px 0 alpha(%(sheen)s, 0.14),
-    inset 0 0 0 1px alpha(%(sheen)s, %(rim).3f),
-    0 24px 64px alpha(%(shadow)s, 0.48);
+    inset 0 0 0 1px alpha(%(sheen)s, %(rim).3f);
 }
 
 .dialog-title { font-size: 1.12em; font-weight: 700; }
@@ -1047,7 +1053,7 @@ def _numbers(config, dark: bool) -> dict:
         "inner_tint_strong": 0.080 if dark else 0.46,
         "module_shadow": 0.22 if dark else 0.10,
         "float_alpha": 0.72 if dark else 0.78,
-        "dialog_alpha": 0.80 if dark else 0.86,
+        "dialog_alpha": 0.90 if dark else 0.93,
         "palette_alpha": 0.70 if dark else 0.80,
         "popover_alpha": 0.86 if dark else 0.92,
         "panel_alpha": 0.045 if dark else 0.55,
