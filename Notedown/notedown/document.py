@@ -210,9 +210,12 @@ class Document:
                 [markdown.Block("code", 0, text=text,
                                 language=_language_for(self.path))],
                 {}, {}, "", text.split("\n"))
+        # Only clean once the page itself is rebuilt. Parsing with the preview
+        # hidden still leaves it stale, and ensure_rendered has to know that
+        # when it comes back.
         if self.preview.get_visible():
             self.preview.render(self.parsed, self.folder)
-        self._dirty = False
+            self._dirty = False
         self.window.document_rendered(self)
 
     def ensure_rendered(self):

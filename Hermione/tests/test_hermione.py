@@ -1011,6 +1011,41 @@ def test_there_is_one_toolbar_and_not_two(app):
     window.destroy()
 
 
+def test_a_crumb_survives_being_pressed(app):
+    """Clicking a crumb above the folder you are in takes you there.
+
+    Pressing a crumb focuses it, and the window resyncs its header on every
+    focus change. When that rebuilt the trail, the pressed button was gone
+    before the release and the click never landed.
+    """
+    from gi.repository import Gtk
+    from hermione.window import MainWindow
+
+    inner = os.path.join(scratch, "crumb-a", "crumb-b")
+    os.makedirs(inner, exist_ok=True)
+    window = MainWindow(app, inner)
+    pane = window.current_pane()
+    _pump(0.3)
+
+    def crumbs():
+        found, child = [], window.crumbs.box.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Button):
+                found.append(child)
+            child = child.get_next_sibling()
+        return found
+
+    before = crumbs()
+    parent = before[-2]
+    parent.grab_focus()
+    _pump(0.1)
+    assert crumbs()[-2] is parent, "focusing a crumb rebuilt the trail under it"
+    parent.emit("clicked")
+    _pump(0.2)
+    assert pane.path == os.path.dirname(inner), "the crumb went nowhere"
+    window.destroy()
+
+
 # ------------------------------------------------------------- the portal ---
 
 def test_the_portal_reads_what_it_is_handed():
@@ -1445,6 +1480,8 @@ def main():
              test_the_sidebar_lists_somewhere_to_go),
             ("there is one toolbar and not two",
              test_there_is_one_toolbar_and_not_two),
+            ("a crumb survives being pressed",
+             test_a_crumb_survives_being_pressed),
             ("the window is three cards on a slab",
              test_the_window_is_three_cards_on_a_slab),
             ("every dialog builds", test_every_dialog_builds),

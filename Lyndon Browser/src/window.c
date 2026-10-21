@@ -2887,23 +2887,23 @@ ly_window_save_geometry (LyWindow *self)
 {
   GtkWindow *window = GTK_WINDOW (self);
 
-  /* Under a tiling compositor none of this is the user's to remember: the
-   * size is the one the layout handed out, and "maximised" is a state of the
-   * column rather than a preference. Leave the numbers from the last session
-   * that did get to choose them alone. */
-  if (compositor_tiles_windows (window))
-    return;
-
+  /* The size is always remembered, tiling or not: it is still the size the
+   * window was, it costs nothing while tiled (the column decides whatever the
+   * window asks for), and it is exactly right once the window is floated or
+   * Lyndon runs on a stacking desktop. The maximise is not: under a tiling
+   * compositor it takes the whole output from the layout the user arranged,
+   * and would re-save itself on every start. */
+  if (!compositor_tiles_windows (window))
+    self->cfg->window_maximized = gtk_window_is_maximized (window);
   /* GTK keeps default-width/height at the size the window had when it was
    * last neither maximised nor fullscreen, which is exactly the size to come
    * back to. Guard against the zeroes an unrealised window reports. */
   int width = 0, height = 0;
   gtk_window_get_default_size (window, &width, &height);
-  if (width > 0 && height > 0) {
+  if (width > 0 && height > 0 && !gtk_window_is_fullscreen (window)) {
     self->cfg->window_width  = width;
     self->cfg->window_height = height;
   }
-  self->cfg->window_maximized = gtk_window_is_maximized (window);
 
   ly_config_queue_save (self->cfg);
 }

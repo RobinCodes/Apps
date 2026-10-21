@@ -1321,8 +1321,15 @@ class Breadcrumbs(Gtk.ScrolledWindow):
         self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self.box.add_css_class("crumbs")
         self.set_child(self.box)
+        self._showing = None
 
     def set_path(self, path: str) -> None:
+        # The window resyncs its header on every focus change, and pressing a
+        # crumb focuses it: rebuilding then would destroy the button between
+        # press and release, and the click would never land.
+        if self._showing == ("path", path):
+            return
+        self._showing = ("path", path)
         self._clear()
         self._scroll_to_end()
         parts = _split_path(path)
@@ -1341,6 +1348,9 @@ class Breadcrumbs(Gtk.ScrolledWindow):
             self.box.append(button)
 
     def set_search(self, text: str, where: str) -> None:
+        if self._showing == ("search", text, where):
+            return
+        self._showing = ("search", text, where)
         self._clear()
         label = Gtk.Button(label=f"Searching {os.path.basename(where) or where}"
                                  f" for “{text}”")

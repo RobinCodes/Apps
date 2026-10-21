@@ -663,11 +663,12 @@ def _signature(block, dark):
     picks up a new one without being built again.
     """
     parts = [block.kind, "d" if dark else "l"]
-    for name in ("level", "language", "text", "ordered", "start", "tight", "aligns"):
+    for name in ("level", "language", "text", "ordered", "start", "tight", "aligns",
+                 "url", "title"):
         value = getattr(block, name, None)
         if value is not None:
             parts.append(repr(value))
-    if block.kind in ("heading", "para"):
+    if block.kind in ("heading", "para", "image"):
         parts.append(_spans_key(block.spans))
     elif block.kind == "table":
         parts.append(repr([[_spans_key(cell) for cell in block.header],

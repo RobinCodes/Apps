@@ -768,6 +768,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.config.save()
             self._rebuild_recent_menu()
             self._update_title()
+            self._update_modified()
             if not silent:
                 widgets.toast(self, f"Saved {os.path.basename(path)}")
             if then:

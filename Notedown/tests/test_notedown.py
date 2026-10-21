@@ -722,6 +722,40 @@ def test_a_window_opens_a_file_and_saves_it_back(window):
     assert not document.modified
 
 
+def test_the_status_bar_says_saved_once_it_is(window):
+    path = os.path.join(scratch, "status.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("text\n")
+    document = window.open_path(path)
+    document.editor.buffer.insert_at_cursor("more ")
+    pump(400)                       # past the render tick, as typing would be
+    assert window.status_state.get_text() == "Unsaved"
+    window.save_document(document, silent=True)
+    pump(400)
+    assert window.status_state.get_text() == "Saved", window.status_state.get_text()
+
+
+def test_text_typed_with_the_preview_hidden_shows_when_it_comes_back(window):
+    window.new_document()
+    document = window.active
+    document.set_panes(True, False)
+    document.editor.buffer.insert_at_cursor("# Pasted while hidden\n")
+    pump(400)
+    document.set_panes(True, True)
+    document.ensure_rendered()
+    shown = [w.get_text() for w in _descendants_of(document.preview.column)
+             if isinstance(w, Gtk.Label)]
+    assert "Pasted while hidden" in shown, shown
+
+
+def _descendants_of(widget):
+    child = widget.get_first_child()
+    while child is not None:
+        yield child
+        yield from _descendants_of(child)
+        child = child.get_next_sibling()
+
+
 def test_opening_the_same_file_twice_finds_the_tab_it_is_in(window):
     path = os.path.join(scratch, "twice.md")
     with open(path, "w", encoding="utf-8") as fh:
