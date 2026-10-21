@@ -156,7 +156,7 @@ class Preferences(Adw.PreferencesDialog):
         page.add(glass_group)
 
         chrome = Adw.PreferencesGroup(title="The controls")
-        self._switch(chrome, "chrome_autohide", "Hide the bars while playing")
+        self._switch(chrome, "chrome_autohide", "Hide the bars when idle")
         self._slider(chrome, "autohide_seconds", "Hide after", 0.5, 10.0, 0.5,
                      "Seconds of no pointer movement.", digits=1)
         self._slider(chrome, "corner_radius", "Rounded corners on the picture",

@@ -81,6 +81,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._slideshow = 0
         self._hide_timer = 0
         self._chrome_shown = True
+        self._hovered = set()
         self._compare = None
         self._export = None
         self._sidecars: dict[str, dict] = {}
@@ -168,6 +169,7 @@ class MainWindow(Adw.ApplicationWindow):
         # the bars do not fade out from under the pointer.
         motion = Gtk.EventControllerMotion.new()
         motion.connect("motion", self._on_motion)
+        motion.connect("leave", lambda _c: self._on_pointer_left())
         self.root.add_controller(motion)
 
         drop = Gtk.DropTarget.new(Gio.File, Gdk.DragAction.COPY)
@@ -193,6 +195,8 @@ class MainWindow(Adw.ApplicationWindow):
                               tooltip_text="Menu", valign=Gtk.Align.CENTER)
         menu.add_css_class("circular")
         menu.set_menu_model(self._menu())
+        self.menu_button = menu
+        menu.connect("notify::active", lambda *_: self._restart_hide_timer())
 
         self.info_button = widgets.toggle_button(
             "view-more-horizontal-symbolic", "Details  (I)", "win.info")
@@ -209,6 +213,8 @@ class MainWindow(Adw.ApplicationWindow):
             widgets.icon_button("view-fullscreen-symbolic",
                                 "Fullscreen  (F)", "win.fullscreen"),
             menu,
+            widgets.icon_button("window-close-symbolic", "Close  (Ctrl+W)",
+                                "win.close"),
             spacing=2, margin_start=12, margin_end=10,
             margin_top=8, margin_bottom=8)
 
@@ -223,6 +229,7 @@ class MainWindow(Adw.ApplicationWindow):
         # header bar to grab.
         drag = Gtk.WindowHandle(child=self.top_reveal)
         drag.set_valign(Gtk.Align.START)
+        self._watch_hover(self.top_glass)
         return drag
 
     def _menu(self):
@@ -291,6 +298,8 @@ class MainWindow(Adw.ApplicationWindow):
         box = widgets.column(self.strip_reveal, self.transport_reveal, spacing=8,
                              valign=Gtk.Align.END,
                              margin_start=10, margin_end=10, margin_bottom=10)
+        self._watch_hover(self.strip_glass)
+        self._watch_hover(self.transport_glass)
         return box
 
     def _editor_panel(self):
@@ -635,6 +644,7 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._load_photo(item)
         self._refresh_chrome()
+        self._restart_hide_timer()
 
     def _load_video(self, item, play: bool):
         # A sound file has no frames, so the stage gets its artwork instead —
@@ -1120,24 +1130,60 @@ class MainWindow(Adw.ApplicationWindow):
         self._show_chrome()
         self._restart_hide_timer()
 
+    def _on_pointer_left(self):
+        """The pointer went off the window: nothing here is being reached
+        for, so the bars go now rather than after the usual wait."""
+        if self._hide_timer:
+            GLib.source_remove(self._hide_timer)
+            self._hide_timer = 0
+        if self._may_hide_chrome():
+            self._hide_chrome()
+
+    def _watch_hover(self, widget):
+        """Note when the pointer rests on a bar, which is never idle."""
+        motion = Gtk.EventControllerMotion.new()
+        motion.connect("enter", lambda *_: self._hovered.add(widget))
+        motion.connect("leave", lambda *_: self._hovered.discard(widget))
+        widget.add_controller(motion)
+
+    def _may_hide_chrome(self) -> bool:
+        """Is this a moment when the bars can get out of the way?
+
+        Whenever something is being looked at and nothing is being done with
+        the bars — a still as much as a video. Not when there is nothing open
+        (the bar is the only way in), not over a paused video (where you are
+        in it is the point of stopping), not while a panel is open (a bar
+        that vanishes mid-drag loses the drag), and not while the pointer is
+        on a bar or its menu is open.
+        """
+        if not self.config["chrome_autohide"]:
+            return False
+        item = self.reel.current()
+        if item is None:
+            return False
+        if (item.is_playable() and not self.engine.playing()
+                and not self._slideshow):
+            return False
+        if self.editor_reveal.get_reveal_child() or self.info_reveal.get_reveal_child():
+            return False
+        if self._hovered or self.menu_button.get_active():
+            return False
+        return True
+
     def _restart_hide_timer(self):
         if self._hide_timer:
             GLib.source_remove(self._hide_timer)
             self._hide_timer = 0
-        if not self.config["chrome_autohide"]:
-            return
-        if not (self.engine.playing() or self._slideshow
-                or self.is_fullscreen()):
+        if not self._may_hide_chrome():
             return
         self._hide_timer = GLib.timeout_add(
             int(self.config["autohide_seconds"] * 1000), self._hide_chrome)
 
     def _hide_chrome(self):
         self._hide_timer = 0
-        # Never while a panel is open: the editor's sliders are being used,
-        # and a bar that vanishes mid-drag is a bar that loses the drag.
-        if self.editor_reveal.get_reveal_child() or self.info_reveal.get_reveal_child():
+        if not self._may_hide_chrome():
             return GLib.SOURCE_REMOVE
+        self._hovered.clear()
         self._chrome_shown = False
         self._refresh_chrome()
         self.set_cursor(Gdk.Cursor.new_from_name("none", None))
@@ -1175,6 +1221,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._inset_stage()
         if not on:
             self._set_compare(False)
+            self._restart_hide_timer()
         else:
             self._show_chrome()
 
@@ -1187,6 +1234,8 @@ class MainWindow(Adw.ApplicationWindow):
         if on:
             self._refresh_info()
             self._show_chrome()
+        else:
+            self._restart_hide_timer()
 
     def _inset_stage(self):
         """Give the picture the room the panels are not using.

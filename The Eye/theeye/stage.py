@@ -249,7 +249,8 @@ class Stage(Gtk.Widget):
 
     def is_fitted(self) -> bool:
         """Is the picture at the size the fit mode asks for?"""
-        return abs(self._zoom_target - self.fit_scale()) < 0.001
+        return (abs(self._zoom_target - self.fit_scale()) < 0.001
+                and all(abs(self._focus_target[a] - 0.5) < 0.001 for a in (0, 1)))
 
     def zoom_to(self, scale: float, at=None, animate: bool = True):
         """Zoom to `scale`, optionally keeping the point `at` where it is.
@@ -267,8 +268,8 @@ class Stage(Gtk.Widget):
             self._zoom_target = scale
             after = self._image_at(at, self._zoom_target, self._focus_target)
             self._focus_target = [
-                _clamp01(self._focus_target[0] + (before[0] - after[0])),
-                _clamp01(self._focus_target[1] + (before[1] - after[1])),
+                self._focus_target[0] + (before[0] - after[0]),
+                self._focus_target[1] + (before[1] - after[1]),
             ]
         else:
             self._zoom_target = scale
@@ -284,8 +285,8 @@ class Stage(Gtk.Widget):
         if width <= 0 or height <= 0 or self._zoom_target <= 0:
             return
         self._focus_target = [
-            _clamp01(self._focus_target[0] - dx / (width * self._zoom_target)),
-            _clamp01(self._focus_target[1] - dy / (height * self._zoom_target)),
+            self._focus_target[0] - dx / (width * self._zoom_target),
+            self._focus_target[1] - dy / (height * self._zoom_target),
         ]
         self._begin(animate)
         self.emit("view-changed")
@@ -303,22 +304,13 @@ class Stage(Gtk.Widget):
     def _origin(self, drawn_w, drawn_h, view_w, view_h, focus):
         """Top-left of the drawn picture, in widget coordinates.
 
-        An axis on which the picture is smaller than the window is centred and
-        the focus ignored. Honouring the focus there is how a picture ends up
-        stuck against one edge with a gap on the other, which looks broken
-        even though every number involved is correct.
+        Deliberately unclamped: the picture goes wherever it is dragged, into
+        the empty matte past its edges included, at any zoom. A centred focus
+        is the fitted, centred picture; a double-click or any fit brings a
+        wandered picture back.
         """
-        if drawn_w <= view_w:
-            left = (view_w - drawn_w) / 2
-        else:
-            left = view_w / 2 - focus[0] * drawn_w
-            left = min(0.0, max(view_w - drawn_w, left))
-        if drawn_h <= view_h:
-            top = (view_h - drawn_h) / 2
-        else:
-            top = view_h / 2 - focus[1] * drawn_h
-            top = min(0.0, max(view_h - drawn_h, top))
-        return left, top
+        return (view_w / 2 - focus[0] * drawn_w,
+                view_h / 2 - focus[1] * drawn_h)
 
     def picture_rect(self) -> Graphene.Rect:
         """Where the picture is on screen now — what a click is tested against."""
@@ -416,8 +408,12 @@ class Stage(Gtk.Widget):
         zoom.connect("scale-changed", self._on_pinch)
         self.add_controller(zoom)
 
+        # A single click acts on release, so that the press which starts a
+        # drag does not also pause the video being dragged; the click gesture
+        # gives up on its own once the pointer moves past the drag threshold.
         click = Gtk.GestureClick.new()
         click.connect("pressed", self._on_click)
+        click.connect("released", self._on_release)
         self.add_controller(click)
 
     def _modifier(self, controller) -> Gdk.ModifierType:
@@ -490,13 +486,11 @@ class Stage(Gtk.Widget):
         if width <= 0 or self._zoom_target <= 0:
             return
         drawn_w, drawn_h = width * self._zoom_target, height * self._zoom_target
-        if drawn_w <= self.get_width() and drawn_h <= self.get_height():
-            return                      # nothing to drag; it all fits
         # Straight to the live value as well as the target: a drag that lags
         # behind the finger is a drag that feels broken, however smooth it is.
         self._focus_target = [
-            _clamp01(self._drag_from[0] - dx / drawn_w),
-            _clamp01(self._drag_from[1] - dy / drawn_h),
+            self._drag_from[0] - dx / drawn_w,
+            self._drag_from[1] - dy / drawn_h,
         ]
         self._focus = list(self._focus_target)
         self.queue_draw()
@@ -525,6 +519,8 @@ class Stage(Gtk.Widget):
             self.set_fit("actual" if self.is_fitted() and self._fit != "actual"
                          else "window")
             return
+
+    def _on_release(self, gesture, count, x, y):
         if count == 1:
             self.emit("activated")
 
@@ -686,6 +682,3 @@ class Stage(Gtk.Widget):
             snapshot.append_color(glass.black(0.35),
                                   glass.rect(x + offset - 0.5, mid - 7, 1, 14))
 
-
-def _clamp01(value: float) -> float:
-    return max(0.0, min(1.0, value))

@@ -33,10 +33,12 @@ together, can be gone through with one set of arrow keys.
 ## Looking
 
 The picture fills the window and the controls are glass laid over it. The two
-bars float and get out of the way while something is playing; the strip of
-thumbnails and the side panels take room from the picture instead, because a
-photograph with its bottom fifth permanently behind a panel is not being shown
-to you.
+bars float and get out of the way once the pointer rests on the picture or
+leaves the window (not over a paused video, an open panel or the bars
+themselves); the strip of thumbnails and the side panels take room from the
+picture instead, because a photograph with its bottom fifth permanently behind
+a panel is not being shown to you. The picture can be dragged anywhere, into
+the empty space past its edges included; a double-click brings it back.
 
 * **Fit** the window, the width or the height, **fill** it, or show it at
   **actual size** — and zoom anywhere in between. Zooming keeps the point
