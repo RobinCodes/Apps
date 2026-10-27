@@ -75,11 +75,40 @@ from hermione import (archive, config as configmod, entries, filetypes,  # noqa:
 
 skipped = []
 failures = []
+WINDOWS = sys.platform == "win32"
 
 
-def check(name, fn):
-    fn()
+class Skip(Exception):
+    """Raised by a test that has found it cannot mean anything here."""
+
+
+def check(name, fn, *args):
+    """Run one test. A failure is reported and counted, never the end of the run.
+
+    One broken assertion used to stop everything after it, which on a new
+    platform meant learning about the failures one per run.
+    """
+    try:
+        fn(*args)
+    except Skip as exc:
+        skip(name, str(exc))
+        return
+    except Exception as exc:                  # noqa: BLE001 - reported, then counted
+        import traceback
+
+        failures.append((name, exc))
+        print(f"  FAIL  {name}: {type(exc).__name__}: {exc}")
+        traceback.print_exc(limit=-2, file=sys.stdout)
+        return
     print(f"  ok  {name}")
+
+
+def posix_only(name, fn, why):
+    """A test of something only a POSIX system has; elsewhere, say what it is."""
+    if WINDOWS:
+        skip(name, why)
+    else:
+        check(name, fn)
 
 
 def needs(tool, name, fn):
@@ -278,8 +307,13 @@ def test_a_folder_remembers_how_it_was_looked_at():
 # --------------------------------------------------------- the operations ---
 
 def test_a_copy_brings_the_whole_tree_with_its_permissions():
+    import stat as statmod
+
     source = tree("a.txt", "deep/b.txt", "deep/deeper/c.txt")
-    os.chmod(os.path.join(source, "a.txt"), 0o640)
+    # What a file's permissions are depends on the system: Unix has the nine
+    # bits, NTFS has a read-only flag and nothing else Python can see. Each
+    # is checked where it exists.
+    os.chmod(os.path.join(source, "a.txt"), 0o444 if WINDOWS else 0o640)
     os.symlink("a.txt", os.path.join(source, "link"))
     destination = tree()
 
@@ -287,7 +321,16 @@ def test_a_copy_brings_the_whole_tree_with_its_permissions():
     assert result.ok, result.errors
     landed = os.path.join(destination, os.path.basename(source))
     assert os.path.exists(os.path.join(landed, "deep", "deeper", "c.txt"))
-    assert os.stat(os.path.join(landed, "a.txt")).st_mode & 0o777 == 0o640
+    copied = os.path.join(landed, "a.txt")
+    if WINDOWS:
+        try:
+            assert not os.stat(copied).st_mode & statmod.S_IWRITE, \
+                "the copy of a read-only file can be written"
+        finally:
+            for path in (copied, os.path.join(source, "a.txt")):
+                os.chmod(path, 0o666)       # or the scratch cannot be removed
+    else:
+        assert os.stat(copied).st_mode & 0o777 == 0o640
     assert os.path.islink(os.path.join(landed, "link")), "a link was followed"
 
 
@@ -486,7 +529,7 @@ def test_the_biggest_files_come_back_biggest_first():
 def test_empty_folders_include_the_ones_holding_only_empty_folders():
     where = tree("chain/a/b/c/", "kept/file.txt")
     found = search.empty_folders(where)
-    names = {os.path.relpath(path, where) for path in found}
+    names = {os.path.relpath(path, where).replace(os.sep, "/") for path in found}
     assert names == {"chain", "chain/a", "chain/a/b", "chain/a/b/c"}
     # Deepest first, so deleting them in order works.
     for path in found:
@@ -647,6 +690,26 @@ def test_git_codes_reduce_to_one_letter_each():
 
 # --------------------------------------------------------------- the trash ---
 
+def _in_trash(path):
+    """The trash items deleted from `path` — case-blind, as Windows is."""
+    want = os.path.normcase(path)
+    return [item for item in trash.list_items()
+            if os.path.normcase(item.original) == want]
+
+
+def _leave_no_trace(where):
+    """Take this suite's own files out of the trash, whatever happened.
+
+    On Linux the trash is the scratch directory's own. On Windows it is the
+    real Recycle Bin — there is no pointing it anywhere else — so a test
+    that failed halfway must not leave its files in it.
+    """
+    inside = os.path.normcase(where) + os.sep
+    for item in trash.list_items():
+        if os.path.normcase(item.original).startswith(inside):
+            trash.delete_item(item)
+
+
 def test_the_trash_takes_a_file_and_gives_it_back(where):
     victim = os.path.join(where, "deleted-by-the-test.txt")
     with open(victim, "w", encoding="utf-8") as handle:
@@ -654,18 +717,74 @@ def test_the_trash_takes_a_file_and_gives_it_back(where):
 
     result = ops.Job(ops.TRASH, [victim]).run()
     if result.errors and "not supported" in result.errors[0]:
-        raise RuntimeError("no trash on this filesystem")
-    assert result.trashed == [victim], result.errors
-    assert not os.path.exists(victim)
+        raise Skip("no trash on this filesystem")
+    try:
+        assert result.trashed == [victim], result.errors
+        assert not os.path.exists(victim)
 
-    items = [item for item in trash.list_items() if item.original == victim]
-    assert len(items) == 1, "the deleted file is not in the trash"
-    assert items[0].display_name == "deleted-by-the-test.txt"
+        items = _in_trash(victim)
+        assert len(items) == 1, "the deleted file is not in the trash"
+        assert items[0].display_name == "deleted-by-the-test.txt"
+        assert items[0].deleted_at > time.time() - 3600, "the date was misread"
 
-    ok, why = trash.restore(items[0])
-    assert ok, why
-    assert os.path.exists(victim)
-    assert not [i for i in trash.list_items() if i.original == victim]
+        ok, why = trash.restore(items[0])
+        assert ok, why
+        assert os.path.exists(victim)
+        assert not _in_trash(victim)
+    finally:
+        _leave_no_trace(where)
+
+
+def test_undoing_a_trash_puts_it_back(where):
+    """Ctrl+Z after Delete, which on Windows used to find nothing to restore."""
+    victim = os.path.join(where, "undone.txt")
+    with open(victim, "w", encoding="utf-8") as handle:
+        handle.write("contents")
+    result = ops.Job(ops.TRASH, [victim]).run()
+    if not result.trashed:
+        raise Skip("no trash on this filesystem")
+    try:
+        change = ops.Change(ops.TRASH, [victim], result=result)
+        assert change.undoable
+        undone = change.undo().run()
+        assert undone.ok, undone.errors
+        with open(victim, encoding="utf-8") as handle:
+            assert handle.read() == "contents"
+    finally:
+        _leave_no_trace(where)
+
+
+def test_a_recycle_bin_record_is_read_in_both_versions():
+    """`$I` files, as Windows 7 and Windows 10 write them.
+
+    Built by hand so the parser is checked on every system, not only on the
+    one that has a Recycle Bin.
+    """
+    where = tree()
+    original = "C:\\Users\\robin\\Documents\\Kína jegyzet.md"
+    stamp = 1_798_000_000                       # some time in 2026
+    filetime = (stamp + trash._FILETIME_EPOCH) * 10_000_000
+    path_bytes = (original + "\0").encode("utf-16-le")
+
+    two = os.path.join(where, "$I2ABCDE.md")
+    with open(two, "wb") as handle:
+        handle.write((2).to_bytes(8, "little") + (1234).to_bytes(8, "little")
+                     + filetime.to_bytes(8, "little")
+                     + (len(original) + 1).to_bytes(4, "little") + path_bytes)
+    one = os.path.join(where, "$I1ABCDE.md")
+    with open(one, "wb") as handle:
+        handle.write((1).to_bytes(8, "little") + (1234).to_bytes(8, "little")
+                     + filetime.to_bytes(8, "little")
+                     + path_bytes.ljust(520, b"\0"))
+    for record in (one, two):
+        found, when = trash.read_recycle_record(record)
+        assert found == original, (record, found)
+        assert abs(when - stamp) < 1, (record, when)
+
+    junk = os.path.join(where, "$IJUNK.md")
+    with open(junk, "wb") as handle:
+        handle.write(b"short")
+    assert trash.read_recycle_record(junk) == ("", 0.0)
 
 
 def test_restoring_over_something_newer_refuses(where):
@@ -674,15 +793,18 @@ def test_restoring_over_something_newer_refuses(where):
         handle.write("old")
     result = ops.Job(ops.TRASH, [victim]).run()
     if not result.trashed:
-        raise RuntimeError("no trash on this filesystem")
-    with open(victim, "w", encoding="utf-8") as handle:
-        handle.write("new")
-    item = [i for i in trash.list_items() if i.original == victim][0]
-    ok, why = trash.restore(item)
-    assert not ok and "already exists" in why
-    with open(victim, encoding="utf-8") as handle:
-        assert handle.read() == "new"
-    trash.delete_item(item)
+        raise Skip("no trash on this filesystem")
+    try:
+        with open(victim, "w", encoding="utf-8") as handle:
+            handle.write("new")
+        items = _in_trash(victim)
+        assert items, "the deleted file is not in the trash"
+        ok, why = trash.restore(items[0])
+        assert not ok and "already exists" in why
+        with open(victim, encoding="utf-8") as handle:
+            assert handle.read() == "new"
+    finally:
+        _leave_no_trace(where)
 
 
 # -------------------------------------------------------------- the palette ---
@@ -915,17 +1037,29 @@ def test_a_clipboard_payload_is_read_the_way_every_other_file_manager_writes_it(
     sitting in the read. `pane._paste_gnome` splices it asynchronously
     instead; this checks the parsing on the other side of that.
     """
+    from gi.repository import GLib
+
     from hermione.pane import parse_copied_files
 
-    payload = b"copy\nfile:///tmp/one%20two.txt\nfile:///tmp/three.txt\n"
-    paths, move = parse_copied_files(payload)
-    assert paths == ["/tmp/one two.txt", "/tmp/three.txt"]
+    if not WINDOWS:
+        payload = b"copy\nfile:///tmp/one%20two.txt\nfile:///tmp/three.txt\n"
+        paths, move = parse_copied_files(payload)
+        assert paths == ["/tmp/one two.txt", "/tmp/three.txt"]
+        assert move is False
+
+    # And whatever this system's paths look like — `file:///C:/…` on
+    # Windows — what this app puts on the clipboard comes back as itself.
+    one = os.path.join(scratch, "one two.txt")
+    three = os.path.join(scratch, "three.txt")
+    uri = lambda path: GLib.filename_to_uri(path, None)  # noqa: E731
+    paths, move = parse_copied_files(f"copy\n{uri(one)}\n{uri(three)}\n".encode())
+    assert paths == [one, three], paths
     assert move is False
-    paths, move = parse_copied_files(b"cut\nfile:///tmp/x.txt")
-    assert paths == ["/tmp/x.txt"] and move is True
+    paths, move = parse_copied_files(f"cut\n{uri(one)}".encode())
+    assert paths == [one] and move is True
     # A remote URI is dropped rather than guessed at, and junk is survivable.
-    paths, _move = parse_copied_files(b"copy\nsftp://host/x\n\nfile:///tmp/y")
-    assert paths == ["/tmp/y"]
+    paths, _move = parse_copied_files(f"copy\nsftp://host/x\n\n{uri(three)}".encode())
+    assert paths == [three]
     assert parse_copied_files(b"") == ([], False)
 
 
@@ -937,12 +1071,24 @@ def test_a_folder_opened_from_the_desktop_arrives_as_a_uri():
     produces a nonsense relative one, which is the first thing anybody who
     made this their default file manager would see.
     """
+    from gi.repository import GLib
+
     from hermione.places import path_from_argument
 
-    assert path_from_argument("file:///home/me/Downloads") == "/home/me/Downloads"
-    assert path_from_argument("file:///home/me/My%20Folder") == "/home/me/My Folder"
-    assert path_from_argument("FILE:///tmp") == "/tmp"
-    assert path_from_argument("/plain/path") == "/plain/path"
+    if WINDOWS:
+        # In Python's own spelling: MSYS2's joins with `/`, python.org's `\`.
+        assert (path_from_argument("file:///C:/Users/me/My%20Folder")
+                == os.path.normpath("C:\\Users\\me\\My Folder"))
+        assert path_from_argument("FILE:///C:/Windows") == os.path.normpath("C:\\Windows")
+    else:
+        assert path_from_argument("file:///home/me/Downloads") == "/home/me/Downloads"
+        assert path_from_argument("file:///home/me/My%20Folder") == "/home/me/My Folder"
+        assert path_from_argument("FILE:///tmp") == "/tmp"
+        assert path_from_argument("/plain/path") == "/plain/path"
+    # A real folder, through the URI this system writes for it.
+    folder = os.path.join(tree("My Folder/"), "My Folder")
+    assert path_from_argument(GLib.filename_to_uri(folder, None)) == folder
+    assert path_from_argument(folder) == folder
     assert path_from_argument("~") == os.path.expanduser("~")
     # Real places, but not ones this app can list.
     assert path_from_argument("sftp://host/share") == ""
@@ -1359,8 +1505,9 @@ def main():
           test_a_cancelled_copy_stops_and_leaves_no_half_file)
     check("deleting a tree removes all of it",
           test_deleting_a_tree_removes_all_of_it)
-    check("a recursive chmod leaves the folders walkable",
-          test_a_recursive_chmod_leaves_the_folders_walkable)
+    posix_only("a recursive chmod leaves the folders walkable",
+               test_a_recursive_chmod_leaves_the_folders_walkable,
+               "NTFS has a read-only flag, not the nine bits this is about")
     check("renaming refuses a name that is not one",
           test_renaming_refuses_a_name_that_is_not_one)
 
@@ -1413,6 +1560,7 @@ def main():
         why = "the scratch directory is not on a real filesystem"
         skip("the trash takes a file and gives it back", why)
         skip("restoring over something newer refuses", why)
+        skip("undoing a trash puts it back", why)
     else:
         where = tree()
         for name, fn in (
@@ -1420,12 +1568,11 @@ def main():
              test_the_trash_takes_a_file_and_gives_it_back),
             ("restoring over something newer refuses",
              test_restoring_over_something_newer_refuses),
+            ("undoing a trash puts it back", test_undoing_a_trash_puts_it_back),
         ):
-            try:
-                fn(where)
-                print(f"  ok  {name}")
-            except RuntimeError as exc:
-                skip(name, str(exc))
+            check(name, fn, where)
+    check("a Recycle Bin record is read in both versions",
+          test_a_recycle_bin_record_is_read_in_both_versions)
 
     print("the palette and the look")
     check("the palette finds things by their initials",
@@ -1490,12 +1637,7 @@ def main():
             ("a URI on the command line opens the right folder",
              test_a_uri_on_the_command_line_opens_the_right_folder),
         ):
-            try:
-                fn(app)
-                print(f"  ok  {name}")
-            except BaseException as exc:          # noqa: BLE001 - re-raised below
-                failures.append(exc)
-                print(f"  FAIL  {name}: {exc}")
+            check(name, fn, app)
         app.release()
         app.quit()
         return GLib.SOURCE_REMOVE
@@ -1512,18 +1654,24 @@ def main():
 
     app.connect("activate", activate)
     app.run([])
-    if failures:
-        raise failures[0]
 
     if skipped:
         print("\nskipped:")
         for name, why in skipped:
             print(f"  {name}  ({why})")
+    if failures:
+        print(f"\nfailed ({len(failures)}):")
+        for name, exc in failures:
+            print(f"  {name}: {type(exc).__name__}: {exc}")
+        print(f"{len(failures)} failed")
+        return 1
     print("all good")
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        main()
+        code = main()
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+    sys.exit(code)

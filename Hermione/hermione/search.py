@@ -484,10 +484,16 @@ def empty_folders(root: str, stop=None, include_hidden: bool = False) -> list[st
     """
     found: list[str] = []
     empty = set()
+    root = os.path.normpath(root)
     for directory, dirs, files in os.walk(root, topdown=False,
                                           onerror=lambda _e: None):
         if stop is not None and stop.is_set():
             break
+        # Normalised, because the walk and `os.path.join` need not agree on
+        # the separator: MSYS2's Python joins with `/` while the walk hands
+        # back what Windows' own directory listing built, with `\`. Compared
+        # raw, no folder ever found its empty children in the set.
+        directory = os.path.normpath(directory)
         visible_dirs = [d for d in dirs if include_hidden or not d.startswith(".")]
         visible_files = [f for f in files if include_hidden or not f.startswith(".")]
         if visible_files:

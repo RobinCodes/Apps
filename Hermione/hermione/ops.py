@@ -421,16 +421,15 @@ class Job:
         """Take things out of the trash, by the path they were deleted from."""
         self.progress.files_total = len(self.sources)
         self.progress.phase = "working"
-        wanted = {os.path.abspath(p) for p in self.sources}
         found = {}
         for item in trashmod.list_items():
             # Newest first from list_items, so the first match for a path is
             # the deletion being undone and not an older one of the same name.
-            found.setdefault(os.path.abspath(item.original), item)
+            found.setdefault(_same_path_key(item.original), item)
         for path in self.sources:
             self._tick()
             self._note(path)
-            item = found.get(os.path.abspath(path))
+            item = found.get(_same_path_key(path))
             if item is None:
                 self.progress.errors.append(
                     f"{os.path.basename(path)}: it is not in the trash")
@@ -441,7 +440,6 @@ class Job:
                 continue
             self.result.moved.append((item.files_path, item.original))
             self.progress.files_done += 1
-        _ = wanted
 
     def _check_destination(self) -> None:
         if not self.destination:
@@ -783,6 +781,15 @@ class Job:
                 os.remove(path)
             except OSError:
                 pass
+
+
+def _same_path_key(path: str) -> str:
+    """A path as compared for "is this the one": case-blind where the disk is.
+
+    The Recycle Bin writes down the path it was handed, and Windows will
+    have handed it whatever case the caller used.
+    """
+    return os.path.normcase(os.path.abspath(path))
 
 
 def _size_of(path: str) -> int:

@@ -256,7 +256,11 @@ def safe_target(destination: str, name: str) -> str:
         return ""
     if not parts:
         return ""
-    if os.path.isabs(cleaned) or (len(cleaned) > 1 and cleaned[1] == ":"):
+    # A leading slash is refused outright rather than left to `isabs`: since
+    # Python 3.13, Windows no longer calls `/x` absolute (it has no drive),
+    # and the same archive must not extract differently on the two systems.
+    if (cleaned.startswith("/") or os.path.isabs(cleaned)
+            or (len(cleaned) > 1 and cleaned[1] == ":")):
         return ""
     target = os.path.join(destination, *parts)
     if not ops.is_inside(target, destination):

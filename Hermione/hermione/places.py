@@ -103,7 +103,10 @@ def path_from_argument(argument: str) -> str:
     lowered = argument.lower()
     if lowered.startswith("file://"):
         try:
-            return GLib.filename_from_uri(argument)[0] or ""
+            path = GLib.filename_from_uri(argument)[0] or ""
+            # GLib answers in the system's own separator; everything else
+            # here speaks Python's, which under MSYS2 is `/` even on Windows.
+            return os.path.abspath(path) if path else ""
         except GLib.Error:
             # A URI we cannot decode is still better read as a path than
             # dropped on the floor.

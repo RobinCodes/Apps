@@ -105,10 +105,13 @@ class Properties:
         fields.add("Accessed", units.exact_time(info.st_atime))
         fields.add("Changed", units.exact_time(info.st_ctime))
 
-        owner = _owner_name(info)
-        group = _group_name(info)
-        if owner or group:
-            fields.add("Owner", f"{owner}:{group}" if group else owner)
+        # Windows fills st_uid and st_gid with zeros rather than leaving them
+        # out, and "Owner 0:0" reads as root, which nothing on NTFS is.
+        if os.name != "nt":
+            owner = _owner_name(info)
+            group = _group_name(info)
+            if owner or group:
+                fields.add("Owner", f"{owner}:{group}" if group else owner)
         if getattr(info, "st_nlink", 1) > 1 and not is_dir:
             fields.add("Hard links", str(info.st_nlink))
 

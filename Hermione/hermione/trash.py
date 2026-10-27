@@ -13,6 +13,13 @@ one `NAME.trashinfo` per deleted thing giving its original Path and
 DeletionDate. A file deleted from another filesystem goes to `.Trash-$uid` at
 the root of *that* filesystem instead, because the trash is a rename and a
 rename cannot cross a device.
+
+Windows is the same idea with both halves in one folder: `X:\\$Recycle.Bin\\
+<the user's SID>` on each drive, where `$R7Q2K1L.txt` is the deleted thing,
+renamed, and `$I7Q2K1L.txt` is a small binary record of where it was and
+when. It is read the same way, and a restore is the same plain move — which
+is what lets `Ctrl+Z` take a file back out of the Recycle Bin rather than
+pointing at Explorer.
 """
 
 from __future__ import annotations
@@ -128,6 +135,8 @@ def roots() -> list[str]:
 def list_items() -> list[TrashItem]:
     """Everything in the trash, newest deletion first."""
     items: list[TrashItem] = []
+    for folder in recycle_bins():
+        items.extend(_recycled(folder))
     for root in roots():
         files_dir = os.path.join(root, "files")
         info_dir = os.path.join(root, "info")
@@ -177,6 +186,149 @@ def _read_info(path: str) -> tuple[str, float]:
                 except ValueError:
                     continue
     return original, when
+
+
+# ------------------------------------------------------ the Recycle Bin ----
+
+# Seconds between 1601-01-01, where a Windows FILETIME counts from, and 1970.
+_FILETIME_EPOCH = 11_644_473_600
+
+
+def recycle_bins() -> list[str]:
+    """This user's folder in each drive's Recycle Bin, where there is one.
+
+    Only fixed and removable drives: a network drive has no Recycle Bin, and
+    asking a disconnected one whether it has can take the length of a
+    timeout.
+    """
+    if not winenv.WINDOWS:
+        return []
+    sid = _user_sid()
+    if not sid:
+        return []
+    found = []
+    for drive in _local_drives():
+        folder = os.path.join(drive, "$Recycle.Bin", sid)
+        if os.path.isdir(folder):
+            found.append(folder)
+    return found
+
+
+def _recycled(folder: str) -> list[TrashItem]:
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    items = []
+    for name in names:
+        if not name.startswith("$I"):
+            continue
+        info_path = os.path.join(folder, name)
+        data_name = "$R" + name[2:]
+        data_path = os.path.join(folder, data_name)
+        original, deleted_at = read_recycle_record(info_path)
+        # A record without its data is what Explorer leaves for a moment
+        # while it empties the bin; there is nothing there to put back.
+        if not original or not os.path.lexists(data_path):
+            continue
+        items.append(TrashItem(data_name, data_path, info_path, original,
+                               deleted_at, folder))
+    return items
+
+
+def read_recycle_record(path: str) -> tuple[str, float]:
+    """An `$I…` file, as (where it was, when it was deleted).
+
+    Little-endian throughout: a version, the size, a FILETIME, then the
+    path in UTF-16. Version 1 (Vista to 8.1) keeps the path in a fixed
+    260-character field; version 2 (10 and later) says how long it is first.
+    """
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(28 + 2 * 32768)
+    except OSError:
+        return "", 0.0
+    if len(data) < 24:
+        return "", 0.0
+    version = int.from_bytes(data[0:8], "little")
+    filetime = int.from_bytes(data[16:24], "little")
+    if version == 1:
+        raw = data[24:24 + 520]
+    elif version == 2 and len(data) >= 28:
+        length = int.from_bytes(data[24:28], "little")
+        raw = data[28:28 + 2 * length]
+    else:
+        return "", 0.0
+    original = raw.decode("utf-16-le", "replace").split("\0", 1)[0]
+    when = filetime / 10_000_000 - _FILETIME_EPOCH if filetime else 0.0
+    return original, max(0.0, when)
+
+
+_SID: str | None = None
+
+
+def _user_sid() -> str:
+    """The current user's SID as text, which names their folder in each bin."""
+    global _SID
+    if _SID is not None:
+        return _SID
+    _SID = ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi = ctypes.WinDLL("advapi32")
+        kernel = ctypes.WinDLL("kernel32")
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        advapi.OpenProcessToken.argtypes = (
+            wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
+        advapi.GetTokenInformation.argtypes = (
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD))
+        advapi.ConvertSidToStringSidW.argtypes = (
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+        kernel.LocalFree.argtypes = (ctypes.c_void_p,)
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+        token = wintypes.HANDLE()
+        token_query, token_user = 0x0008, 1
+        if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), token_query,
+                                       ctypes.byref(token)):
+            return _SID
+        try:
+            size = wintypes.DWORD()
+            advapi.GetTokenInformation(token, token_user, None, 0, ctypes.byref(size))
+            buffer = ctypes.create_string_buffer(size.value)
+            if not advapi.GetTokenInformation(token, token_user, buffer, size,
+                                              ctypes.byref(size)):
+                return _SID
+            # TOKEN_USER starts with the pointer to the SID itself.
+            sid = ctypes.c_void_p.from_buffer(buffer).value
+            text = ctypes.c_void_p()
+            if advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+                _SID = ctypes.wstring_at(text.value)
+                kernel.LocalFree(text)
+        finally:
+            kernel.CloseHandle(token)
+    except (OSError, AttributeError, ValueError):
+        _SID = ""
+    return _SID
+
+
+def _local_drives() -> list[str]:
+    import ctypes
+
+    kernel = ctypes.WinDLL("kernel32")
+    kernel.GetDriveTypeW.argtypes = (ctypes.c_wchar_p,)
+    mask = kernel.GetLogicalDrives()
+    removable, fixed = 2, 3
+    drives = []
+    for index in range(26):
+        if mask & (1 << index):
+            root = f"{chr(ord('A') + index)}:\\"
+            if kernel.GetDriveTypeW(root) in (removable, fixed):
+                drives.append(root)
+    return drives
 
 
 def size_of_trash() -> tuple[int, int]:

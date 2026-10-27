@@ -1255,7 +1255,9 @@ def parse_copied_files(payload: bytes) -> tuple[list[str], bool]:
         except GLib.Error:
             continue
         if path:
-            paths.append(path)
+            # In Python's spelling, not GLib's: on Windows the two disagree
+            # about the separator, and a path is compared as a string here.
+            paths.append(os.path.normpath(path))
     return paths, move
 
 

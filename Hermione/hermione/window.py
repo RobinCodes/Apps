@@ -930,23 +930,15 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------- the trash ---
 
     def show_trash(self) -> None:
-        """The trash, as a list you can put things back from."""
-        if winenv.WINDOWS:
-            # Windows deletes into the Recycle Bin through the shell, and
-            # offers no way to read it back that does not mean driving
-            # Explorer. Saying so is better than showing an empty list and
-            # letting it look as though nothing was ever deleted.
-            dialogs.tell(
-                self, "The Recycle Bin is Explorer's",
-                "Files deleted here go to it, and Windows gives no way to "
-                "list or restore them from outside Explorer. Open the "
-                "Recycle Bin from the desktop to put something back.")
-            return
+        """The trash, as a list you can put things back from.
+
+        On Windows it is the Recycle Bin, read directly — see trash.py.
+        """
         items = trashmod.list_items()
         dialog = dialogs._dialog("Trash", 600)
         dialog.set_content_height(520)
         body = dialogs._page(
-            dialog, "Trash",
+            dialog, "Recycle Bin" if winenv.WINDOWS else "Trash",
             subtitle=("Nothing in it" if not items else
                       f"{len(items)} items, "
                       f"{units.human_size(sum(i.size for i in items))}"))
