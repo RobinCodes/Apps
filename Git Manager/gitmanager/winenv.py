@@ -173,6 +173,7 @@ def tool_dirs() -> list[str]:
     dirs += _tex_dirs()
     # The GTK stack this app runs on; also where poppler's pdftoppm lives.
     dirs.append(os.path.join(os.path.dirname(sys.executable)))
+    dirs.append(r"C:\msys64\ucrt64\bin")
     dirs.append(r"C:\msys64\mingw64\bin")
     return dirs
 

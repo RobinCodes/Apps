@@ -430,10 +430,10 @@ system it is on:
 
 GTK4 does exist for Windows, but only from MSYS2 — PyGObject publishes no
 Windows wheels, so `pip install pygobject` cannot work. Install
-[MSYS2](https://www.msys2.org/), then in an **MSYS2 MINGW64** shell:
+[MSYS2](https://www.msys2.org/), then in an **MSYS2 UCRT64** shell:
 
 ```bash
-pacman -S mingw-w64-x86_64-gtk4 mingw-w64-x86_64-libadwaita mingw-w64-x86_64-python-gobject
+pacman -S mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita mingw-w64-ucrt-x86_64-python-gobject
 ```
 
 Then, from the repository root:

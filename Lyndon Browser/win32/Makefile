@@ -152,7 +152,7 @@ dist: $(APP)
 	@cp $(APP) $(DISTDIR)/
 	@cp -r data $(DISTDIR)/
 	@cp win32/webview2/x64/WebView2Loader.dll $(DISTDIR)/ 2>/dev/null || 	  echo "  note: win32/webview2/x64/WebView2Loader.dll missing — see win32/webview2/README.md"
-	@for dll in $$(ldd $(APP) | grep -io '/mingw64/bin/[^ ]*\.dll'); do 	  cp "$$dll" $(DISTDIR)/ ; 	done
+	@for dll in $$(ldd $(APP) | grep -ioE '/(ucrt64|mingw64)/bin/[^ ]*\.dll'); do 	  cp "$$dll" $(DISTDIR)/ ; 	done
 	@echo "  ==>   $(DISTDIR)/ ready ($$(du -sh $(DISTDIR) | cut -f1)), runs without MSYS2"
 
 clean:

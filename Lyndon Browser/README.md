@@ -789,10 +789,10 @@ make -f win32/Makefile check    # the blocker's own tests
 make -f win32/Makefile dist     # a folder that runs without MSYS2
 ```
 
-in an **MSYS2 MINGW64** shell, with `mingw-w64-x86_64-gcc`,
-`mingw-w64-x86_64-glib2`, `mingw-w64-x86_64-json-glib`,
-`mingw-w64-x86_64-sqlite3` and `mingw-w64-x86_64-zlib` installed.
-`mingw-w64-x86_64-nss` is optional and enables Firefox password import, the
+in an **MSYS2 UCRT64** shell, with `mingw-w64-ucrt-x86_64-gcc`,
+`mingw-w64-ucrt-x86_64-glib2`, `mingw-w64-ucrt-x86_64-json-glib`,
+`mingw-w64-ucrt-x86_64-sqlite3` and `mingw-w64-ucrt-x86_64-zlib` installed.
+`mingw-w64-ucrt-x86_64-nss` is optional and enables Firefox password import, the
 same way it does on Linux. The result is about 380 KB of executable and a
 handful of GLib DLLs; `dist` gathers them, the `data/` directory and the
 WebView2 loader into one folder that needs no MSYS2 on the machine it runs on.

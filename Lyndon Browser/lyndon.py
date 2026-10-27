@@ -161,9 +161,12 @@ def _build_command(into: str) -> tuple[list[str], dict] | None:
         return None
     script = ('cd "$(cygpath -u "$1")" && '
               'make -f win32/Makefile dist DISTDIR="$2"')
+    # UCRT64 is where MSYS2 keeps the toolchain and GTK now; MINGW64 is what
+    # older installs have.
+    msystem = "UCRT64" if os.path.isdir(os.path.join(root, "ucrt64", "bin")) else "MINGW64"
     return ([os.path.join(root, "usr", "bin", "bash.exe"), "-lc", script, "build",
              ROOT, target],
-            {"env": dict(os.environ, MSYSTEM="MINGW64", CHERE_INVOKING="1"),
+            {"env": dict(os.environ, MSYSTEM=msystem, CHERE_INVOKING="1"),
              "creationflags": NO_WINDOW})
 
 

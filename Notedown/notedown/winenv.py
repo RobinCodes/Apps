@@ -110,6 +110,7 @@ def tool_dirs() -> list[str]:
         dirs.append(os.path.join(pf, "Pandoc"))
     # The GTK stack this app runs on.
     dirs.append(os.path.dirname(sys.executable))
+    dirs.append(r"C:\msys64\ucrt64\bin")
     dirs.append(r"C:\msys64\mingw64\bin")
     return dirs
 

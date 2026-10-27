@@ -18,12 +18,17 @@ set "APPENTRY=%~dp0fathom.py"
 if not defined MSYS2_ROOT call :find_msys2
 if not defined MSYS2_ROOT goto :no_msys2
 
-set "PATH=%MSYS2_ROOT%\mingw64\bin;%PATH%"
-start "" "%MSYS2_ROOT%\mingw64\bin\pythonw.exe" "%APPENTRY%" %*
+if not defined MSYS2_ENV call :find_env
+set "PATH=%MSYS2_ROOT%\%MSYS2_ENV%\bin;%PATH%"
+start "" "%MSYS2_ROOT%\%MSYS2_ENV%\bin\pythonw.exe" "%APPENTRY%" %*
 exit /b 0
 
 :find_msys2
 for %%R in ("C:\msys64" "%LOCALAPPDATA%\msys64" "%USERPROFILE%\msys64" "C:\tools\msys64") do (
+    if exist "%%~R\ucrt64\bin\pythonw.exe" (
+        set "MSYS2_ROOT=%%~R"
+        exit /b 0
+    )
     if exist "%%~R\mingw64\bin\pythonw.exe" (
         set "MSYS2_ROOT=%%~R"
         exit /b 0
@@ -31,14 +36,20 @@ for %%R in ("C:\msys64" "%LOCALAPPDATA%\msys64" "%USERPROFILE%\msys64" "C:\tools
 )
 exit /b 1
 
+:find_env
+rem UCRT64 is where MSYS2 keeps GTK4 now; MINGW64 is what older installs have.
+set "MSYS2_ENV=mingw64"
+if exist "%MSYS2_ROOT%\ucrt64\bin\pythonw.exe" set "MSYS2_ENV=ucrt64"
+exit /b 0
+
 :no_msys2
 echo.
 echo   Fathom needs the GTK4 runtime, which on Windows comes from MSYS2.
 echo.
 echo   Install MSYS2 from https://www.msys2.org/ then run this in a
-echo   "MSYS2 MINGW64" shell:
+echo   "MSYS2 UCRT64" shell:
 echo.
-echo       pacman -S mingw-w64-x86_64-gtk4 mingw-w64-x86_64-libadwaita mingw-w64-x86_64-python-gobject
+echo       pacman -S mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita mingw-w64-ucrt-x86_64-python-gobject
 echo.
 echo   Already installed somewhere else? Set MSYS2_ROOT to that folder.
 echo.

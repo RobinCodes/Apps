@@ -123,10 +123,10 @@ answer through, and it lives in the compositor's config —
 The six Python apps are GTK4 and libadwaita, and the only GTK4 that exists
 for Windows comes from MSYS2 — PyGObject publishes no Windows wheels, so
 `pip install pygobject` cannot work. Install
-[MSYS2](https://www.msys2.org/), then in an **MSYS2 MINGW64** shell:
+[MSYS2](https://www.msys2.org/), then in an **MSYS2 UCRT64** shell:
 
 ```bash
-pacman -S mingw-w64-x86_64-gtk4 mingw-w64-x86_64-libadwaita mingw-w64-x86_64-python-gobject mingw-w64-x86_64-poppler
+pacman -S mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-poppler
 ```
 
 Then, from this directory:
@@ -292,7 +292,7 @@ On Windows, run it with MSYS2's Python, which is the one that has the GTK
 bindings:
 
 ```powershell
-C:\msys64\mingw64\bin\python.exe run-tests.py
+C:\msys64\ucrt64\bin\python.exe run-tests.py
 ```
 
 What each suite covers:

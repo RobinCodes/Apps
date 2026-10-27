@@ -12,7 +12,7 @@
 
     The shortcuts point straight at MSYS2's pythonw.exe rather than at the
     .bat launchers. Windows looks for a program's DLLs next to the .exe
-    first, so pythonw.exe in mingw64\bin finds GTK without anything being
+    first, so pythonw.exe in ucrt64\bin (mingw64\bin on an older install) finds GTK without anything being
     added to PATH — and going directly means no console window blinks up
     before the app appears. The .bat launchers stay for command-line use,
     where being handed a file to open is the point.
@@ -392,7 +392,8 @@ if ($Uninstall) {
 # ------------------------------------------------------------------- MSYS2 ---
 $roots = @($env:MSYS2_ROOT, 'C:\msys64', "$env:LOCALAPPDATA\msys64",
            "$env:USERPROFILE\msys64", 'C:\tools\msys64') | Where-Object { $_ }
-$Msys = $roots | Where-Object { Test-Path (Join-Path $_ 'mingw64\bin\pythonw.exe') } |
+$Msys = $roots | Where-Object { (Test-Path (Join-Path $_ 'ucrt64\bin\pythonw.exe')) -or
+                                (Test-Path (Join-Path $_ 'mingw64\bin\pythonw.exe')) } |
         Select-Object -First 1
 
 if (-not $Msys) {
@@ -401,10 +402,10 @@ if (-not $Msys) {
   MSYS2 was not found, and it is what provides GTK4 on Windows.
 
   1. Install it from https://www.msys2.org/
-  2. Open "MSYS2 MINGW64" and run:
+  2. Open "MSYS2 UCRT64" and run:
 
-       pacman -S mingw-w64-x86_64-gtk4 mingw-w64-x86_64-libadwaita ``
-                 mingw-w64-x86_64-python-gobject mingw-w64-x86_64-poppler
+       pacman -S mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita ``
+                 mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-poppler
 
   3. Run this script again.
 
@@ -414,15 +415,19 @@ if (-not $Msys) {
     exit 1
 }
 
-$PythonW = Join-Path $Msys 'mingw64\bin\pythonw.exe'
-$Python = Join-Path $Msys 'mingw64\bin\python.exe'
-Write-Host "MSYS2:  $Msys" -ForegroundColor Cyan
+# UCRT64 is where MSYS2 keeps GTK4 now (MINGW64 no longer has gtk4 or
+# libadwaita), but an older install with its GTK in MINGW64 keeps working.
+$MsysEnv = if (Test-Path (Join-Path $Msys 'ucrt64\bin\pythonw.exe')) { 'ucrt64' } else { 'mingw64' }
+$MsysBin = Join-Path $Msys "$MsysEnv\bin"
+$PythonW = Join-Path $MsysBin 'pythonw.exe'
+$Python = Join-Path $MsysBin 'python.exe'
+Write-Host "MSYS2:  $Msys ($MsysEnv)" -ForegroundColor Cyan
 
 # Check the stack before making shortcuts that would only fail when clicked.
 $probe = & $Python -c "import gi; gi.require_version('Gtk','4.0'); gi.require_version('Adw','1'); from gi.repository import Gtk, Adw; print(f'{Gtk.get_major_version()}.{Gtk.get_minor_version()}')" 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "`n  MSYS2 is installed but the GTK4 stack is not. In a MINGW64 shell:`n" -ForegroundColor Yellow
-    Write-Host "      pacman -S mingw-w64-x86_64-gtk4 mingw-w64-x86_64-libadwaita mingw-w64-x86_64-python-gobject`n"
+    Write-Host "`n  MSYS2 is installed but the GTK4 stack is not. In a UCRT64 shell:`n" -ForegroundColor Yellow
+    Write-Host "      pacman -S mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita mingw-w64-ucrt-x86_64-python-gobject`n"
     Write-Host "  ($probe)"
     exit 1
 }
@@ -431,7 +436,7 @@ Write-Host "Here:   $Root" -ForegroundColor Cyan
 
 # ------------------------------------------------------------------- icons ---
 New-Item -ItemType Directory -Force -Path $IconDir | Out-Null
-$env:PATH = (Join-Path $Msys 'mingw64\bin') + ';' + $env:PATH
+$env:PATH = $MsysBin + ';' + $env:PATH
 $wanted = @()
 foreach ($app in $Apps) {
     $wanted += ,@($app.Icon, $app.Svg)

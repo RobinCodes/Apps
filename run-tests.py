@@ -11,7 +11,7 @@ than failed, because "not installed here" and "broken" are different answers
 and only one of them is worth acting on.
 
 On Windows the five Python apps need MSYS2's Python, because that is where
-the GTK4 bindings are; run this with it — `C:\\msys64\\mingw64\\bin\\python.exe
+the GTK4 bindings are; run this with it — `C:\\msys64\\ucrt64\\bin\\python.exe
 run-tests.py` — or the GTK suites will report themselves skipped.
 """
 
@@ -88,7 +88,7 @@ def make_argv(makefile=None):
 
 
 def msys2_path(make):
-    """PATH as an MSYS2 MINGW64 shell has it, for MSYS2's make run from outside one.
+    """PATH as an MSYS2 UCRT64 shell has it, for MSYS2's make run from outside one.
 
     Started from Windows, make inherits the Windows PATH, where win32/Makefile
     finds no pkg-config, gcc or which, and the tests it builds cannot load
@@ -96,7 +96,9 @@ def msys2_path(make):
     C:\\msys64\\usr\\bin\\make.exe -> C:\\msys64.
     """
     root = os.path.dirname(os.path.dirname(os.path.dirname(make)))
-    return os.pathsep.join([os.path.join(root, "mingw64", "bin"),
+    # UCRT64 is where MSYS2 keeps GTK4 now; MINGW64 is what older installs have.
+    env = "ucrt64" if os.path.isdir(os.path.join(root, "ucrt64", "bin")) else "mingw64"
+    return os.pathsep.join([os.path.join(root, env, "bin"),
                             os.path.join(root, "usr", "bin"),
                             os.environ.get("PATH", "")])
 
