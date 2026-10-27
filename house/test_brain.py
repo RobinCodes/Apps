@@ -382,6 +382,47 @@ def test_search_uses_the_brain_index_and_opens_the_original():
     assert "«" in hits[0].snippet
 
 
+def test_claude_streams_an_answer_back():
+    import threading
+    from house import claude
+
+    where = make_home("claude")
+    fake = write(SCRATCH / "fake_claude.py", (
+        "import json, sys\n"
+        "args = sys.argv[1:]\n"
+        "assert args[0] == '-p' and '--append-system-prompt' in args\n"
+        "print('not json')\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's-1'}))\n"
+        "print(json.dumps({'type': 'assistant', 'message': {'content': "
+        "[{'type': 'text', 'text': 'First.'}]}}))\n"
+        "print(json.dumps({'type': 'assistant', 'message': {'content': "
+        "[{'type': 'tool_use', 'name': 'Read'}, {'type': 'text', 'text': 'Second.'}]}}))\n"
+        "print(json.dumps({'type': 'result', 'result': 'First.\\n\\nSecond.', "
+        "'is_error': False, 'session_id': 's-1'}))\n"))
+    chunks, done = [], threading.Event()
+    outcome = {}
+
+    def finished(ok, result, session):
+        outcome.update(ok=ok, result=result, session=session)
+        done.set()
+
+    ask = claude.Ask("Cards from this", files=[where.studies / "x.md"],
+                     command=[sys.executable, str(fake)], cwd=where.home,
+                     on_text=chunks.append, on_done=finished)
+    assert "x.md" in ask.argv()[3] and "SYSTEM.md" in claude.briefing()
+    ask.start()
+    assert done.wait(30), "the stand-in never finished"
+    assert outcome == {"ok": True, "result": "First.\n\nSecond.", "session": "s-1"}, outcome
+    assert chunks == ["First.", "\n\nSecond."]
+
+    failing = write(SCRATCH / "fail_claude.py", "import sys; sys.stderr.write('no auth'); sys.exit(1)\n")
+    done.clear()
+    claude.Ask("x", command=[sys.executable, str(failing)], cwd=where.home,
+               on_done=finished).start()
+    assert done.wait(30)
+    assert outcome["ok"] is False and "no auth" in outcome["result"]
+
+
 def test_names_are_safe_everywhere():
     assert brain.safe_name('a/b\\c:d*e?"f<g>h|i') == "a b c d e f g h i"
     assert brain.safe_name("   ") == "Untitled"
