@@ -518,8 +518,14 @@ def _stamp(when: datetime) -> str:
 
 def capture_text(text: str, title: str | None = None, *, origin: str = "manual",
                  app: str | None = None, where: Places | None = None,
-                 when: datetime | None = None) -> Path:
-    """Put a thought in the inbox as a note of its own. Returns its path."""
+                 when: datetime | None = None, meta: dict | None = None) -> Path:
+    """Put a thought in the inbox as a note of its own. Returns its path.
+
+    `meta` adds front matter after the standard lines — the provenance a
+    capture knows and the inbox note should keep (SYSTEM.md §1.6): the file a
+    page was photographed in, the page it says it is. Keys are names; values
+    are written as strings, or lists of them, and empty ones are left out.
+    """
     p = where or places()
     when = when or datetime.now(timezone.utc).astimezone()
     first = next((line.strip("# ").strip() for line in text.splitlines()
@@ -529,8 +535,9 @@ def capture_text(text: str, title: str | None = None, *, origin: str = "manual",
     path = _unique(p.inbox / f"{_stamp(when)} {safe_name(title, 60)}.md")
     from_line = f"origin: {origin}\n" + (f"app: {app}\n" if app else "")
     machine = os.environ.get("ORDER_MACHINE") or _hostname()
+    extra = "".join(_yaml_line(k, v) for k, v in (meta or {}).items())
     body = (f"---\ntitle: {_yaml_str(title)}\ncreated: {when.isoformat(timespec='seconds')}\n"
-            f"{from_line}machine: {machine}\n---\n\n{text.rstrip()}\n")
+            f"{from_line}machine: {machine}\n{extra}---\n\n{text.rstrip()}\n")
     path.write_text(body, encoding="utf-8", newline="\n")
     return path
 
@@ -585,6 +592,17 @@ def _unique(path: Path) -> Path:
 
 def _yaml_str(text: str) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _yaml_line(name: str, value) -> str:
+    """One front-matter line: a quoted string, or a flow list of them."""
+    name = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name)).strip("_")
+    if not name or value is None or value == "" or value == []:
+        return ""
+    if isinstance(value, (list, tuple)):
+        items = ", ".join(_yaml_str(str(v)) for v in value if str(v))
+        return f"{name}: [{items}]\n" if items else ""
+    return f"{name}: {_yaml_str(str(value).replace(chr(10), ' '))}\n"
 
 
 def _hostname() -> str:

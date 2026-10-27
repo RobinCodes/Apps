@@ -365,6 +365,25 @@ def test_capture_puts_things_in_the_inbox():
     assert day.as_posix().endswith("journal/2026/2026-10-27.md") and day.read_text(encoding="utf-8").startswith("# 2026-10-27")
 
 
+def test_a_capture_keeps_its_provenance():
+    where = make_home("provenance")
+    when = datetime(2026, 10, 27, 19, 5, tzinfo=TZ)
+    note = brain.capture_text("![](2026-10-27-1.jpg)", "Notebook page, 2026-10-27",
+                              origin="the-eye", app="The Eye", where=where, when=when,
+                              meta={"source": 'Pictures/IMG "1".jpg', "page": "Matematika II · 14",
+                                    "pages": ["a.jpg", "b.jpg"], "empty": "", "bad key!": "x",
+                                    "multi": "two\nlines"})
+    meta, body, _ = brain.split_front_matter(note.read_text(encoding="utf-8"))
+    assert meta["origin"] == "the-eye" and meta["app"] == "The Eye", meta
+    assert meta["source"] == 'Pictures/IMG "1".jpg', meta.get("source")
+    assert meta["page"] == "Matematika II · 14" and meta["pages"] == ["a.jpg", "b.jpg"], meta
+    assert "empty" not in meta and meta["bad_key"] == "x" and meta["multi"] == "two lines", meta
+    assert body.strip() == "![](2026-10-27-1.jpg)", body
+    plain = brain.capture_text("no meta", where=where, when=when)
+    assert set(brain.split_front_matter(plain.read_text(encoding="utf-8"))[0]) == \
+        {"title", "created", "origin", "machine"}, "a capture without meta changed shape"
+
+
 def test_search_uses_the_brain_index_and_opens_the_original():
     where = make_home("search")
     original = write(where.studies / "Chemistry" / "Fémek.md", "# Fémek\n")
