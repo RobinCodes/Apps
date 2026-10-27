@@ -5,9 +5,12 @@
     python3 house/sync.py --check    say which are stale, change nothing
     python3 house/sync.py --list     the files and where each one goes
 
-Three files travel: `theme.py`, the palettes; `housestyle.py`, the sheet and
-the two widgets CSS cannot draw; and `updater.py`, which keeps each app current
-with the checkout it runs from. They are vendored rather than imported, because
+Three files travel to every app: `theme.py`, the palettes; `housestyle.py`, the
+sheet and the two widgets CSS cannot draw; and `updater.py`, which keeps each
+app current with the checkout it runs from. Three more travel only to the apps
+that join the second brain: `brain.py` (the Order's layout, links and inbox),
+`cards.py` (cards written in notes, and the review log) and `fsrs.py` (the
+scheduler). They are vendored rather than imported, because
 each app in this repository is a folder you can copy to another machine and run
 on its own — `updater.py` has been vendored that way since the beginning, and
 this only puts the copying under something that checks. The cost is that nine
@@ -47,6 +50,12 @@ PACKAGES = {
     "The Eye": "theeye",
 }
 
+# The second brain: where things are, the cards and the scheduler. Only the
+# apps that read or write the brain get these — a disk scanner has no use for
+# a spaced-repetition scheduler, and an unused copy is still a copy to drift.
+BRAIN_FILES = ("brain.py", "cards.py", "fsrs.py")
+BRAIN_APPS = ("Hermione", "Notedown", "The Eye")
+
 # The C app, which takes the palettes as a generated header instead.
 LYNDON_HEADER = os.path.join("Lyndon Browser", "src", "house-themes.h")
 
@@ -54,7 +63,8 @@ LYNDON_HEADER = os.path.join("Lyndon Browser", "src", "house-themes.h")
 def targets():
     """Every (source, destination) pair, as absolute paths."""
     for app, package in sorted(PACKAGES.items()):
-        for name in FILES:
+        names = FILES + (BRAIN_FILES if app in BRAIN_APPS else ())
+        for name in names:
             yield (os.path.join(HERE, name),
                    os.path.join(ROOT, app, package, name))
 

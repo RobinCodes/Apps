@@ -222,7 +222,9 @@ def test_an_unreadable_folder_is_a_message_not_a_crash():
     found, error = entries.read_dir(os.path.join(scratch, "no-such-folder"))
     assert found == []
     assert "no longer exists" in error
-    if os.getuid() != 0 and os.path.isdir("/root"):
+    # A folder the user may not read: /root, where there is one. Windows has
+    # no uid and no such folder, so there the missing-folder half is the test.
+    if hasattr(os, "getuid") and os.getuid() != 0 and os.path.isdir("/root"):
         _found, error = entries.read_dir("/root")
         assert "permission" in error.lower(), error
 
