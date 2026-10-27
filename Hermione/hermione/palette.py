@@ -13,6 +13,12 @@ in the middle, consecutive characters count for more than scattered ones, and
 a short name beats a long one on an equal score. Typed a path instead —
 anything starting with `/`, `~` or `.` — and it completes directories.
 
+A question mark asks the brain instead: `?fémek` searches Anamnesis's index
+(or the note titles, where there is no index) and lists what it knows, each
+with its kind and the line that matched. Return opens one; Shift+Return
+shows it in its folder. The search runs on a thread, because an index is a
+disk and a palette is a keystroke.
+
 It floats over the window rather than being a popover, which is what makes
 the blur behind it real: a popover on Wayland is its own surface with nothing
 of ours behind it to blur.
@@ -21,6 +27,7 @@ of ours behind it to blur.
 from __future__ import annotations
 
 import os
+import threading
 
 import gi
 
@@ -37,12 +44,16 @@ class Item:
     """One thing the palette can offer."""
 
     def __init__(self, label: str, detail: str = "", icon: str = "",
-                 shortcut: str = "", action=None, sort_hint: int = 0):
+                 shortcut: str = "", action=None, sort_hint: int = 0,
+                 snippet: str = "", alternate=None):
         self.label = label
         self.detail = detail
         self.icon = icon or "pan-end-symbolic"
         self.shortcut = shortcut
         self.action = action
+        # A second line under the label, and what Shift+Return does instead.
+        self.snippet = snippet
+        self.alternate = alternate
         # Lower sorts first among equal scores: commands before places before
         # the contents of the folder, because that is the order of intent.
         self.sort_hint = sort_hint
@@ -112,11 +123,15 @@ class Palette(Gtk.Box):
     knows about the folder that is open now.
     """
 
-    def __init__(self, provider, navigate=None, on_closed=None):
+    def __init__(self, provider, navigate=None, on_closed=None, asker=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.provider = provider
         self.navigate = navigate
         self.on_closed = on_closed
+        # `asker(text) -> list[Item]`, run on a worker for a `?` query; None
+        # where there is no brain to ask.
+        self.asker = asker
+        self._asking = 0
         self.items: list[Item] = []
         self.shown: list[Item] = []
         self.active = 0
@@ -176,10 +191,43 @@ class Palette(Gtk.Box):
 
     def _refresh(self) -> None:
         text = self.entry.get_text().strip()
+        self._asking += 1
+        if text[:1] == "?" and self.asker is not None:
+            self._ask(text[1:].strip())
+            return
         if text[:1] in ("/", "~", ".") and text:
             self.shown = _path_items(text, self.navigate)
         else:
             self.shown = rank(self.items, text)
+        self._show_rows()
+
+    def _ask(self, question: str) -> None:
+        """A `?` query: the brain answers on a thread, the newest answer wins."""
+        if not question:
+            self.shown = [Item("Type what to look for", "searches the brain",
+                               "system-search-symbolic")]
+            self._show_rows()
+            return
+        generation = self._asking
+        asker = self.asker
+
+        def worker():
+            try:
+                found = asker(question)
+            except Exception:                          # noqa: BLE001
+                found = []
+            GLib.idle_add(deliver, found)
+
+        def deliver(found) -> bool:
+            if generation == self._asking and self.get_visible():
+                self.shown = found or [Item(f"Nothing in the brain for “{question}”",
+                                            "", "dialog-information-symbolic")]
+                self._show_rows()
+            return False
+
+        threading.Thread(target=worker, daemon=True, name="hermione-ask").start()
+
+    def _show_rows(self) -> None:
         while (child := self.list.get_first_child()) is not None:
             self.list.remove(child)
         for item in self.shown:
@@ -232,7 +280,8 @@ class Palette(Gtk.Box):
             self._move(-8)
             return True
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
-            self._run_active()
+            self._run_active(alternate=bool(
+                state & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK)))
             return True
         # Ctrl+P / Ctrl+N for the people whose fingers expect them there.
         if state & Gdk.ModifierType.CONTROL_MASK:
@@ -250,13 +299,15 @@ class Palette(Gtk.Box):
             self.active = index
             self._run_active()
 
-    def _run_active(self) -> None:
+    def _run_active(self, alternate: bool = False) -> None:
         if not self.shown:
             return
         item = self.shown[min(self.active, len(self.shown) - 1)]
+        action = item.alternate if alternate and item.alternate else item.action
+        if action is None:
+            return                     # a message row, not something to do
         self.close()
-        if item.action is not None:
-            item.action()
+        action()
 
 
 def _row_for(item: Item) -> Gtk.Widget:
@@ -268,14 +319,30 @@ def _row_for(item: Item) -> Gtk.Widget:
     label = Gtk.Label(label=item.label, xalign=0.0)
     label.set_ellipsize(3)
     row.append(icon)
-    row.append(label)
-    if item.detail:
+    if item.snippet:
+        # Two lines: what it is, and the words that matched.
+        stack = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        stack.append(label)
+        snippet = Gtk.Label(label=item.snippet, xalign=0.0)
+        snippet.add_css_class("where")
+        snippet.set_ellipsize(3)
+        stack.append(snippet)
+        stack.set_hexpand(True)
+        row.append(stack)
+    else:
+        row.append(label)
+    if item.detail and item.snippet:
+        kind = Gtk.Label(label=item.detail)
+        kind.add_css_class("pill-badge")
+        kind.set_valign(Gtk.Align.CENTER)
+        row.append(kind)
+    elif item.detail:
         where = Gtk.Label(label=item.detail, xalign=0.0)
         where.add_css_class("where")
         where.set_ellipsize(1)
         where.set_hexpand(True)
         row.append(where)
-    else:
+    elif not item.snippet:
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
         row.append(spacer)

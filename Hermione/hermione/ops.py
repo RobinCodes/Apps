@@ -422,10 +422,21 @@ class Job:
         self.progress.files_total = len(self.sources)
         self.progress.phase = "working"
         found = {}
-        for item in trashmod.list_items():
-            # Newest first from list_items, so the first match for a path is
-            # the deletion being undone and not an older one of the same name.
-            found.setdefault(_same_path_key(item.original), item)
+        wanted = {_same_path_key(path) for path in self.sources}
+        for attempt in range(4):
+            for item in trashmod.list_items():
+                # Newest first from list_items, so the first match for a path
+                # is the deletion being undone and not an older one of the
+                # same name.
+                found.setdefault(_same_path_key(item.original), item)
+            if wanted <= set(found):
+                break
+            # A record written a moment ago can still be held open — on
+            # Windows a virus scanner looks at every new file in the Recycle
+            # Bin — and a Ctrl+Z pressed straight after Delete is exactly
+            # that moment. A short wait, not a failure.
+            self._tick()
+            time.sleep(0.15 * (attempt + 1))
         for path in self.sources:
             self._tick()
             self._note(path)

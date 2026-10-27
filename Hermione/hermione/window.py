@@ -53,8 +53,10 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from . import (dialogs, glass, housestyle, ops, palette, places, prefs,
-               style, tools, trash as trashmod, units, winenv)
+from . import (dialogs, glass, housestyle, inbox as inboxmod, ops, order,
+               palette, places, prefs, style, tools, trash as trashmod, units,
+               winenv)
+from .askpanel import AskPanel  # noqa: E402
 from .pane import Breadcrumbs, Pane, icon_button  # noqa: E402
 
 NARROW = 720            # below this, the sidebar slides over instead of sitting beside
@@ -74,6 +76,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.undo_stack = ops.UndoStack()
         self.jobs: list = []
         self._trash_count = -1
+        # The Order's inbox: how much is in it, who is showing it, and the
+        # monitor that keeps both current when something else adds to it.
+        self._inbox_count = -1
+        self._inbox_views: list = []
+        self._inbox_monitor = None
+        self._inbox_pending = False
 
         self.add_css_class("hermione")
         self.set_title("Hermione")
@@ -96,6 +104,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.refresh_sidebar()
         self.sync_header()
         self.connect("close-request", self._on_close)
+        self.connect("destroy", lambda _w: self._stop_watching_inbox())
+        self.inbox_changed()
+        order.warm_up()
 
     # ------------------------------------------------------------ building ---
 
@@ -140,8 +151,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.job_box.set_size_request(420, -1)
         self.overlay.add_overlay(self.job_box)
 
-        self.palette = palette.Palette(self._palette_items,
-                                       navigate=self._palette_navigate)
+        self.ask_panel = AskPanel(self)
+        self.overlay.add_overlay(self.ask_panel)
+
+        self.palette = palette.Palette(
+            self._palette_items, navigate=self._palette_navigate,
+            asker=self._palette_ask if order.here() is not None else None)
         self.overlay.add_overlay(self.palette)
 
         self.slab.append(self.toasts)
@@ -529,7 +544,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._monitor = monitor
 
         current = self.current_pane().path if self.current_pane() else ""
-        for heading, group in places.sidebar(self.config, monitor):
+        for heading, group in places.sidebar(self.config, monitor,
+                                             self._inbox_count):
             if heading:
                 label = Gtk.Label(label=heading, xalign=0.0)
                 label.add_css_class("group-heading")
@@ -565,6 +581,14 @@ class MainWindow(Adw.ApplicationWindow):
             text.append(detail)
         text.set_hexpand(True)
         row.append(text)
+
+        if place.badge:
+            badge = Gtk.Label(label=place.badge)
+            badge.add_css_class("pill-badge")
+            badge.add_css_class("accent")
+            badge.set_valign(Gtk.Align.CENTER)
+            badge.set_tooltip_text(f"{place.badge} waiting to be filed")
+            row.append(badge)
 
         if place.can_eject:
             eject = Gtk.Button.new_from_icon_name("media-eject-symbolic")
@@ -622,6 +646,11 @@ class MainWindow(Adw.ApplicationWindow):
         if place.kind == "trash":
             self.show_trash()
             return
+        if place.kind == "inbox" and not os.path.isdir(place.path):
+            # The one place the Order says exists; made the first time it is
+            # asked for rather than reported missing.
+            os.makedirs(place.path, exist_ok=True)
+            self.inbox_changed()
         if place.path:
             pane.navigate(place.path)
             self.refresh_sidebar()
@@ -651,6 +680,8 @@ class MainWindow(Adw.ApplicationWindow):
             menu.append("Eject", "win.place-eject")
         if place.kind == "trash":
             menu.append("Empty the trash…", "win.empty-trash")
+        if place.kind == "inbox":
+            menu.append("Process the inbox…", "win.process-inbox")
         self._menu_place = place
         popover = Gtk.PopoverMenu.new_from_model(menu)
         popover.set_parent(row)
@@ -879,6 +910,7 @@ class MainWindow(Adw.ApplicationWindow):
                     pane.measure_folders()
             self._trash_count = -1
             self._count_trash()
+            self.inbox_changed()
             return False
 
         job.on_progress = progressed
@@ -1041,6 +1073,104 @@ class MainWindow(Adw.ApplicationWindow):
             f"{count} items, {units.human_size(total)}. This cannot be undone.",
             "Empty it", go)
 
+    # ------------------------------------------------------------ the Order ---
+
+    def _dialog_parent(self) -> Gtk.Widget:
+        """What a dialog is presented on: a widget inside the content.
+
+        Not the window itself. A host that embeds this window's content
+        builds the window without ever presenting it, and a dialog presented
+        on a window that is not on screen is a dialog nobody sees.
+        """
+        return self.current_pane() or self.get_content()
+
+    def inbox_changed(self) -> None:
+        """Count the inbox again, and tell whatever is showing it."""
+        count = order.inbox_count()
+        self._watch_inbox()
+        if count != self._inbox_count:
+            self._inbox_count = count
+            self.refresh_sidebar()
+        for view in list(self._inbox_views):
+            view.reload()
+
+    def _watch_inbox(self) -> None:
+        """A monitor on the inbox, so a capture from another app shows here."""
+        if self._inbox_monitor is not None:
+            return
+        where = order.here()
+        if where is None or not where.inbox.is_dir():
+            return
+        try:
+            monitor = Gio.File.new_for_path(str(where.inbox)).monitor_directory(
+                Gio.FileMonitorFlags.WATCH_MOVES, None)
+        except GLib.Error:
+            return
+        monitor.connect("changed", lambda *_a: self._inbox_soon())
+        self._inbox_monitor = monitor
+
+    def _inbox_soon(self) -> None:
+        # A move into the inbox is several events; one recount is enough.
+        if self._inbox_pending:
+            return
+        self._inbox_pending = True
+
+        def later() -> bool:
+            self._inbox_pending = False
+            self.inbox_changed()
+            return False
+
+        GLib.timeout_add(250, later)
+
+    def _stop_watching_inbox(self) -> None:
+        if self._inbox_monitor is not None:
+            self._inbox_monitor.cancel()
+            self._inbox_monitor = None
+
+    def show_inbox(self) -> None:
+        """The inbox as a queue to file, oldest first (inbox.py)."""
+        if order.here() is None:
+            self.toast("There is no second brain on this machine")
+            return
+        view = inboxmod.InboxView(self, self._dialog_parent())
+        self._inbox_views.append(view)
+        view.present()
+
+    def forget_inbox_view(self, view) -> None:
+        if view in self._inbox_views:
+            self._inbox_views.remove(view)
+
+    def ask_claude(self, paths: list[str], folder: str) -> None:
+        """Open the Ask Claude panel on a selection, or on a folder."""
+        if not order.claude_available():
+            self.toast("Claude Code is not installed on this machine")
+            return
+        self.ask_panel.about(paths, folder)
+
+    def search_brain(self) -> None:
+        self.palette.open("?")
+
+    def _palette_ask(self, text: str) -> list:
+        """A `?` query in the palette, answered by the brain. On a worker."""
+        items = []
+        for hit in order.search(text):
+            path = str(hit.path)
+            items.append(palette.Item(
+                hit.title, hit.kind, _kind_icon(hit.kind),
+                action=lambda p=path: self._open_found(p),
+                snippet=hit.snippet or dialogs._short(os.path.dirname(path)),
+                alternate=lambda p=path: self._reveal(p)))
+        return items
+
+    def _open_found(self, path: str) -> None:
+        pane = self.current_pane()
+        if pane is None:
+            return
+        if os.path.exists(path):
+            pane.open_path(path)
+        else:
+            self.toast(f"{os.path.basename(path)} is not there any more")
+
     # -------------------------------------------------------------- toasts ---
 
     def toast(self, message: str, action: str = "", callback=None) -> None:
@@ -1104,6 +1234,18 @@ class MainWindow(Adw.ApplicationWindow):
             lambda: pane and pane.compress())
         add("Rename", "", "document-edit-symbolic", "F2",
             lambda: pane and pane.rename())
+        if order.here() is not None:
+            add("Send to Inbox", "move the selection to the brain's inbox",
+                "document-send-symbolic", "Ctrl+Shift+I",
+                lambda: pane and pane.send_to_inbox())
+            add("Process the inbox", "file what is waiting, oldest first",
+                "mail-unread-symbolic", "", self.show_inbox)
+            add("Search the brain", "or type ? and what to look for",
+                "system-search-symbolic", "", self.search_brain)
+        if order.claude_available():
+            add("Ask Claude about these", "the selection, or this folder",
+                "chat-message-new-symbolic", "",
+                lambda: pane and pane.ask_claude())
 
         for place in _flatten(places.sidebar(self.config)):
             if place.path:
@@ -1270,6 +1412,8 @@ class MainWindow(Adw.ApplicationWindow):
             "extract": lambda p: p.extract(),
             "duplicate": lambda p: p.duplicate(),
             "open-with": lambda p: p.open_with(),
+            "send-to-inbox": lambda p: p.send_to_inbox(),
+            "ask-claude": lambda p: p.ask_claude(),
         }
         for name, call in pane_calls.items():
             action = Gio.SimpleAction.new(name, None)
@@ -1297,6 +1441,8 @@ class MainWindow(Adw.ApplicationWindow):
             "about": self.show_about,
             "trash-folder": self.show_trash,
             "empty-trash": self.empty_trash,
+            "process-inbox": self.show_inbox,
+            "search-brain": self.search_brain,
             "menu": lambda: None,
             "place-open": lambda: self._open_place(self._menu_place),
             "place-tab": lambda: self.new_tab(self._menu_place.path, focus=True),
@@ -1330,6 +1476,9 @@ class MainWindow(Adw.ApplicationWindow):
         if keyval == Gdk.KEY_Escape:
             if self.palette.get_visible():
                 self.palette.close()
+                return True
+            if self.ask_panel.get_visible():
+                self.ask_panel.close()
                 return True
             if pane is not None and pane.filter_bar.get_visible():
                 pane.close_filter()
@@ -1409,6 +1558,8 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_close(self, _window) -> bool:
         for job in list(self.jobs):
             job.cancel()
+        self.ask_panel.stop()
+        self._stop_watching_inbox()
         self._save_session()
         self.geometry.save()
         self.config["show_sidebar"] = self.split.get_show_sidebar()
@@ -1521,6 +1672,17 @@ class _JobStrip(Gtk.Box):
         self.detail.set_label("Done")
 
 
+def _kind_icon(kind: str) -> str:
+    """An icon for a brain hit, by what kind of node it is."""
+    return {
+        "idea": "dialog-information-symbolic",
+        "question": "dialog-question-symbolic",
+        "quote": "insert-text-symbolic",
+        "person": "avatar-default-symbolic",
+        "palace": "view-paged-symbolic",
+    }.get(kind, "text-x-generic-symbolic")
+
+
 def _flatten(groups) -> list:
     out = []
     for _heading, group in groups:
@@ -1578,5 +1740,10 @@ SHORTCUTS = (
         ("Ctrl+A", "Select everything"),
         ("Alt+Return", "Properties"),
         ("Ctrl+Alt+T", "Open a terminal here"),
+    )),
+    ("The second brain", (
+        ("Ctrl+Shift+I", "Send to the inbox"),
+        ("Ctrl+Shift+P, then ?", "Search the brain"),
+        ("1–9 / Return", "In the inbox: file it there / in the first place"),
     )),
 )

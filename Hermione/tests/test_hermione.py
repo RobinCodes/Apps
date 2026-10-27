@@ -23,15 +23,24 @@ turns it into a signal instead, and the suite checks the signal.
 
 *The trash.* GIO refuses to trash anything on a tmpfs, which is what /tmp
 usually is, so the trash tests run in a scratch directory under $HOME and
-report themselves skipped where even that will not do.
+report themselves skipped where even that will not do. On Windows there is no
+pointing the trash anywhere: it is the real Recycle Bin, so every trash test
+takes its own files back out of it, whether it passed or not.
+
+*The second brain and Claude.* `ORDER_HOME` points the Order at a home inside
+the scratch directory, the note index is a file there too, and `claude` is a
+stand-in script that answers what the test told it to — so no test reads
+Robin's brain, writes its index, or spends a real request.
 """
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -63,6 +72,10 @@ os.environ["XDG_DATA_HOME"] = os.path.join(scratch, "data")
 os.environ["XDG_CACHE_HOME"] = os.path.join(scratch, "cache")
 # Nothing in this suite may reach the desktop.
 os.environ["HERMIONE_NO_LAUNCH"] = "1"
+# Nor Robin's second brain: a home of the suite's own, where the tests that
+# need a brain make one (`_order_home`).
+os.environ["ORDER_HOME"] = os.path.join(scratch, "home")
+os.environ.pop("ANAM_HOME", None)
 
 import gi  # noqa: E402
 
@@ -1434,6 +1447,474 @@ def test_the_sidebar_lists_somewhere_to_go(app):
     window.destroy()
 
 
+# ------------------------------------------------------- the second brain ---
+
+FAKE_CLAUDE = """\
+import json, os, sys
+reply = os.environ["HERMIONE_FAKE_CLAUDE"]
+with open(reply + ".argv", "w", encoding="utf-8") as handle:
+    json.dump({"argv": sys.argv[1:], "cwd": os.getcwd()}, handle)
+with open(reply, encoding="utf-8") as handle:
+    answer = handle.read()
+print(json.dumps({"type": "system", "subtype": "init", "session_id": "s-hermione"}))
+print(json.dumps({"type": "assistant",
+                  "message": {"content": [{"type": "text", "text": answer}]}}))
+print(json.dumps({"type": "result", "result": answer, "is_error": False,
+                  "session_id": "s-hermione"}))
+"""
+
+
+def _order_home():
+    """The suite's own Order: a brain with an inbox, Studies, Documents, projects.
+
+    The shared note index is pointed at a file in the scratch directory as
+    well. On Linux XDG_CACHE_HOME would have moved it anyway; on Windows it
+    lives in %LOCALAPPDATA%, which nothing the suite sets will move.
+    """
+    from hermione import brain, order
+
+    where = brain.places()
+    if not where.inbox.is_dir():
+        for folder in (where.inbox, where.vault / "idea", where.journal,
+                       where.studies / "Biology", where.studies / "Mathematics",
+                       where.projects / "Documents", where.projects / "Programming",
+                       where.projects / "Overleaf"):
+            folder.mkdir(parents=True, exist_ok=True)
+        brain.Notes._shared = brain.Notes(where, db_path=Path(scratch) / "notes.db")
+        order._refreshed = 0.0
+    return where
+
+
+def _empty_inbox(where):
+    for item in where.inbox.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+
+
+def _fake_claude(answer: str) -> str:
+    """Make `claude` a stand-in that answers `answer`. Returns where it says
+    what it was asked: its arguments and its working folder, as JSON."""
+    from hermione import order
+
+    script = os.path.join(scratch, "fake_claude.py")
+    with open(script, "w", encoding="utf-8") as handle:
+        handle.write(FAKE_CLAUDE)
+    reply = os.path.join(scratch, "fake_claude_reply.txt")
+    with open(reply, "w", encoding="utf-8") as handle:
+        handle.write(answer)
+    os.environ["HERMIONE_FAKE_CLAUDE"] = reply
+    order.CLAUDE_COMMAND = [sys.executable, script]
+    return reply + ".argv"
+
+
+def _labels(widget) -> list:
+    """Every label's text under a widget, depth first."""
+    from gi.repository import Gtk
+
+    found = [widget.get_label()] if isinstance(widget, Gtk.Label) else []
+    child = widget.get_first_child()
+    while child is not None:
+        found.extend(_labels(child))
+        child = child.get_next_sibling()
+    return found
+
+
+def _menu_labels(model) -> list:
+    from gi.repository import Gio
+
+    found = []
+    for index in range(model.get_n_items()):
+        label = model.get_item_attribute_value(index, "label", None)
+        if label is not None:
+            found.append(label.unpack())
+        for link in (Gio.MENU_LINK_SECTION, Gio.MENU_LINK_SUBMENU):
+            inner = model.get_item_link(index, link)
+            if inner is not None:
+                found.extend(_menu_labels(inner))
+    return found
+
+
+def test_sending_to_the_inbox_is_a_move_that_ctrl_z_takes_back():
+    from hermione import order
+
+    where = _order_home()
+    _empty_inbox(where)
+    here = tree("thought.txt", "other/thought.txt")
+    first = os.path.join(here, "thought.txt")
+    second = os.path.join(here, "other", "thought.txt")
+    sent = order.inbox_job([first], where).run()
+    assert sent.ok and (where.inbox / "thought.txt").exists(), sent.errors
+    # A name already taken in the inbox is kept beside it, never asked about:
+    # capturing is one action.
+    again = order.inbox_job([second], where).run()
+    assert again.ok and not again.skipped, again.errors
+    assert len([n for n in os.listdir(where.inbox) if n.startswith("thought")]) == 2
+    assert order.inbox_count(where) == 2
+    for result, source in ((again, second), (sent, first)):
+        ops.Change(ops.MOVE, [source], str(where.inbox), result).undo().run()
+    assert os.path.exists(first) and os.path.exists(second)
+    assert order.inbox_count(where) == 0
+
+
+def test_the_inbox_offers_the_places_system_md_names():
+    from hermione import order
+
+    where = _order_home()
+    (where.studies / ".hidden").mkdir(exist_ok=True)
+    offered = order.destinations(where)
+    labels = [place.label for place in offered]
+    assert labels[:2] == ["Studies › Biology", "Studies › Mathematics"], labels
+    assert "Documents" in labels and "Projects › Programming" in labels, labels
+    assert not any("hidden" in label for label in labels)
+    assert "Projects › Studies" not in labels and "Projects › Documents" not in labels
+
+    folder = tree()
+
+    def first(name, text=""):
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return order.suggest(path, offered)[0].label
+
+    assert first("Mathematics homework.md") == "Studies › Mathematics"
+    # A dated note that talks about a subject is a class note of it.
+    assert first("2026-10-27.md", "# Gyökér\nBiology: the root.\n") == "Studies › Biology"
+    assert first("contract.pdf") == "Documents"
+    assert first("paper.tex") == "Projects › Overleaf"
+    assert first("script.py") == "Projects › Programming"
+    # Nothing to go on keeps the list's own order, so the numbers stay put.
+    assert first("whatever.bin") == labels[0]
+
+
+def test_claude_s_placements_are_advice_until_accepted():
+    from hermione import order
+
+    where = _order_home()
+    offered = order.destinations(where)
+    items = [str(where.inbox / name)
+             for name in ("Fémek.md", "scan.pdf", "idea.md", "odd.txt")]
+    prompt = order.placement_prompt(items, offered, where)
+    assert "SYSTEM.md" in prompt and "Projects/Studies/Biology" in prompt
+    assert "Fémek.md" in prompt
+
+    reply = ('Here is where they go:\n```json\n['
+             '{"item": "Fémek.md", "place": "Projects/Studies/Mathematics", '
+             '"why": "a maths note"},'
+             '{"item": "scan.pdf", "place": "~/Projects/Documents/", "why": "a letter"},'
+             '{"item": "idea.md", "place": "inbox", "why": "make it a node"},'
+             '{"item": "odd.txt", "place": "Projects/Studies/Chemistry", '
+             '"why": "chemistry"},'
+             '{"item": "not-there.md", "place": "Documents"}]\n```')
+    said = order.parse_placements(reply, items, offered, where)
+    assert said[items[0]][0].label == "Studies › Mathematics"
+    assert said[items[1]][0].label == "Documents"
+    assert said[items[2]] == (None, "make it a node")
+    # A folder that does not exist is advice, never a move.
+    assert said[items[3]][0] is None and "Chemistry" in said[items[3]][1]
+    assert len(said) == 4, "an item that is not in the inbox was answered for"
+
+
+def test_markdown_opens_in_notedown_only_when_nothing_claims_it():
+    from hermione import order
+
+    if not order.notedown_entry():
+        raise Skip("Notedown is not beside Hermione in this checkout")
+    assert order.wants_notedown("/x/notes.md", default_for=lambda _p: None)
+    assert not order.wants_notedown("/x/notes.md", default_for=lambda _p: object()), \
+        "an editor somebody chose for Markdown was overruled"
+    assert not order.wants_notedown("/x/notes.txt", default_for=lambda _p: None)
+    argv = order.notedown_argv("/x/notes.md")
+    assert argv[1].endswith("notedown.py") and argv[2] == "/x/notes.md", argv
+
+
+def test_a_note_is_known_by_its_title_and_its_links():
+    from hermione import order
+
+    where = _order_home()
+    note = where.vault / "idea" / "fermi--1a2b3c4d.md"
+    note.write_text("---\ntitle: Fermi estimates\nid: 1a2b3c4d-0000\nkind: idea\n"
+                    "---\n\nGuess the order of magnitude.\n", encoding="utf-8")
+    linking = where.studies / "Mathematics" / "2026-10-20.md"
+    linking.write_text("# Óra\n\nToday: [[Fermi estimates]] in class.\n",
+                       encoding="utf-8")
+    facts = order.note_facts(str(note))
+    assert facts == order.NoteFacts("Fermi estimates", "1a2b3c4d-0000", "idea"), facts
+    assert order.note_facts(str(linking)).title == "Óra"
+    order._refreshed = 0.0
+    links = order.backlinks(str(note))
+    assert [os.path.basename(str(link.path)) for link in links] == ["2026-10-20.md"]
+    assert "[[Fermi estimates]]" in links[0].context
+    # Markdown outside the Order's note folders is just a file.
+    stray = os.path.join(tree("stray.md"), "stray.md")
+    assert order.note_facts(stray) is None
+
+
+def test_sending_to_the_inbox_from_the_window(app):
+    from hermione.window import MainWindow
+
+    where = _order_home()
+    _empty_inbox(where)
+    folder = tree("capture-me.txt")
+    path = os.path.join(folder, "capture-me.txt")
+    window = MainWindow(app, folder)
+    pane = window.current_pane()
+    _pump(0.6)
+    labels = _labels(window.places_box)
+    assert "Inbox" in labels and "Second Brain" in labels, labels
+
+    pane.model.select_paths([path])
+    pane.send_to_inbox()
+    landed = where.inbox / "capture-me.txt"
+    assert _pump_until(landed.exists), "it never reached the inbox"
+    assert _pump_until(lambda: window._inbox_count == 1)
+    assert "1" in _labels(window.places_box), "the Inbox row has no count"
+
+    window.undo()
+    assert _pump_until(lambda: os.path.exists(path)), "Ctrl+Z did not put it back"
+    assert not landed.exists()
+    assert _pump_until(lambda: window._inbox_count == 0)
+    window.destroy()
+
+
+def test_processing_the_inbox_files_trashes_and_takes_back(app):
+    from gi.repository import Gdk
+
+    from hermione import inbox as inboxmod
+    from hermione.window import MainWindow
+
+    where = _order_home()
+    _empty_inbox(where)
+    old = where.inbox / "2026-10-20 biology notes.md"
+    new = where.inbox / "receipt.pdf"
+    old.write_text("# Gyökér\n", encoding="utf-8")
+    new.write_bytes(b"%PDF-1.4\n")
+    three_days_ago = time.time() - 3 * 86400
+    os.utime(old, (three_days_ago, three_days_ago))
+
+    window = MainWindow(app, str(where.inbox))
+    _pump(0.4)
+    view = inboxmod.InboxView(window, window._dialog_parent())
+    window._inbox_views.append(view)
+    assert [os.path.basename(p) for p in view.items] == [old.name, new.name], \
+        "the inbox is not oldest first"
+    assert view.selected() == os.path.normpath(str(old))
+    assert view.offered[0].label == "Studies › Biology", view.offered[0]
+
+    plain = Gdk.ModifierType(0)
+    view._on_key(None, Gdk.KEY_1, 0, plain)
+    filed = where.studies / "Biology" / old.name
+    assert _pump_until(filed.exists), "1 did not file it"
+    assert _pump_until(lambda: window.undo_stack.can_undo), "the move was not recorded"
+    assert _pump_until(lambda: view.selected() == os.path.normpath(str(new))), \
+        "the queue did not move on"
+    assert view.offered[0].label == "Documents"
+
+    # Ctrl+Z in the view is the window's own undo.
+    view._on_key(None, Gdk.KEY_z, 0, Gdk.ModifierType.CONTROL_MASK)
+    assert _pump_until(old.exists), "Ctrl+Z did not put it back"
+    assert not filed.exists()
+
+    if in_home:
+        view.reload(keep=1)
+        assert view.selected() == os.path.normpath(str(new))
+        try:
+            view._on_key(None, Gdk.KEY_Delete, 0, plain)
+            assert _pump_until(lambda: not new.exists()), "Delete did not trash it"
+            assert _pump_until(lambda: window.undo_stack.can_undo), "not recorded"
+            window.undo()
+            assert _pump_until(new.exists), "the trash did not give it back"
+        finally:
+            _leave_no_trace(str(where.inbox))
+    window.destroy()
+
+
+def test_claude_suggests_a_place_and_nothing_moves_until_it_is_taken(app):
+    from gi.repository import Gdk
+
+    from hermione import inbox as inboxmod
+    from hermione.window import MainWindow
+
+    where = _order_home()
+    _empty_inbox(where)
+    item = where.inbox / "Fémek.md"
+    item.write_text("Vas, réz, alumínium.\n", encoding="utf-8")
+    asked = _fake_claude(json.dumps([{"item": "Fémek.md",
+                                      "place": "Projects/Studies/Mathematics",
+                                      "why": "számolás"}]))
+    window = MainWindow(app, str(where.inbox))
+    _pump(0.3)
+    view = inboxmod.InboxView(window, window._dialog_parent())
+    assert view.claude_button.get_visible()
+    assert view.offered[0].label != "Studies › Mathematics", "the test proves nothing"
+
+    view.ask_claude()
+    assert _pump_until(lambda: view._asking is None and view.claude_says), \
+        f"Claude never answered: {view.status.get_label()}"
+    assert item.exists(), "something moved before it was accepted"
+    assert view.offered[0].label == "Studies › Mathematics"
+    with open(asked, encoding="utf-8") as handle:
+        seen = json.load(handle)
+    assert "SYSTEM.md" in " ".join(seen["argv"]) and "Fémek.md" in seen["argv"][1]
+
+    view._on_key(None, Gdk.KEY_Return, 0, Gdk.ModifierType(0))
+    filed = where.studies / "Mathematics" / "Fémek.md"
+    assert _pump_until(filed.exists), "Return did not take the suggestion"
+    assert _pump_until(lambda: window.undo_stack.can_undo), "the move was not recorded"
+    window.undo()
+    assert _pump_until(item.exists), "Ctrl+Z did not put it back"
+    window.destroy()
+
+
+def test_ask_claude_streams_into_the_side_panel(app):
+    from hermione.window import MainWindow
+
+    folder = tree("draft-one.txt", "draft-two.txt")
+    asked = _fake_claude("The second draft is newer in substance.")
+    window = MainWindow(app, folder)
+    pane = window.current_pane()
+    _pump(0.6)
+    chosen = [os.path.join(folder, "draft-one.txt"), os.path.join(folder, "draft-two.txt")]
+    pane.model.select_paths(chosen)
+    pane.ask_claude()
+    panel = window.ask_panel
+    assert panel.get_visible() and "2 items" in panel.subject.get_label()
+
+    panel.entry.set_text("Which is newer?")
+    panel.ask()
+    assert _pump_until(lambda: panel.request is None and panel.answer.get_label()), \
+        f"no answer: {panel.state.get_label()}"
+    assert "second draft" in panel.answer.get_label()
+    assert panel.desk_button.get_sensitive(), "the session to carry on was lost"
+    with open(asked, encoding="utf-8") as handle:
+        seen = json.load(handle)
+    assert seen["argv"][1].startswith("Which is newer?")
+    assert "draft-one.txt" in seen["argv"][1] and "draft-two.txt" in seen["argv"][1]
+    assert (os.path.normcase(os.path.realpath(seen["cwd"]))
+            == os.path.normcase(os.path.realpath(folder))), "not run in the folder"
+    window._on_key(None, Gdk_KEY("Escape"), 0, 0)
+    assert not panel.get_visible(), "Escape did not close the panel"
+    window.destroy()
+
+
+def Gdk_KEY(name: str) -> int:
+    from gi.repository import Gdk
+
+    return getattr(Gdk, f"KEY_{name}")
+
+
+def test_properties_say_what_the_brain_calls_a_note(app):
+    from hermione import order
+    from hermione import properties as propmod
+    from hermione.window import MainWindow
+
+    where = _order_home()
+    note = where.vault / "idea" / "palace--9f8e7d6c.md"
+    note.write_text("---\ntitle: The way to school\nkind: palace\nid: 9f8e7d6c\n"
+                    "---\n\n1. Front door :: Wilson\n", encoding="utf-8")
+    day = where.journal / "2026" / "2026-10-27.md"
+    day.parent.mkdir(parents=True, exist_ok=True)
+    day.write_text("# 2026-10-27\n\nWalked [[The way to school]] twice.\n",
+                   encoding="utf-8")
+    order._refreshed = 0.0
+
+    window = MainWindow(app, str(note.parent))
+    pane = window.current_pane()
+    _pump(0.3)
+    opened = []
+    props = propmod.Properties(pane, [str(note)], app.config, on_open=opened.append)
+    labels = _labels(props.dialog.get_child())
+    for wanted in ("In the brain", "The way to school", "palace", "9f8e7d6c"):
+        assert wanted in labels, (wanted, labels)
+    assert _pump_until(lambda: props.backlink_list.get_first_child() is not None), \
+        "the backlinks never arrived"
+    props._open_backlink(None, props.backlink_list.get_first_child())
+    assert [os.path.basename(p) for p in opened] == ["2026-10-27.md"], opened
+
+    # A file that is not a note gets no such group.
+    plain = propmod.Properties(pane, [os.path.join(tree("x.txt"), "x.txt")], app.config)
+    assert "In the brain" not in _labels(plain.dialog.get_child())
+    _pump(0.2)
+    window.destroy()
+
+
+def test_a_question_mark_asks_the_brain(app):
+    from hermione import order
+    from hermione.window import MainWindow
+
+    where = _order_home()
+    note = where.vault / "idea" / "drake--5e6f7a8b.md"
+    note.write_text("---\ntitle: Drake equation\nkind: idea\n---\n\nN = R* fp ne\n",
+                    encoding="utf-8")
+    order._refreshed = 0.0
+    order.refresh_notes()
+    window = MainWindow(app, scratch)
+    _pump(0.3)
+    labels = [item.label for item in window._palette_items()]
+    for wanted in ("Send to Inbox", "Process the inbox", "Search the brain"):
+        assert wanted in labels, wanted
+
+    window.palette.open("?drake")
+    assert _pump_until(lambda: any(item.label == "Drake equation"
+                                   for item in window.palette.shown)), \
+        [item.label for item in window.palette.shown]
+    hit = next(item for item in window.palette.shown if item.label == "Drake equation")
+    assert hit.detail == "idea" and hit.snippet, (hit.detail, hit.snippet)
+    # Shift+Return: shown in its folder rather than opened.
+    hit.alternate()
+    assert _pump_until(lambda: window.current_pane().path
+                       == os.path.normpath(str(note.parent)))
+    window.palette.close()
+    window.destroy()
+
+
+def test_markdown_goes_to_notedown_when_nothing_else_claims_it(app):
+    from hermione import order
+    from hermione.window import MainWindow
+
+    if not order.notedown_entry():
+        raise Skip("Notedown is not beside Hermione in this checkout")
+    _order_home()
+    folder = tree("notes.md", "plain.txt")
+    window = MainWindow(app, folder)
+    pane = window.current_pane()
+    _pump(0.6)
+    handed, activated = [], []
+    pane.connect("handed-on", lambda _p, which, path: handed.append((which, path)))
+    pane.connect("activated", lambda _p, path: activated.append(path))
+    model = pane.model.selection
+    found = {model.get_item(i).name: model.get_item(i) for i in range(model.get_n_items())}
+    markdown = os.path.join(folder, "notes.md")
+
+    real = order.system_default_for
+    try:
+        order.system_default_for = lambda _path: None
+        pane._on_activated(None, found["notes.md"])
+        pane._on_activated(None, found["plain.txt"])
+        order.system_default_for = lambda _path: object()
+        pane._on_activated(None, found["notes.md"])
+    finally:
+        order.system_default_for = real
+    assert handed == [("notedown", markdown)], handed
+    assert activated == [os.path.join(folder, "plain.txt"), markdown], activated
+
+    pane.model.select_paths([markdown])
+    offered = _menu_labels(pane._context_menu(found["notes.md"]))
+    for wanted in ("Open in Notedown", "Send to Inbox"):
+        assert wanted in offered, (wanted, offered)
+    window.destroy()
+
+
+def _pump_until(condition, seconds: float = 20.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        _pump(0.05)
+        if condition():
+            return True
+    return False
+
+
 def _pump(seconds: float):
     """Let the main loop run — the listing arrives on an idle callback."""
     from gi.repository import GLib
@@ -1600,6 +2081,18 @@ def main():
     check("the portal serves before the toolkit is loaded",
           test_the_portal_serves_before_the_toolkit_is_loaded)
 
+    print("the second brain")
+    check("sending to the inbox is a move that Ctrl+Z takes back",
+          test_sending_to_the_inbox_is_a_move_that_ctrl_z_takes_back)
+    check("the inbox offers the places SYSTEM.md names",
+          test_the_inbox_offers_the_places_system_md_names)
+    check("Claude's placements are advice until accepted",
+          test_claude_s_placements_are_advice_until_accepted)
+    check("Markdown opens in Notedown only when nothing claims it",
+          test_markdown_opens_in_notedown_only_when_nothing_claims_it)
+    check("a note is known by its title and its links",
+          test_a_note_is_known_by_its_title_and_its_links)
+
     print("the window")
     from gi.repository import Adw, Gio, GLib
 
@@ -1636,6 +2129,19 @@ def main():
             ("every dialog builds", test_every_dialog_builds),
             ("a URI on the command line opens the right folder",
              test_a_uri_on_the_command_line_opens_the_right_folder),
+            ("sending to the inbox from the window, and back",
+             test_sending_to_the_inbox_from_the_window),
+            ("processing the inbox files, trashes and takes back",
+             test_processing_the_inbox_files_trashes_and_takes_back),
+            ("Claude suggests a place; nothing moves until it is taken",
+             test_claude_suggests_a_place_and_nothing_moves_until_it_is_taken),
+            ("Ask Claude streams into the side panel",
+             test_ask_claude_streams_into_the_side_panel),
+            ("Properties say what the brain calls a note",
+             test_properties_say_what_the_brain_calls_a_note),
+            ("a question mark asks the brain", test_a_question_mark_asks_the_brain),
+            ("Markdown goes to Notedown when nothing else claims it",
+             test_markdown_goes_to_notedown_when_nothing_else_claims_it),
         ):
             check(name, fn, app)
         app.release()
@@ -1669,9 +2175,49 @@ def main():
     return 0
 
 
+def _remove_scratch():
+    """Take the scratch directory away, which Windows makes work for.
+
+    Git writes its objects read-only, and Windows will not delete a
+    read-only file or one that is still open — and the note index is an
+    open SQLite file until its connection is closed. Each is put right and
+    the removal tried again, rather than leaving a hidden folder in $HOME
+    after every run.
+    """
+    import gc
+    import stat as statmod
+
+    try:
+        from hermione import brain
+
+        shared = brain.Notes._shared
+        con = getattr(getattr(shared, "_local", None), "con", None)
+        if con is not None:
+            con.close()
+        brain.Notes._shared = None
+    except Exception:                         # noqa: BLE001 - best effort
+        pass
+    gc.collect()
+
+    def again(function, path, _info):
+        try:
+            os.chmod(path, statmod.S_IWRITE | statmod.S_IREAD)
+            function(path)
+        except OSError:
+            pass
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(scratch, onexc=again)
+    else:
+        shutil.rmtree(scratch, onerror=again)
+
+
 if __name__ == "__main__":
+    code = 1
     try:
         code = main()
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        _remove_scratch()
+        if os.path.exists(scratch):
+            print(f"note: {scratch} could not be removed entirely")
     sys.exit(code)

@@ -15,6 +15,11 @@ checkboxes and not as an octal field. Nine checkboxes is an invitation to
 make a mistake, and the octal is shown beside them for anybody who thinks in
 it. Applying a mode to a whole tree goes through `ops.set_mode`, which knows
 that a directory needs `x` wherever it has `r`.
+
+*A note in the second brain says so.* A Markdown file under one of the
+Order's note folders gets an "In the brain" group: the title the brain knows
+it by, its node id, and every note that links to it — found on a thread,
+because the link index is a disk walk the first time, and each one opens.
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from . import dialogs, filetypes, ops, search, units, vcs  # noqa: E402
+from . import dialogs, filetypes, ops, order, search, units, vcs  # noqa: E402
 
 # What each dropdown offers, as (label, the three bits it sets).
 ACCESS = (
@@ -43,11 +48,13 @@ class Properties:
     """One dialog, for one selection."""
 
     def __init__(self, parent: Gtk.Widget, paths: list[str], config,
-                 thumbnailer=None):
+                 thumbnailer=None, on_open=None):
         self.parent = parent
         self.paths = [p for p in paths if p]
         self.config = config
         self.thumbs = thumbnailer
+        self.on_open = on_open
+        self.backlink_list: Gtk.ListBox | None = None
         self.stop = threading.Event()
         self.mode_bits = 0
         self.dialog = dialogs._dialog("Properties", 480)
@@ -123,6 +130,10 @@ class Properties:
         if free:
             fields.add("Free on this disk", free)
 
+        facts = order.note_facts(path) if not is_dir else None
+        if facts is not None:
+            body.append(self._in_the_brain(path, facts))
+
         if not os.name == "nt":
             body.append(self._permissions(path, info, is_dir))
 
@@ -162,6 +173,89 @@ class Properties:
             icon.add_css_class(f"cat-{filetypes.category(path, is_dir)}")
             frame.append(icon)
         return frame
+
+    # -- the second brain -------------------------------------------------
+
+    def _in_the_brain(self, path: str, facts) -> Gtk.Widget:
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        panel.add_css_class("panel")
+        for side in ("start", "end", "top", "bottom"):
+            getattr(panel, f"set_margin_{side}")(12)
+        heading = Gtk.Label(label="In the brain", xalign=0.0)
+        heading.add_css_class("field-key")
+        panel.append(heading)
+
+        fields = _FieldList()
+        fields.widget.remove_css_class("panel")
+        for side in ("start", "end", "top", "bottom"):
+            getattr(fields.widget, f"set_margin_{side}")(0)
+        fields.add("Title", facts.title)
+        if facts.kind:
+            fields.add("Kind", facts.kind)
+        if facts.node_id:
+            fields.add("Node", facts.node_id)
+        panel.append(fields.widget)
+
+        links = Gtk.Label(label="Linked from", xalign=0.0)
+        links.add_css_class("field-key")
+        panel.append(links)
+        self.backlink_state = Gtk.Label(label="looking…", xalign=0.0)
+        self.backlink_state.add_css_class("field-value")
+        panel.append(self.backlink_state)
+        self.backlink_list = Gtk.ListBox()
+        self.backlink_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.backlink_list.add_css_class("backlinks")
+        self.backlink_list.connect("row-activated", self._open_backlink)
+        self.backlink_list.set_visible(False)
+        panel.append(self.backlink_list)
+        self._find_backlinks(path)
+        return panel
+
+    def _find_backlinks(self, path: str) -> None:
+        def worker():
+            found = order.backlinks(path)
+            if not self.stop.is_set():
+                GLib.idle_add(deliver, found)
+
+        def deliver(found) -> bool:
+            self.show_backlinks(found)
+            return False
+
+        threading.Thread(target=worker, daemon=True,
+                         name="hermione-backlinks").start()
+
+    def show_backlinks(self, found) -> None:
+        if self.backlink_list is None:
+            return
+        while (child := self.backlink_list.get_first_child()) is not None:
+            self.backlink_list.remove(child)
+        if not found:
+            self.backlink_state.set_label("Nothing links here yet")
+            return
+        self.backlink_state.set_visible(False)
+        self.backlink_list.set_visible(True)
+        for link in found[:60]:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            for side in ("top", "bottom"):
+                getattr(box, f"set_margin_{side}")(3)
+            title = Gtk.Label(label=f"{link.title}  ·  line {link.line}", xalign=0.0)
+            title.add_css_class("field-value")
+            title.set_ellipsize(3)
+            context = Gtk.Label(label=link.context, xalign=0.0)
+            context.add_css_class("where")
+            context.set_ellipsize(3)
+            box.append(title)
+            box.append(context)
+            row = Gtk.ListBoxRow()
+            row.set_child(box)
+            row.set_activatable(self.on_open is not None)
+            row.set_tooltip_text(str(link.path))
+            row._path = str(link.path)
+            self.backlink_list.append(row)
+
+    def _open_backlink(self, _list, row) -> None:
+        if self.on_open is not None and getattr(row, "_path", ""):
+            self.on_open(row._path)
 
     # -- permissions ------------------------------------------------------
 
@@ -446,8 +540,9 @@ def _free_space(path: str) -> str:
             f"{units.human_size(usage.total)}")
 
 
-def show(parent: Gtk.Widget, paths: list[str], config, thumbnailer=None) -> None:
-    Properties(parent, paths, config, thumbnailer).present()
+def show(parent: Gtk.Widget, paths: list[str], config, thumbnailer=None,
+         on_open=None) -> None:
+    Properties(parent, paths, config, thumbnailer, on_open).present()
 
 
 # The "open with" default, applied. Here rather than in dialogs.py because

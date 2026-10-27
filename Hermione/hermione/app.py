@@ -76,6 +76,10 @@ ACCELERATORS = {
     "win.terminal": ["<Control><Alt>t"],
     "win.open-with": ["<Control>Return"],
 
+    # The same key as Notedown's capture: one gesture for "into the inbox",
+    # whichever app has the thing in it.
+    "win.send-to-inbox": ["<Control><Shift>i"],
+
     "win.settings": ["<Control>comma"],
     "win.shortcuts": ["<Control>question", "<Control>slash"],
 }

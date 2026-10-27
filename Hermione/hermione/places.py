@@ -17,6 +17,11 @@ program reads.
 without a refresh, and `mount`, `unmount` and `eject` are its business too.
 
 *The trash* is one row that has to know how full it is.
+
+And where Robin's Order is on the machine — a `~/SecondBrain` — two more: the
+inbox, with how much is waiting in it, and the brain itself. They are only
+there when the brain is, so on anybody else's machine the sidebar is what it
+always was.
 """
 
 from __future__ import annotations
@@ -54,10 +59,12 @@ class Place:
         self.path = path
         self.icon = icon
         self.kind = kind          # home | user | bookmark | volume | trash | network | root
+        #                           | inbox | brain
         self.mount = mount
         self.volume = volume
         self.drive = drive
         self.detail = detail      # the second line: free space, a device name
+        self.badge = ""           # a count at the end of the row: the inbox's
         self.uri = uri or (GLib.filename_to_uri(path, None) if path else "")
 
     @property
@@ -281,6 +288,25 @@ def roots() -> list[Place]:
                   detail=free_space_text("/"))]
 
 
+def brain_places(inbox_count: int = -1) -> list[Place]:
+    """The Order's two rows: the inbox, with what is waiting, and the brain.
+
+    Nothing where there is no brain. The count is handed in rather than
+    read here, because this runs on every navigation and the window keeps
+    the count current with a monitor on the folder.
+    """
+    from . import brain
+
+    where = brain.places()
+    if not where.exists():
+        return []
+    inbox = Place("Inbox", str(where.inbox), "mail-unread-symbolic", "inbox")
+    if inbox_count > 0:
+        inbox.badge = str(inbox_count)
+    return [inbox, Place("Second Brain", str(where.brain),
+                         "accessories-dictionary-symbolic", "brain")]
+
+
 def trash_place(count: int = -1) -> Place:
     # count is -1 while nobody has looked yet, which is not the same as full.
     icon = "user-trash-full-symbolic" if count > 0 else "user-trash-symbolic"
@@ -290,13 +316,17 @@ def trash_place(count: int = -1) -> Place:
     return Place("Trash", "", icon, "trash", detail=detail)
 
 
-def sidebar(config, monitor: Gio.VolumeMonitor | None = None) -> list[tuple[str, list[Place]]]:
+def sidebar(config, monitor: Gio.VolumeMonitor | None = None,
+            inbox_count: int = -1) -> list[tuple[str, list[Place]]]:
     """The whole sidebar, as (heading, places). Headings may be empty.
 
     Assembled in one place so that the order is one decision rather than a
     dozen `append` calls scattered through the window.
     """
     groups: list[tuple[str, list[Place]]] = [("", user_dirs())]
+    order = brain_places(inbox_count)
+    if order:
+        groups.append(("The Order", order))
     marks = bookmarks(config)
     if marks:
         groups.append(("Bookmarks", marks))

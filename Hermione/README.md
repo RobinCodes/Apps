@@ -26,13 +26,15 @@ The long version is the rest of this file.
 | **Two views** | A detail list with sortable columns — size, type, date, permissions, owner — and an icon grid with thumbnails. They share one selection, so switching between them keeps your place. Each folder remembers which one you last used for it. |
 | **Two panes** | `F3` splits the window. Drag between them, or `Open in the other pane` from the right-click menu. `F6` moves between them. |
 | **Tabs** | `Ctrl+T`, middle-click a folder, or drag a tab out to make it a window. Reopened on the next launch. |
-| **The palette** | `Ctrl+Shift+P` searches the commands, your places, your recent folders and the folder on screen, all at once, by initials: `dnl` finds Downloads, `nwt` finds New tab. Type a path instead and it completes folders. |
+| **The palette** | `Ctrl+Shift+P` searches the commands, your places, your recent folders and the folder on screen, all at once, by initials: `dnl` finds Downloads, `nwt` finds New tab. Type a path instead and it completes folders; type `?` and it asks the second brain. |
 | **Search** | `Ctrl+F` filters the names in front of you. Turn on **Everywhere below** and it walks the whole tree; add **In contents** and it reads the files too, with the matching line shown. Results appear as they are found and replace the listing, so you can act on them like any other selection. |
 | **Operations** | Copy, cut, paste, duplicate, rename, link, compress, extract, trash, delete — with a progress strip that gives files, bytes, rate and time left, and a stop button that works. |
 | **Batch rename** | Find and replace (plain or regular expression), prefix, suffix, numbering, case — with every new name shown before anything is renamed, and clashes refused. |
-| **Properties** | Everything about a file, a recursive size counted on a thread, and permissions as three dropdowns and a switch rather than nine checkboxes. Checksums on request. |
+| **Properties** | Everything about a file, a recursive size counted on a thread, and permissions as three dropdowns and a switch rather than nine checkboxes. Checksums on request. A note in the second brain also says what the brain calls it and what links to it. |
 | **The three space tools** | Find duplicates (grouped, by contents, never by name), the biggest files, and empty folders. Each is a list you can act on from, and none of them pre-selects anything for deletion. |
-| **The trash** | A real one, by the freedesktop spec: what is in it, where each thing came from, and putting it back. Restoring never overwrites whatever took the old name. |
+| **The trash** | A real one, by the freedesktop spec — or on Windows the Recycle Bin, read directly: what is in it, where each thing came from, and putting it back. Restoring never overwrites whatever took the old name. |
+| **The second brain** | Send to Inbox, the inbox as a queue to file oldest first, the brain in the palette and in Properties, and Notedown for Markdown — see [Part of the Order](#part-of-the-order). |
+| **Ask Claude** | About the selection or the folder, in a panel the answer streams into. Read-only; it carries on in Claude Desk when an answer turns into work. |
 | **Preview** | `F7` or `Space`. Images, the first page of a PDF, the head of a text file, the contents of an archive, and what `ffprobe` knows about a video or a sound file. |
 | **Git** | Inside a repository, a coloured dot on anything git has an opinion about, and the branch in the status bar. One `git status` per folder, not one per file. |
 | **Places** | Your XDG folders, your bookmarks — seeded once from the ones GTK's own file chooser uses — and every disc and stick, mounted or not, live. Drop files on any of them. |
@@ -181,6 +183,73 @@ backend takes its bus name before it loads libadwaita, because libadwaita
 reads the colour scheme from the settings portal and the settings portal is
 the daemon waiting for the backend to answer.
 
+## Part of the Order
+
+Robin's files have a layout — `SYSTEM.md` in the second brain, where
+everything has one place and capture is one action from anywhere — and a
+file manager is where most of the filing actually happens. So where there is a `~/SecondBrain`, Hermione is the file side of
+it. Where there is not, none of what follows appears, and it is the file
+manager it always was.
+
+**Send to Inbox.** Right-click, `Ctrl+Shift+I`, or the palette: the
+selection moves into `~/SecondBrain/inbox` and a toast says where it went. It
+is an ordinary move — the same job as a drag, recorded the same way — so
+`Ctrl+Z` puts every item back in the folder it came from. A name the inbox
+already has is kept beside rather than asked about, because capture is meant
+to be one action and keeping both destroys nothing.
+
+**The inbox and the brain in the sidebar.** Two rows under *The Order*: the
+inbox, with a count of what is waiting, and the brain itself. The count is
+live — a monitor on the folder — so something Notedown or The Eye drops in
+shows up without a refresh.
+
+**Processing the inbox.** Right-click the inbox, or *Process the inbox* in
+the palette, and the inbox becomes a queue: oldest first, one thing selected,
+and under it the places SYSTEM.md says things go — every Studies subject,
+Documents, every project area — with the likeliest first and a number on
+each. `1`–`9` files it there, `Return` takes the first, `Space` opens it to
+look, `N` hands Markdown to Notedown, `Delete` trashes it, and `Ctrl+Z` puts
+the last one back. The guesses are cheap and usually right: a subject named
+in the file or its first lines, a dated note leaning towards Studies, a PDF
+towards Documents, LaTeX towards Overleaf, code towards Programming. Ties
+keep the list's own order, so the numbers stay where your fingers expect
+them.
+
+*Suggest places with Claude* asks Claude Code instead, with SYSTEM.md as its
+briefing and only the places that exist as its choices. Its answer reorders
+the list and marks its pick, and that is all it does: nothing moves until a
+key is pressed for it, and a folder it invents is shown as advice, never
+made.
+
+**`?` in the palette.** `?fémek` searches the brain — Anamnesis's index where
+there is one, which ranks thought above traces, and the note titles where
+there is not — and lists each hit with its kind and the words that matched.
+`Return` opens it, `Shift+Return` shows it in its folder. The search runs on
+a thread: an index is a disk, and a palette is a keystroke.
+
+**In the brain, in Properties.** A Markdown file in one of the Order's note
+folders gets a group of its own: its title as the brain knows it, its node
+id, and every note that links to it, each one a click away. The links are
+looked up on a thread, because the first lookup is a walk of the brain.
+
+**Markdown and Notedown.** When Notedown is in the same checkout and nothing
+on the desktop claims Markdown, opening a `.md` opens it in Notedown. A
+desktop that has an answer keeps it — somebody who chose an editor for
+Markdown has chosen — and *Open in Notedown* is on the right-click menu
+either way.
+
+**Ask Claude about these.** Whatever a file manager cannot do with a
+selection — say which of three drafts is newer in substance, summarise a
+folder of scans, turn a note into cards — Claude Code can be asked to. The
+panel floats over the listing like the palette, so it never pushes the
+window past a tiling column; the request runs in the folder the files are
+in, in Claude Code's read-only mode, and *Continue in Claude Desk* carries
+the conversation on when the answer turns into a piece of work.
+
+All of it comes from `brain.py` and `claude.py`, vendored from
+[`house/`](../house/README.md) like the style, and from `order.py` here,
+which is the part of each feature that is not a widget.
+
 ## Not losing your files
 
 Most of the work in a file manager is refusing to do damage.
@@ -286,6 +355,7 @@ menu lists them all. The ones worth knowing:
 | `F2` | Rename — several at once if several are selected |
 | `Delete` / `Shift+Delete` | Trash / delete for good |
 | `Ctrl+Z` `Ctrl+Shift+Z` | Undo, redo |
+| `Ctrl+Shift+I` | Send to the inbox — the same key as Notedown's |
 | `Space` / `F7` | Preview pane |
 | `Alt+Return` | Properties |
 | `Ctrl+Alt+T` | A terminal here |
@@ -335,7 +405,7 @@ run and quietly leaves out what it cannot do.
 python3 tests/test_hermione.py
 ```
 
-Sixty-seven of them, and they do real work: real copies with real conflicts, a
+Eighty-three of them, and they do real work: real copies with real conflicts, a
 real cancelled copy checked for the half-file it must not leave, real
 archives extracted both ways round, a real git repository, a real trip through
 the trash and back.
@@ -346,17 +416,47 @@ running it, and under a tiling compositor takes a column as well — so the
 window tests build the real window, measure it, drive its actions and throw it
 away, unmapped. And **nothing reaches the desktop**: `Gtk.FileLauncher` goes
 through the portal, so a test that activated a `.png` would open your image
-viewer; `HERMIONE_NO_LAUNCH` turns it into a signal the test checks instead.
+viewer; `HERMIONE_NO_LAUNCH` turns it into a signal the test checks instead,
+and a hand-over to Notedown into another.
+
+Nor does anything reach the second brain. `ORDER_HOME` points the Order at a
+home inside the scratch directory, where the tests that need a brain build
+one, the note index is a file there too, and `claude` is a stand-in script
+that answers whatever the test told it to — so no test reads Robin's notes,
+rewrites his index or spends a real request.
+
+A failing test is reported and the run carries on, so a new machine shows
+every problem at once rather than one per run; the last lines list them.
 
 The suite works in a hidden directory under `$HOME` rather than `/tmp`,
 because GIO will not trash a file on a tmpfs or across a filesystem boundary,
 and a trash test that cannot trash anything is not a test. It is removed at
-the end.
+the end — including on Windows, where git's read-only objects and the open
+note index used to make the removal quietly give up.
 
 ## On Windows
 
 It runs, with the rest of the suite's GTK4-from-MSYS2 arrangement — see the
-[top-level README](../README.md). What changes there: the Recycle Bin can be
-deleted into but not listed, so the trash view says so; permissions are not
-shown, because Unix modes are not what NTFS has; and `.7z` and `.rar` want
-7-Zip on the PATH.
+[top-level README](../README.md), and so does its test suite. What changes
+there:
+
+- **The trash is the Recycle Bin**, read directly. GIO deletes into it
+  through the shell and offers nothing to read it back, but each drive's
+  `$Recycle.Bin\<your SID>` is a folder of `$R…` files with an `$I…` record
+  beside each one saying where it was and when — the freedesktop trash with
+  both halves in one place. So the trash view lists it, *Put back* and
+  `Ctrl+Z` restore from it, and emptying it empties it.
+- **Permissions and owners are not shown**, because Unix modes are not what
+  NTFS has, and Windows reports every file as owned by uid 0. A copy still
+  keeps the read-only flag, which is the one bit there is.
+- **Paths are spelled one way.** MSYS2's Python joins paths with `/` while
+  Windows' own directory listings, GLib's URIs and `Path.iterdir` hand back
+  `\`; everything that comes in from those is normalised before it is
+  compared, which is what had empty folders inside empty folders going
+  unfound.
+- `.7z` and `.rar` want 7-Zip on the PATH.
+
+In the suite, the one test that is skipped there is the recursive `chmod`
+one: NTFS has a read-only flag, not the nine bits it is about. The trash
+tests use the real Recycle Bin, because there is no pointing it anywhere
+else, and take their own files back out of it whether they pass or fail.

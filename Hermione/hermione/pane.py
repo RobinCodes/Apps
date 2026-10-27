@@ -43,7 +43,7 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
-from . import (archive, dialogs, ops, properties, search as searchmod,
+from . import (archive, dialogs, ops, order, properties, search as searchmod,
                thumbs, units, vcs, winenv)
 from .dirmodel import DirModel  # noqa: E402
 from .preview import Preview  # noqa: E402
@@ -62,6 +62,9 @@ class Pane(Gtk.Box):
         "path-changed": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "status-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "activated": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        # What HERMIONE_NO_LAUNCH turns a hand-over to another app into:
+        # (which app, the path).
+        "handed-on": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
     }
 
     def __init__(self, host, path: str = ""):
@@ -393,6 +396,11 @@ class Pane(Gtk.Box):
         if self.host.picks_files:
             self.host.pick(entry.path)
             return
+        # Markdown that nothing on the desktop claims goes to Notedown, from
+        # the same checkout as this. A desktop that has an answer keeps it.
+        if order.wants_notedown(entry.path):
+            self.open_in_notedown(entry.path)
+            return
         if os.environ.get("HERMIONE_NO_LAUNCH"):
             self.emit("activated", entry.path)
             return
@@ -426,6 +434,19 @@ class Pane(Gtk.Box):
                     self.host.toast(why)
 
         dialogs.ask_open_with(self, paths[0], picked)
+
+    def open_in_notedown(self, path: str = "") -> None:
+        if not path:
+            chosen = [p for p in self.model.selected_paths() if order.is_markdown(p)]
+            if not chosen:
+                return
+            path = chosen[0]
+        if os.environ.get("HERMIONE_NO_LAUNCH"):
+            self.emit("handed-on", "notedown", path)
+            return
+        ok, why = order.open_in_notedown(path)
+        if not ok:
+            self.host.toast(why)
 
     def open_terminal(self) -> None:
         argv = winenv.terminal_argv(self.path, self.config["terminal"])
@@ -683,6 +704,42 @@ class Pane(Gtk.Box):
             self.host.toast(
                 f"{len(result.trashed)} moved to the trash", "Put back",
                 lambda: self.host.undo())
+
+    # ------------------------------------------------------- the second brain ---
+
+    def send_to_inbox(self) -> None:
+        """Move the selection into the brain's inbox — undoable, like any move."""
+        where = order.here()
+        if where is None:
+            self.host.toast("There is no second brain on this machine")
+            return
+        inbox = str(where.inbox)
+        paths = [p for p in self.model.selected_paths()
+                 if os.path.normcase(os.path.dirname(os.path.abspath(p)))
+                 != os.path.normcase(os.path.abspath(inbox))]
+        if not paths:
+            if self.model.selected_paths():
+                self.host.toast("That is in the inbox already")
+            return
+        job = order.inbox_job(paths, where)
+        destination = job.destination
+        what = (os.path.basename(paths[0].rstrip("/\\")) if len(paths) == 1
+                else f"{len(paths)} items")
+
+        def finished(result) -> None:
+            self.host.record(ops.Change(ops.MOVE, paths, destination, result))
+            if not result.moved:
+                return
+            renamed = [os.path.basename(new) for old, new in result.moved
+                       if os.path.basename(old) != os.path.basename(new)]
+            note = f" as {renamed[0]}" if len(paths) == 1 and renamed else ""
+            self.host.toast(f"{what} → {dialogs._short(destination)}{note}",
+                            "Undo", lambda: self.host.undo())
+
+        self.host.run_job(job, f"Sending {what} to the inbox", on_finished=finished)
+
+    def ask_claude(self) -> None:
+        self.host.ask_claude(self.model.selected_paths(), self.path)
 
     def delete_for_good(self) -> None:
         paths = self.model.selected_paths()
@@ -953,7 +1010,8 @@ class Pane(Gtk.Box):
     def show_properties(self) -> None:
         paths = self.model.selected_paths() or ([self.path] if self.path else [])
         if paths:
-            properties.show(self, paths, self.config, self.thumbs)
+            properties.show(self, paths, self.config, self.thumbs,
+                            on_open=self.open_path)
 
     def copy_location(self) -> None:
         dialogs._to_clipboard(self, self.path)
@@ -1018,6 +1076,8 @@ class Pane(Gtk.Box):
             menu.append_section(None, view)
             tools = Gio.Menu()
             tools.append("Open in terminal", "pane.terminal")
+            if order.claude_available():
+                tools.append("Ask Claude about this folder…", "pane.ask-claude")
             tools.append("Properties", "pane.properties")
             menu.append_section(None, tools)
             return menu
@@ -1029,6 +1089,8 @@ class Pane(Gtk.Box):
             opening.append("Open in the other pane", "pane.open-other")
         else:
             opening.append("Open with…", "pane.open-with")
+            if order.is_markdown(entry.path) and order.notedown_entry():
+                opening.append("Open in Notedown", "pane.open-notedown")
         menu.append_section(None, opening)
 
         edit = Gio.Menu()
@@ -1041,6 +1103,15 @@ class Pane(Gtk.Box):
                     "pane.rename")
         edit.append("Make a link", "pane.link")
         menu.append_section(None, edit)
+
+        brainy = Gio.Menu()
+        if order.here() is not None:
+            brainy.append("Send to Inbox", "pane.send-to-inbox")
+        if order.claude_available():
+            brainy.append("Ask Claude about these…" if len(selected) > 1
+                          else "Ask Claude about it…", "pane.ask-claude")
+        if brainy.get_n_items():
+            menu.append_section(None, brainy)
 
         removal = Gio.Menu()
         removal.append("Move to trash", "pane.trash")
@@ -1078,6 +1149,9 @@ class Pane(Gtk.Box):
             "open-other": lambda: self.host.open_in_other_pane(
                 self._first_selected_dir()),
             "open-with": self.open_with,
+            "open-notedown": lambda: self.open_in_notedown(),
+            "send-to-inbox": self.send_to_inbox,
+            "ask-claude": self.ask_claude,
             "cut": self.cut,
             "copy": self.copy,
             "paste": self.paste,

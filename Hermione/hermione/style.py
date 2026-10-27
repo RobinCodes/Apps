@@ -655,6 +655,16 @@ popover.menu separator {
     inset 0 0 0 1px alpha(%(sheen)s, %(rim).3f);
 }
 
+/* The notes that link to this one, in Properties: rows on the panel's own
+   glass rather than a list with a background of its own. */
+.backlinks { background: none; }
+.backlinks > row {
+  border-radius: 8px;
+  padding: 2px 6px;
+  transition: background-color 110ms %(ease)s;
+}
+.backlinks > row:hover { background-color: alpha(currentColor, 0.07); }
+
 .preview-pane {
   background-color: alpha(%(sheen)s, %(inner_tint).3f);
   box-shadow: inset 1px 0 0 alpha(%(sheen)s, %(rim).3f);
@@ -684,6 +694,20 @@ popover.menu separator {
   color: alpha(currentColor, 0.44);
 }
 .field-value { font-size: 0.94em; }
+
+/* ----------------------------------------------------------- ask claude --- */
+
+/* Floats over the listing as the palette does, so it is the same glass. */
+.ask-panel {
+  border-radius: 18px;
+  padding: 14px;
+  background-color: alpha(%(chrome)s, %(palette_alpha).3f);
+  %(palette_blur)s
+  box-shadow:
+    inset 0 1px 0 alpha(%(sheen)s, 0.16),
+    inset 0 0 0 1px alpha(%(sheen)s, %(rim).3f),
+    0 20px 60px alpha(%(shadow)s, 0.45);
+}
 
 /* ------------------------------------------------------------- palette --- */
 
