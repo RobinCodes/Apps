@@ -377,9 +377,12 @@ _TEX_KINDS = {
     "definition", "definicio", "definíció", "theorem", "tetel", "tétel", "lemma",
     "corollary", "kovetkezmeny", "következmény", "proposition", "allitas",
     "állítás", "axiom", "axioma", "axióma", "law", "torveny", "törvény",
+    # Worked examples are cards too: a definition is rarely understood until
+    # an instance of it can be produced on demand (HANDBOOK.md, §3).
+    "example", "pelda", "példa",
 }
 _TEX_LABEL = re.compile(
-    r"defin|theorem|t[eé]tel|lemma|corollar|k[oö]vetkezm|proposition|[aá]ll[ií]t[aá]s|axi[oó]m|t[oö]rv[eé]ny",
+    r"defin|theorem|t[eé]tel|lemma|corollar|k[oö]vetkezm|proposition|[aá]ll[ií]t[aá]s|axi[oó]m|t[oö]rv[eé]ny|example|p[eé]lda",
     re.I)
 
 

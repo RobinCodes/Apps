@@ -214,7 +214,8 @@ Minden fában $n-1$ él van.
 \end{theorem}
 """
     found = cards.parse_text(tex, "Projects/Programming/Websites/Digitalization/DataHU/G.tex")
-    assert len(found) == 2, [(c.front, c.back) for c in found]
+    assert len(found) == 3, [(c.front, c.back) for c in found]
+    assert found[2].front == "Example: Út", "an example is a card; an empty lemma is not"
     assert found[0].front == "Definíció: Gráf"
     assert "comment" not in found[0].back
     assert found[0].context == ("Gráfok",)
