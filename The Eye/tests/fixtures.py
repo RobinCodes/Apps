@@ -54,6 +54,17 @@ def have_gst() -> bool:
     return shutil.which("gst-launch-1.0") is not None
 
 
+def gst_launch() -> str:
+    """gst-launch-1.0, by its full path.
+
+    Not by its name: Windows' CreateProcess adds `.exe` only to a name with no
+    extension of its own, and to it `gst-launch-1.0` already has one — `.0` —
+    so every clip failed to build there and the video half of the suite was
+    skipped without anybody being told why. `shutil.which` knows PATHEXT.
+    """
+    return shutil.which("gst-launch-1.0") or "gst-launch-1.0"
+
+
 def have_ffmpeg() -> bool:
     """Only needed for the one fixture with cover art in it.
 
@@ -158,7 +169,7 @@ def _clips(folder):
         path = os.path.join(folder, name)
         if os.path.exists(path):
             continue
-        command = ["gst-launch-1.0", "-q"] + pipeline.format(
+        command = [gst_launch(), "-q"] + pipeline.format(
             path=path).split()
         try:
             subprocess.run(command, check=True, capture_output=True,

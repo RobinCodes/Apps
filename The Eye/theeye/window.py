@@ -1529,14 +1529,18 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.select_folder(self, None, chosen)
 
     def _filters(self):
+        # What this machine can open, not what a well-equipped one could: a
+        # filter that offers .exr where there is no loader for it is a filter
+        # that leads to an error.
+        types = media.claimed_types()
         store = Gio.ListStore.new(Gtk.FileFilter)
         everything = Gtk.FileFilter(name="Pictures and video")
-        for extension in sorted(media.EVERYTHING):
+        for extension in sorted(set().union(*types.values())):
             everything.add_suffix(extension.lstrip("."))
         store.append(everything)
-        for name, extensions in (("Pictures", media.PHOTO_ALL),
-                                 ("Video", media.VIDEO),
-                                 ("Sound", media.AUDIO)):
+        for name, extensions in (("Pictures", types["photo"] | types["raw"]),
+                                 ("Video", types["video"]),
+                                 ("Sound", types["audio"])):
             filter_ = Gtk.FileFilter(name=name)
             for extension in sorted(extensions):
                 filter_.add_suffix(extension.lstrip("."))

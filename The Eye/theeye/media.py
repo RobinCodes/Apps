@@ -14,10 +14,16 @@ content type is asked, and where a file is actually opened GdkPixbuf and
 GStreamer both sniff for themselves anyway — so a JPEG called `.png` still
 opens, it just sorts as a photograph either way.
 
-The format lists are what is *claimed*; `available()` says what this machine
-can really do, by asking GdkPixbuf which loaders it has and GStreamer which
-decoders. A machine without the HEIF loader should say so when a HEIC file is
-opened, not show a broken picture and leave the user guessing.
+There are two lists of stills, for two questions. `PHOTO` is what is
+*recognised*: a file with one of those extensions is a picture, goes in the
+reel, and is explained when it cannot be shown — a HEIC on a box without the
+HEIF loader should say "no loader for HEIC on this machine", not show a broken
+picture and leave the user guessing. `claimed()` is what this machine can
+really *open*: the few formats every GdkPixbuf has, plus each of the rest whose
+loader GdkPixbuf reports here. The open dialog's filters, the file types the
+Windows installer offers The Eye for, and the suite's check that every claim
+has a loader all ask `claimed()`, so none of them can promise an OpenEXR that
+a Windows build of GdkPixbuf has never heard of.
 """
 
 from __future__ import annotations
@@ -31,7 +37,8 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GdkPixbuf, Gio  # noqa: E402
 
 # Stills. The extensions are what the loaders on a well-equipped Linux box
-# handle; `available()` filters this down to what is actually installed.
+# handle — glycin's included; `claimed()` filters this down to what is
+# actually installed.
 PHOTO = {
     ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".gif", ".webp", ".avif",
     ".heic", ".heif", ".jxl", ".bmp", ".tif", ".tiff", ".tga", ".ico",
@@ -89,10 +96,16 @@ def extension(path: str) -> str:
 
 
 def _content_kind(path: str) -> str | None:
-    """What Gio makes of the name, when the extension was no help."""
+    """What Gio makes of the name, when the extension was no help.
+
+    Through the MIME type rather than the content type itself: on Linux they
+    are the same string, but on Windows a content type is the extension —
+    `.mp4` — and nothing would ever have started with "video/".
+    """
     guess, _uncertain = Gio.content_type_guess(path, None)
     if not guess:
         return None
+    guess = Gio.content_type_get_mime_type(guess) or guess
     if guess.startswith("image/"):
         return "photo"
     if guess.startswith("video/"):
@@ -206,6 +219,41 @@ def loader_for(path: str) -> bool:
     if ext in RAW:
         return ".raw" in loaders or ext in loaders
     return ext in loaders or ALIASES.get(ext, ext) in loaders
+
+
+# The stills claimed whatever the loaders say: JPEG, PNG, GIF and TIFF are
+# the four GdkPixbuf builds by default and every desktop ships. A machine
+# without one of them is broken rather than modest, and the suite should say
+# so — which it does, because these are checked against the loaders as well.
+BASE = {".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".gif", ".tif", ".tiff"}
+
+
+def claimed() -> set[str]:
+    """Every still this machine can open: the base four, and each other
+    recognised format whose loader is installed here.
+
+    Camera raw is included only where the raw loader is, and then only as a
+    whole: which cameras it manages is not something it says.
+    """
+    found = set(BASE)
+    found.update(ext for ext in PHOTO if loader_for("x" + ext))
+    if loader_for("x.dng"):
+        found.update(RAW)
+    return found
+
+
+def claimed_types(playable: bool = True) -> dict[str, set[str]]:
+    """What The Eye offers to open here, by kind — for the open dialog and the
+    Windows installer, which asks for it with `the-eye.py --list-types`.
+
+    Video and sound are claimed as a whole when the player has what it needs:
+    which codecs a container holds is only known once it is opened, and
+    GStreamer says "no decoder for this" itself when one is missing.
+    """
+    stills = claimed()
+    return {"photo": stills - RAW, "raw": stills & RAW,
+            "video": set(VIDEO) if playable else set(),
+            "audio": set(AUDIO) if playable else set()}
 
 
 def describe(path: str) -> str:

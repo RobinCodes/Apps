@@ -127,6 +127,23 @@ try {
     Check 'and so is its own key' {
         -not (Test-Path -LiteralPath "HKCU:\$(Get-AppKey $app)") }
 
+    Write-Host "`nwhat an app says it opens"
+    $eye = @{ Name = 'Zz Eye'; AskTypes = '--list-types'
+              Types = @(
+                  @{ ProgId = 'ZzEye.Picture'; Name = 'Picture'; Kind = 'photo' }
+                  @{ ProgId = 'ZzEye.Raw'; Name = 'Raw'; Kind = 'raw' }
+                  @{ ProgId = 'ZzEye.Video'; Name = 'Video'; Kind = 'video' }) }
+    Set-AskedTypes $eye @('photo .jpg', 'photo .png', 'video .mkv',
+                          '(the-eye:4242): GStreamer-WARNING **: a plugin failed',
+                          'photo .exr extra', 'photo jpg', 'audio .flac')
+    Check 'each type takes the extensions of its own kind' {
+        ($eye.Types[0].Extensions -join ' ') -eq '.jpg .png' -and
+        ($eye.Types[2].Extensions -join ' ') -eq '.mkv' }
+    Check 'a kind it was not told about is empty, not missing' {
+        $eye.Types[1].Extensions.Count -eq 0 }
+    Check 'and a line of any other shape is passed over' {
+        -not (($eye.Types | ForEach-Object { $_.Extensions }) -match 'exr|WARNING|^jpg|flac') }
+
     Write-Host "`nshortcuts"
     $dir = Join-Path ([IO.Path]::GetTempPath()) "apps-install-test-$PID"
     New-Item -ItemType Directory -Force -Path $dir | Out-Null

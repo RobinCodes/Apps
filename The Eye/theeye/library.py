@@ -152,8 +152,26 @@ def scan(path: str, recurse: bool = False, hidden: bool = False,
                 size, modified = stat.st_size, stat.st_mtime
             except OSError:
                 size, modified = 0, 0.0
-            found.append(Item(entry.path, name, kind, size, modified))
+            # Joined here rather than taken from `entry.path`. MSYS2's Python
+            # on Windows says `os.sep` is "/", but scandir joins with "\" all
+            # the same, so `entry.path` is a path no other part of the app
+            # would ever spell — and a file opened from outside was then not
+            # found in its own folder's reel.
+            found.append(Item(os.path.join(folder, name), name, kind, size,
+                              modified))
     return found, trouble
+
+
+def same_path(one: str, two: str) -> bool:
+    """Whether two spellings name the same file, without asking the disk.
+
+    Windows answers to either slash and to any case, and a path handed over
+    by a file manager, a shortcut or a command line can use any mixture.
+    """
+    if one == two:
+        return True
+    return (os.path.normcase(os.path.normpath(one))
+            == os.path.normcase(os.path.normpath(two)))
 
 
 def sort_items(items: list[Item], order: str, descending: bool = False,
@@ -239,6 +257,11 @@ class Reel:
     def index_of(self, path: str) -> int:
         for index, item in enumerate(self.items):
             if item.path == path:
+                return index
+        # The same file spelled another way: only worth the normalising once
+        # the exact match has missed, which on Linux it never does.
+        for index, item in enumerate(self.items):
+            if same_path(item.path, path):
                 return index
         return -1
 

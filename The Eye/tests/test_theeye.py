@@ -346,9 +346,64 @@ def test_format_recognition():
 
 
 def test_every_claimed_photo_format_has_a_loader():
-    """The lists must describe this machine, not a wish."""
-    gone = [ext for ext in media.PHOTO if not media.loader_for("x" + ext)]
+    """The claims must describe this machine, not a wish."""
+    gone = [ext for ext in media.claimed() if not media.loader_for("x" + ext)]
     assert not gone, f"claimed but not loadable here: {gone}"
+
+
+def test_claims_follow_the_loaders():
+    """A format is claimed where its loader is, and recognised everywhere.
+
+    Recognised, so that a QOI on a machine without the loader is listed and
+    explained; not claimed, so that nothing offers to open one.
+    """
+    real = media._loaders
+    try:
+        media._loaders = {".jpeg", ".jpg", ".png", ".gif", ".tiff", ".tif", ".webp"}
+        claimed = media.claimed()
+        assert ".qoi" not in claimed and ".exr" not in claimed, sorted(claimed)
+        assert ".webp" in claimed and ".jfif" in claimed, "an alias lost its loader"
+        assert not claimed & media.RAW, "raw claimed with no raw loader"
+        media._loaders = {".png"}
+        assert media.BASE <= media.claimed(), "the base four stopped being claimed"
+        media._loaders = {".png", ".qoi", ".raw"}
+        assert ".qoi" in media.claimed() and ".nef" in media.claimed()
+        assert media.kind("x.qoi") == "photo", "an unclaimed format stopped being a photo"
+        types = media.claimed_types(playable=False)
+        assert not types["video"] and not types["audio"], "video claimed with no player"
+    finally:
+        media._loaders = real
+
+
+def test_the_installer_is_told_what_opens():
+    """`the-eye.py --list-types`, which windows/install.ps1 registers from."""
+    import io
+
+    from theeye import app
+
+    out = io.StringIO()
+    app.list_types(out)
+    lines = [line.split() for line in out.getvalue().splitlines()]
+    assert lines and all(len(bits) == 2 for bits in lines), lines[:5]
+    photos = {ext for kind, ext in lines if kind == "photo"}
+    assert photos == media.claimed() - media.RAW, photos ^ (media.claimed() - media.RAW)
+    assert {kind for kind, _ext in lines} <= {"photo", "raw", "video", "audio"}
+
+
+def test_a_path_is_found_however_it_is_spelled():
+    """MSYS2's Python joins with "/" and scandir with "\\"; Windows takes
+    either, and any case. The file opened must be the one the reel lands on."""
+    folder = _folder_of_files()
+    items, _ = library.scan(folder)
+    reel = library.Reel(items, order="name")
+    target = os.path.join(folder, "IMG_10.jpg")
+    assert reel.index_of(target) >= 0, "a scanned path is not the joined path"
+    assert all(item.path == os.path.join(folder, item.name) for item in items)
+    spelled = target.replace("/", "\\") if os.name == "nt" else target
+    if os.name == "nt":
+        spelled = spelled.upper()
+    assert reel.index_of(spelled) == reel.index_of(target), spelled
+    assert library.same_path(folder + os.sep + "x", os.path.join(folder, "x"))
 
 
 def test_sidecar_subtitles():
@@ -472,6 +527,14 @@ def test_exif_is_parsed():
 def test_exif_absent_is_not_an_error():
     assert metadata.read_exif(os.path.join(MEDIA, "test.png")) == {}
     assert metadata.read_exif("/no/such/file.jpg") == {}
+
+
+def test_the_day_a_photograph_was_taken():
+    import datetime
+
+    when = metadata.taken(os.path.join(MEDIA, "exif.jpg"))
+    assert when == datetime.datetime(2024, 6, 1, 18, 22, 4), when
+    assert metadata.taken(os.path.join(MEDIA, "test.png")) is None
 
 
 def test_exif_survives_corruption():
@@ -1122,6 +1185,11 @@ def main():
         ("formats are recognised", test_format_recognition),
         ("every claimed format has a loader",
          test_every_claimed_photo_format_has_a_loader),
+        ("the claims follow the loaders", test_claims_follow_the_loaders),
+        ("the installer is told what opens here",
+         test_the_installer_is_told_what_opens),
+        ("a path is found however it is spelled",
+         test_a_path_is_found_however_it_is_spelled),
         ("subtitle files beside a video", test_sidecar_subtitles),
         ("the scan takes what it should", test_scan_takes_what_it_should),
         ("numbers sort as numbers", test_numbers_sort_as_numbers),
@@ -1143,6 +1211,8 @@ def main():
     for name, fn, *needed in (
         ("EXIF is parsed", test_exif_is_parsed, "exif.jpg"),
         ("no EXIF is not an error", test_exif_absent_is_not_an_error, "test.png"),
+        ("the day a photograph was taken", test_the_day_a_photograph_was_taken,
+         "exif.jpg", "test.png"),
         ("corrupt EXIF loses tags, not the app",
          test_exif_survives_corruption, "exif.jpg"),
         ("a still's details", test_still_details, "test.png"),

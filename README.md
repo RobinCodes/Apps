@@ -1,6 +1,6 @@
 # Apps
 
-Nine desktop applications, written for Linux; seven of them also run on
+Nine desktop applications, written for Linux; eight of them also run on
 Windows.
 
 | | What it is | Windows |
@@ -13,7 +13,7 @@ Windows.
 | [Lyndon Browser](Lyndon%20Browser/) | A small, fast, private browser | Win32 + WebView2 |
 | [Notedown](Notedown/) | A Markdown editor with the rendered page beside the text | GTK4 via MSYS2 |
 | [Prism](Terminal/) | A terminal made of glass: tabs, splits, the house themes | Linux only — VTE has no Windows build |
-| [The Eye](The%20Eye/) | A viewer for photographs and video, with a colour grading editor built in | Untested — needs GStreamer under MSYS2 |
+| [The Eye](The%20Eye/) | A viewer for photographs and video, with a colour grading editor built in | GTK4 and GStreamer via MSYS2 |
 
 Each folder has its own README; this one only covers what is common.
 

@@ -47,7 +47,7 @@
 [CmdletBinding()]
 param(
     [switch] $Desktop,
-    [ValidateSet('Notedown', 'LaRenderer', 'Lyndon')]
+    [ValidateSet('Notedown', 'LaRenderer', 'Lyndon', 'The Eye')]
     [string] $Default,
     [switch] $Uninstall
 )
@@ -114,6 +114,25 @@ $Apps = @(
               Icon = 'notedown-document.ico'; Svg = 'Notedown\notedown-document.svg'
               Extensions = @('.md', '.markdown', '.mdown', '.mkd', '.mkdn',
                              '.mdwn', '.mdtxt', '.mdtext') }) }
+    # What The Eye opens is asked rather than written down here: it says for
+    # itself which formats this machine has loaders for (Read-Types), so it is
+    # offered for OpenEXR or QOI only where one of those will actually open.
+    # Each type names the Kind of line it takes from that answer.
+    @{ Name = 'The Eye'; Folder = 'The Eye'; Entry = 'the-eye.py'
+       Launcher = 'the-eye.bat'
+       Icon = 'the-eye.ico'; Svg = 'The Eye\the-eye.svg'
+       AppId = 'com.robin.TheEye'
+       Comment = 'Look at photographs and video, and grade them while you do'
+       AskTypes = '--list-types'
+       Types = @(
+           @{ ProgId = 'TheEye.Picture'; Name = 'Picture'; Kind = 'photo'
+              Icon = 'the-eye.ico'; Svg = 'The Eye\the-eye.svg' }
+           @{ ProgId = 'TheEye.Raw'; Name = 'Camera raw picture'; Kind = 'raw'
+              Icon = 'the-eye.ico'; Svg = 'The Eye\the-eye.svg' }
+           @{ ProgId = 'TheEye.Video'; Name = 'Video'; Kind = 'video'
+              Icon = 'the-eye.ico'; Svg = 'The Eye\the-eye.svg' }
+           @{ ProgId = 'TheEye.Sound'; Name = 'Sound'; Kind = 'audio'
+              Icon = 'the-eye.ico'; Svg = 'The Eye\the-eye.svg' }) }
     # A page or a link goes straight to lyndon.exe, which hands it to the
     # window already open: a link clicked in another program should not wait
     # on Python, git and a fetch first. Starting the app is still the
@@ -335,6 +354,31 @@ function Register-Types($app, [string] $command, [string] $appIcon, [string] $st
     Set-Values $Registered @{ $app.Name = "$(Get-AppKey $app)\Capabilities" }
 }
 
+# An app that says for itself what it opens prints one `kind .ext` a line;
+# each of its types takes the extensions of its own Kind. Anything else in
+# the answer — a warning a library printed on its way up — is not a line of
+# that shape and is passed over.
+function Set-AskedTypes($app, [string[]] $lines) {
+    foreach ($type in $app.Types) {
+        $type.Extensions = @($lines | ForEach-Object {
+            $kind, $ext, $rest = -split $_
+            if ($kind -eq $type.Kind -and -not $rest -and $ext -match '^\.[a-z0-9]+$') { $ext }
+        })
+    }
+}
+
+function Read-Types($app, [string] $entry) {
+    # Continue, not Stop, for the length of the question: Windows PowerShell
+    # turns a native program's stderr into errors, and GStreamer starting up
+    # may well say something there.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $said = @(& $Python $entry $app.AskTypes 2>$null) } finally { $ErrorActionPreference = $previous }
+    if ($LASTEXITCODE -ne 0 -or -not $said) { return $false }
+    Set-AskedTypes $app $said
+    $true
+}
+
 function Unregister-Types($app) {
     $key = "HKCU:\$(Get-AppKey $app)"
     foreach ($type in $app.Types) {
@@ -482,6 +526,12 @@ foreach ($app in $Apps) {
     }
 
     Remove-DeadChoice $app
+    if ($app.AskTypes -and -not (Read-Types $app $entry)) {
+        # Registering an empty list would let go of every type it opened
+        # before; saying so and leaving them is the kinder failure.
+        Write-Host "  $($app.Name) could not say what it opens here; its file types are left as they were" -ForegroundColor Yellow
+        continue
+    }
     if ($app.Types) {
         $start = '"' + $PythonW + '" "' + $entry + '"'
         if ($app.Opener) {

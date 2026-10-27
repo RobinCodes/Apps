@@ -212,6 +212,30 @@ def read_exif(path: str) -> dict:
     costs the aperture. The whole function returning an empty dict is the
     normal case for a picture that was not taken by a camera.
     """
+    fields = _fields(path)
+    return _present(fields) if fields else {}
+
+
+def taken(path: str) -> datetime.datetime | None:
+    """When the camera says the picture was taken, as a time — or None.
+
+    What `read_exif` puts in words for the panel, kept as a value for the
+    things that file a photograph by its day.
+    """
+    fields = _fields(path)
+    for key in ("datetime_original", "datetime_digitised", "datetime"):
+        text = fields.get(key)
+        if isinstance(text, str):
+            try:
+                return datetime.datetime.strptime(text.strip()[:19],
+                                                  "%Y:%m:%d %H:%M:%S")
+            except ValueError:
+                continue
+    return None
+
+
+def _fields(path: str) -> dict:
+    """The raw tags, or {} for anything without readable ones."""
     if media.extension(path) not in EXIF_FORMATS:
         return {}
     try:
@@ -229,10 +253,9 @@ def read_exif(path: str) -> dict:
     if not raw:
         return {}
     try:
-        fields = _parse_tiff(raw)
+        return _parse_tiff(raw)
     except Exception:                                   # noqa: BLE001
         return {}
-    return _present(fields)
 
 
 def _jpeg_exif(handle) -> bytes:

@@ -46,7 +46,9 @@ pretend to offer more.
 from __future__ import annotations
 
 import atexit
+import os
 import random
+import threading
 
 import gi
 
@@ -447,10 +449,27 @@ def _vignette(node, amount, bounds):
 
 _flattener: "Painter | None" = None
 _flatten_broken = False
+# Flatteners for worker threads that may not share the main one (`gpu_here`),
+# one per thread, kept so that shutdown() can put them away too.
+_worker_flatteners: dict = {}
+_workers_lock = threading.Lock()
+
+
+def gpu_here() -> bool:
+    """May a GL renderer be realized, and drawn with, on this thread?
+
+    Everywhere but Windows, yes. There a WGL context belongs to the thread
+    that made it current and GDK makes them on the main thread, so a GL
+    renderer used from a worker cannot make its context current and the
+    process goes down with it — which is what exporting a video did, the
+    first time the suite could build a clip to export there. Off the main
+    thread on Windows the renderer is Cairo: slower, and it works.
+    """
+    return os.name != "nt" or threading.current_thread() is threading.main_thread()
 
 
 def shutdown():
-    """Put the shared renderer away.
+    """Put the shared renderers away.
 
     GSK asserts in `gsk_renderer_dispose` if a renderer is finalized while
     still realized, and a module-level one is finalized at interpreter exit —
@@ -462,6 +481,24 @@ def shutdown():
     if _flattener is not None:
         _flattener.close()
         _flattener = None
+    with _workers_lock:
+        for painter in _worker_flatteners.values():
+            painter.close()
+        _worker_flatteners.clear()
+
+
+def _flattener_here():
+    """The flattener this thread may draw with."""
+    global _flattener
+    if gpu_here():
+        if _flattener is None:
+            _flattener = Painter()
+        return _flattener
+    with _workers_lock:
+        painter = _worker_flatteners.get(threading.get_ident())
+        if painter is None:
+            painter = _worker_flatteners[threading.get_ident()] = Painter()
+        return painter
 
 
 atexit.register(shutdown)
@@ -488,18 +525,17 @@ def flatten(node, bounds: Graphene.Rect):
     picture is too large to be worth it, or if a previous attempt failed; the
     grade then still draws correctly, only slower.
     """
-    global _flattener, _flatten_broken
+    global _flatten_broken
     width = int(round(bounds.size.width))
     height = int(round(bounds.size.height))
     if (_flatten_broken or node is None or width <= 0 or height <= 0
             or width * height > FLATTEN_CAP):
         return node
-    if _flattener is None:
-        _flattener = Painter()
-        if not _flattener.ok():
-            _flatten_broken = True
-            return node
-    texture = _flattener.render(node, width, height)
+    painter = _flattener_here()
+    if not painter.ok():
+        _flatten_broken = True
+        return node
+    texture = painter.render(node, width, height)
     if texture is None:
         # One failure is enough to stop trying: whatever stopped it — no GL
         # context, a driver that will not render offscreen — will not fix
@@ -633,7 +669,7 @@ class Painter:
     def __init__(self, prefer_gpu: bool = True):
         self.renderer = None
         self.kind = "none"
-        if prefer_gpu and Gdk.Display.get_default() is not None:
+        if prefer_gpu and gpu_here() and Gdk.Display.get_default() is not None:
             for name in ("GLRenderer", "CairoRenderer"):
                 builder = getattr(Gsk, name, None)
                 if builder is None:

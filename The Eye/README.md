@@ -240,10 +240,28 @@ checkout, which is what lets it fast-forward itself when the repository moves
 on. To make it the default for a file type, use your file manager's *Open
 With* — that choice is the user's and no installer should take it.
 
-There is a `the-eye.bat` for Windows through MSYS2, written to the same shape
-as the other apps here. It is **untested**: GStreamer exists for MSYS2 but
-this has never been run there, and the pipeline is the half most likely to
-need work.
+### On Windows
+
+Through MSYS2's UCRT64 GTK, like the rest of the apps here: `the-eye.bat`
+from a command line, or `windows\install.ps1`, which makes the Start Menu
+shortcut and offers The Eye under *Open with* for every type it can open.
+The suite passes there, video export included.
+
+What it is offered for is asked, not listed. A Windows build of GdkPixbuf
+has no loader for OpenEXR, DDS or QOI, which a Linux box with glycin opens
+without noticing, so the formats The Eye *claims* are JPEG, PNG, GIF and TIFF
+everywhere plus whatever else this machine's loaders report
+(`media.claimed()`), and the installer registers exactly those by running
+`the-eye.py --list-types`. A file in a format with no loader is still
+recognised, listed and explained — "no loader for EXR on this machine" — but
+nothing offers to open one.
+
+Three things differ there and are handled where they arise: MSYS2's Python
+spells paths with `/` while `os.scandir` joins with `\`, so paths are joined
+by hand and compared as Windows compares them; Gio's content types are
+extensions rather than MIME types, so they are converted before being asked
+about; and a GL context belongs to the thread that made it, so a renderer
+used off the main thread — the video export's — is Cairo there.
 
 ## The tests
 

@@ -175,6 +175,22 @@ Everything else lives in the window — press ? for the list of keys.
 """
 
 
+def list_types(out=None):
+    """What this machine can open, one `kind .ext` a line.
+
+    For windows/install.ps1, which registers The Eye for exactly these rather
+    than for a list written down once on a machine with more loaders than
+    this one. Not in the usage text: it is for the installer, not for people.
+    """
+    from . import media
+
+    out = out or sys.stdout
+    types = media.claimed_types(player.init() and player.available())
+    for kind in ("photo", "raw", "video", "audio"):
+        for extension in sorted(types[kind]):
+            print(f"{kind} {extension}", file=out)
+
+
 def main():
     # Before GApplication sees them: it hands unknown options to the remote
     # instance, which would otherwise treat --help as a file to open.
@@ -186,6 +202,9 @@ def main():
             from . import __version__
 
             print(f"The Eye {__version__}")
+            return 0
+        if flag == "--list-types":
+            list_types()
             return 0
 
     winenv.set_app_id(APP_ID)
