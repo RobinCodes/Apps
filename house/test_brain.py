@@ -212,6 +212,11 @@ A gráf csúcsokból és élekből áll. % comment :: not a card
 \begin{theorem}
 Minden fában $n-1$ él van.
 \end{theorem}
+\begin{example}[Út]
+Az $a-b-c$ út egy fa.
+\end{example}
+\begin{lemma}
+\end{lemma}
 """
     found = cards.parse_text(tex, "Projects/Programming/Websites/Digitalization/DataHU/G.tex")
     assert len(found) == 3, [(c.front, c.back) for c in found]
