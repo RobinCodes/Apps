@@ -15,7 +15,11 @@ What the strip shows, beyond the picture:
 * a bar across the bottom of anything half-watched, from the resume positions
   in `state.json`, which is the fastest way to answer "where was I";
 * and the name, under the pointer only — a strip of filenames is a list, and
-  a list is not what a strip is for.
+  a list is not what a strip is for;
+* a check on the ones marked, for doing one thing to several: Ctrl+click
+  marks or unmarks one, Shift+click every one from the last as well, and a
+  right-click offers what can be done to them — or to the one under the
+  pointer, when it is not one of them.
 
 Scrolling has momentum and the selection is kept in view by an animation
 rather than a jump, for the same reason as everywhere else in this app: a
@@ -52,6 +56,10 @@ class Filmstrip(Gtk.Widget):
         "chosen": (GObject.SignalFlags.RUN_FIRST, None, (int,)),
         # the strip wants a thumbnail it has not been given yet
         "wants": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        # the marks changed
+        "marks-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # a right-click on a thumbnail: its index, and where
+        "menu-wanted": (GObject.SignalFlags.RUN_FIRST, None, (int, float, float)),
     }
 
     def __init__(self, scheme=None, size=108, vertical=False):
@@ -69,12 +77,20 @@ class Filmstrip(Gtk.Widget):
         self._thumbs = None          # a thumbs.Cache, set by the window
         self._progress = None        # a callable: path -> 0..1
         self._durations: dict = {}
+        # Marked by path rather than by index, so a re-sort keeps them.
+        self._marked: set[str] = set()
+        self._anchor = -1
         self.set_hexpand(True)
         self._apply_size()
 
         click = Gtk.GestureClick.new()
         click.connect("pressed", self._on_press)
         self.add_controller(click)
+
+        menu = Gtk.GestureClick.new()
+        menu.set_button(Gdk.BUTTON_SECONDARY)
+        menu.connect("pressed", self._on_menu)
+        self.add_controller(menu)
 
         scroll = Gtk.EventControllerScroll.new(
             Gtk.EventControllerScrollFlags.BOTH_AXES)
@@ -124,6 +140,10 @@ class Filmstrip(Gtk.Widget):
 
     def set_items(self, items, selected=-1):
         self._items = list(items)
+        present = {item.path for item in self._items}
+        if self._marked - present:
+            self._marked &= present
+            self.emit("marks-changed")
         self._selected = selected
         self._offset = self._offset_target = 0.0
         self.queue_draw()
@@ -136,6 +156,45 @@ class Filmstrip(Gtk.Widget):
         self._selected = index
         self.reveal(index, animate)
         self.queue_draw()
+
+    # -- marks -------------------------------------------------------------
+
+    def marked(self) -> list[str]:
+        """The marked paths, in the strip's order."""
+        return [item.path for item in self._items if item.path in self._marked]
+
+    def is_marked(self, index: int) -> bool:
+        return 0 <= index < len(self._items) and self._items[index].path in self._marked
+
+    def toggle_mark(self, index: int):
+        if not 0 <= index < len(self._items):
+            return
+        path = self._items[index].path
+        if path in self._marked:
+            self._marked.discard(path)
+        else:
+            self._marked.add(path)
+        self._anchor = index
+        self.queue_draw()
+        self.emit("marks-changed")
+
+    def mark_through(self, index: int):
+        """Every one from the last marked (or the one on screen) to `index`."""
+        if not 0 <= index < len(self._items):
+            return
+        start = self._anchor if self._anchor >= 0 else max(0, self._selected)
+        low, high = sorted((start, index))
+        self._marked.update(item.path for item in self._items[low:high + 1])
+        self._anchor = index
+        self.queue_draw()
+        self.emit("marks-changed")
+
+    def clear_marks(self):
+        if self._marked:
+            self._marked.clear()
+            self._anchor = -1
+            self.queue_draw()
+            self.emit("marks-changed")
 
     def note_duration(self, path: str, seconds: float):
         """A length discovered elsewhere, so the badge can show it."""
@@ -235,8 +294,21 @@ class Filmstrip(Gtk.Widget):
 
     def _on_press(self, gesture, count, x, y):
         index = self.index_at(x, y)
-        if index >= 0:
+        if index < 0:
+            return
+        state = gesture.get_current_event_state()
+        if state & Gdk.ModifierType.SHIFT_MASK:
+            self.mark_through(index)
+        elif state & Gdk.ModifierType.CONTROL_MASK:
+            self.toggle_mark(index)
+        else:
             self.emit("chosen", index)
+
+    def _on_menu(self, gesture, _count, x, y):
+        index = self.index_at(x, y)
+        if index >= 0:
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self.emit("menu-wanted", index, x, y)
 
     def _on_scroll(self, _controller, dx, dy):
         # Either axis moves the strip, because a mouse has one wheel and a
@@ -342,12 +414,35 @@ class Filmstrip(Gtk.Widget):
                        frame[0] - 2, frame[1] - 2, frame[2] + 4, frame[3] + 4,
                        radius=8.0, thickness=2.0)
 
+        if item.path in self._marked:
+            self._draw_mark(snapshot, *frame)
         if item.is_playable():
             self._draw_badge(snapshot, item, *frame)
         if self._progress is not None:
             self._draw_progress(snapshot, item, *frame)
         if hovered and not selected:
             self._draw_name(snapshot, item, *frame)
+
+    def _draw_mark(self, snapshot, px, py, dw, dh):
+        """A tick in the accent at the top left of a marked thumbnail."""
+        size = 18.0
+        bx, by = px + 4, py + 4
+        box = glass.rounded(bx, by, size, size, size / 2)
+        snapshot.append_outset_shadow(box, glass.black(0.4), 0, 1, 0, 4)
+        snapshot.push_rounded_clip(box)
+        snapshot.append_color(glass.rgba(self._scheme.accent, 1.0),
+                              glass.rect(bx, by, size, size))
+        snapshot.pop()
+        tick = Gsk.PathBuilder.new()
+        tick.move_to(bx + 4.8, by + 9.4)
+        tick.line_to(bx + 7.8, by + 12.4)
+        tick.line_to(bx + 13.4, by + 6.0)
+        stroke = Gsk.Stroke.new(2.2)
+        stroke.set_line_cap(Gsk.LineCap.ROUND)
+        stroke.set_line_join(Gsk.LineJoin.ROUND)
+        on_accent = (glass.black(0.85) if theming.luminance(self._scheme.accent) > 0.45
+                     else glass.white(0.98))
+        snapshot.append_stroke(tick.to_path(), stroke, on_accent)
 
     def _draw_badge(self, snapshot, item, px, py, dw, dh):
         """A play triangle on a video, and its length when that is known."""

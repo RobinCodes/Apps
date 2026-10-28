@@ -23,6 +23,11 @@ What gets made, and what each one is for:
 * `tone.ogg` — sound with no pictures, for the audio-only path.
 * `withart.mp3` — sound *with* a cover image in its tags, which is the other
   half of that path and needs ffmpeg to build.
+* `page.jpg` — a notebook page photographed on a desk: ruled, written on,
+  with a header line in print, lit unevenly and seen at an angle through a
+  pinhole camera — so the corners and the true shape of the page are known
+  exactly (`PAGE_CORNERS`, `PAGE_ASPECT`), and the camera's date is in its
+  EXIF as a phone's would be.
 
 `build()` skips anything already there, so a suite run twice is not a suite
 that encodes twice. It needs Pillow for the stills and `gst-launch-1.0` for
@@ -37,7 +42,7 @@ import shutil
 import struct
 import subprocess
 
-STILLS = ("test.png", "test.jpg", "alpha.png", "exif.jpg", "anim.gif")
+STILLS = ("test.png", "test.jpg", "alpha.png", "exif.jpg", "anim.gif", "page.jpg")
 CLIPS = ("clip.mp4", "multi.mkv", "tone.ogg", "withart.mp3")
 SIDECARS = ("clip.srt",)
 
@@ -83,6 +88,7 @@ def build(folder: str) -> list[str]:
     if have_pillow():
         _stills(folder)
         _exif(folder)
+        _page(folder)
     else:
         missing.extend(STILLS)
     if have_gst():
@@ -136,6 +142,104 @@ def _stills(folder):
                   for i in range(6)]
         frames[0].save(path, save_all=True, append_images=frames[1:],
                        duration=80, loop=0)
+
+
+# The page photographed by `_page`: where its corners land, as fractions of
+# the photograph, clockwise from the top left; the shape of the paper; the
+# line printed at the top; and the camera's time.
+PAGE_SIZE = (1480, 2100)
+PAGE_ASPECT = PAGE_SIZE[0] / PAGE_SIZE[1]
+PAGE_PHOTO = (3000, 2250)
+PAGE_HEADER = "2026-10-21 Dinamika 14"
+PAGE_TAKEN = "2026:10:27 19:05:00"
+PAGE_CORNERS: tuple = ()
+
+
+def _camera(tilt=30.0, turn=6.0, focal=2600.0, distance=3300.0):
+    """The page's corners through a pinhole camera tilted towards it."""
+    import math
+
+    width, height = PAGE_SIZE
+    across, down = PAGE_PHOTO
+    t, r = math.radians(tilt), math.radians(turn)
+    points = []
+    for x, y in ((-width / 2, -height / 2), (width / 2, -height / 2),
+                 (width / 2, height / 2), (-width / 2, height / 2)):
+        x, y = x * math.cos(r) - y * math.sin(r), x * math.sin(r) + y * math.cos(r)
+        depth = distance + y * math.sin(t)
+        points.append((across / 2 + focal * x / depth,
+                       down / 2 + focal * y * math.cos(t) / depth))
+    return points
+
+
+def _perspective(target, source):
+    """PIL's eight coefficients, mapping output points back to input ones."""
+    rows, values = [], []
+    for (x, y), (u, v) in zip(target, source):
+        rows.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+        values.append(u)
+        rows.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+        values.append(v)
+    n = len(values)
+    m = [row + [value] for row, value in zip(rows, values)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(m[r][col]))
+        m[col], m[pivot] = m[pivot], m[col]
+        for r in range(n):
+            if r != col:
+                factor = m[r][col] / m[col][col]
+                m[r] = [a - factor * b for a, b in zip(m[r], m[col])]
+    return [m[r][n] / m[r][r] for r in range(n)]
+
+
+def _page(folder):
+    global PAGE_CORNERS
+    import random
+
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+    quad = _camera()
+    PAGE_CORNERS = tuple((x / PAGE_PHOTO[0], y / PAGE_PHOTO[1]) for x, y in quad)
+    path = os.path.join(folder, "page.jpg")
+    if os.path.exists(path):
+        return
+    width, height = PAGE_SIZE
+    sheet = Image.new("L", PAGE_SIZE, 236)
+    draw = ImageDraw.Draw(sheet)
+    for y in range(240, height - 80, 64):
+        draw.line([(60, y), (width - 60, y)], fill=200, width=2)
+    draw.line([(370, 0), (370, height)], fill=185, width=3)
+    try:
+        font = ImageFont.load_default(size=64)
+    except TypeError:                                   # an old Pillow
+        font = ImageFont.load_default()
+    draw.text((410, 120), PAGE_HEADER, fill=30, font=font)
+    scribble = random.Random(4)
+    for row in range(1, 26):
+        y = 240 + row * 64 - 22
+        x = 410
+        while x < width - 200:
+            length = scribble.randint(40, 180)
+            draw.line([(x, y), (x + length, y - 4)], fill=scribble.randint(30, 70), width=5)
+            x += length + scribble.randint(20, 50)
+    draw.rectangle([700, 1500, 900, 1700], fill=50)
+
+    rectangle = ((0, 0), (width, 0), (width, height), (0, height))
+    coefficients = _perspective(quad, rectangle)
+    photo = Image.new("RGB", PAGE_PHOTO, (70, 52, 40))
+    warped = sheet.convert("RGB").transform(PAGE_PHOTO, Image.PERSPECTIVE,
+                                            coefficients, Image.BILINEAR)
+    mask = Image.new("L", PAGE_SIZE, 255).transform(PAGE_PHOTO, Image.PERSPECTIVE,
+                                                   coefficients, Image.BILINEAR)
+    photo.paste(warped, (0, 0), mask)
+    # The light falls off towards one corner, as a desk lamp's does.
+    falloff = Image.linear_gradient("L").resize(PAGE_PHOTO).rotate(35)
+    dim = Image.eval(photo, lambda v: int(v * 0.55))
+    photo = Image.composite(photo, dim, falloff.point(lambda v: 255 - v // 2))
+    photo = photo.filter(ImageFilter.GaussianBlur(1.2))
+    exif = Image.Exif()
+    exif.get_ifd(0x8769)[0x9003] = PAGE_TAKEN
+    photo.save(path, quality=88, exif=exif.tobytes())
 
 
 def _clips(folder):

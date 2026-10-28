@@ -128,6 +128,102 @@ points. A curve is the one piece of a grading pipeline that cannot be
 assembled out of blend modes, so the editor offers the two curve shapes that
 can be — a gamma and an S — and does not pretend to more.
 
+## Paper
+
+Class notes are taken on paper, and the second brain starts from a
+photograph of each page (`SecondBrain/SYSTEM.md` §6). **Import notebook
+pages** — Ctrl+Shift+I, the menu, the palette, or a right-click in the strip
+— takes the photographs marked in the strip, or the one on screen, and goes
+through them a page at a time.
+
+* **The corners are found.** Paper on a desk is the brightest large thing in
+  the picture, so the page is the largest bright region at a few hundred
+  pixels across, and its corners are that region's extreme points along the
+  diagonals. They arrive as four grips on the photograph, drawn in the same
+  glass as the rest, with the outside of the page dimmed and a magnifier
+  under the grip being dragged. When nothing page-shaped was found — a white
+  desk, an open notebook of two pages — the grips sit just inside the
+  photograph and the panel says so.
+* **The page is straightened to its real shape.** A trapezium does not say
+  how tall the paper was; a pinhole camera's view of a rectangle does, and
+  Zhang and He's construction recovers it from the four corners. Within 7% of
+  √2 it is drawn as √2, because the notebook is A5.
+* **The light is taken out.** The brightest pixel of every block of about a
+  line of handwriting is the paper there, whatever the ink did; spread three
+  blocks so a filled box is not read as a shadow, smoothed, and divided out,
+  it leaves the paper evenly white. A tone curve then takes the ink to black
+  and the paper to pure white, which is also what makes the file small.
+* **It is saved small**: a greyscale JPEG at 1600 pixels on the long side,
+  at the best quality that comes in under 250KB — these sync through git, to
+  every machine, for good. A typical page is about a hundred kilobytes.
+* **It is read.** By Claude, when Claude Code is installed: handwriting, in
+  Hungarian, with the mathematics as `$…$`, into Markdown. By Tesseract
+  otherwise — `tesseract -l hun+eng`, with the brain's own
+  `config/tessdata` as its language data when that exists — which reads
+  print well and handwriting poorly. Or by nobody, and the page is filed as
+  an image. The reading runs after the page is filed, beside the next one.
+
+A small form asks where it goes and which day it was. **Where**: the inbox,
+or a subject — a folder under `Projects/Studies`. **The day** starts as the
+day the camera says the photograph was taken. Filed under a subject, the
+page image becomes `Studies/<Subject>/pages/YYYY-MM-DD-<n>.jpg`, and the page
+goes into that day's note, `Studies/<Subject>/YYYY-MM-DD.md`, under
+`## Pages` — the image, a comment saying where it came from, and its text —
+made if it is not there, and the existing note if the day already has one in
+the older `2026.10.27.` form. Filed into the inbox, the image and a note beside
+it go there through the brain's own capture, with the provenance in the
+note's front matter: the photograph, when it was taken, which page it says it
+is, who read it.
+
+Every lesson's page starts with a header line, `2026-10-27 · Dinamika · 14`
+(the handbook's convention), and the reader's text is looked at for it: the
+lesson's day, topic and page number go into an inbox note's front matter, and
+a page filed under a different day than its header says is pointed out.
+
+Claude's text goes in as the Markdown it is, its headings held below `##` so
+a page can never end the section it is in. Tesseract's goes in a fenced
+block: until it is rewritten (§6, "within 3 days"), nothing in it should be a
+card, and a `::` misread out of handwriting would otherwise go straight into
+the schedule.
+
+Nothing is written into a photograph and nothing is deleted. A page is a new
+file made from it, and the photographs stay where they were.
+
+### Palace loci
+
+A memory palace is built from places that are really walked, and each locus
+is photographed (the handbook, §3.2). **Use as a palace locus** puts the
+photograph on screen under a locus of a palace in `learning/palaces/` — or of
+a new palace, made with `kind: palace` in its front matter — and under an
+existing locus or a new one at the end of the walk. The photograph is copied,
+as a JPEG of at most 1600 pixels, into a folder named after the palace beside
+it, numbered by its locus — `Lakás/01-bejarati-ajto.jpg` — and linked as an
+indented `![](…)` under that locus (`SYSTEM.md` §8). Open that folder here and
+the strip is the walk, in order.
+
+### Asking Claude
+
+**Ask Claude about this picture** (Ctrl+Shift+A) opens a panel where the
+editor goes: a typed question about the picture on screen — or about the
+frame on screen, for a video — and the answer streaming in as it is written.
+It is read-only: Claude Code runs in the picture's own folder in its default
+mode, sees the picture and changes nothing, and *Continue in Claude Desk*
+carries the conversation on where work can be done. Hermione's panel works
+the same way.
+
+### Several at once, and every command by name
+
+Ctrl+click in the strip marks a thumbnail, Shift+click everything from the
+last one marked, Ctrl+M the one on screen; a right-click offers what can be
+done with the marks. **Ctrl+K** is the palette: every command in the app by
+name, from the same table the keys are bound from, so it holds the ones with
+no key of their own as well.
+
+A text field in the window gets its keys before the shortcuts do. GTK runs an
+application's accelerators first, and nearly every key here is a single
+letter, so without that typing "quiz" anywhere — the palette, the day of a
+page, the preferences' search — closed the window at the q.
+
 ## The glass
 
 The panels are painted, not borrowed. There is no backdrop-blur protocol an
@@ -202,6 +298,9 @@ are bound from, so it cannot fall behind.
 | `~/.local/share/the-eye/state.json` | Where you stopped watching, recent folders, and grades for files whose folder cannot be written to. |
 | `~/.cache/the-eye/thumbnails/` | Thumbnails, named after the file and the time it last changed — so an edited picture gets a new one and cannot be served a stale one. Emptied from the preferences. |
 | `.the-eye.grades.json` | Beside the pictures. A grade travels with the folder; copy the folder elsewhere and the grades come too. |
+| `~/Projects/Studies/<Subject>/pages/` | Notebook pages, straightened, beside the day's notes they are in. |
+| `~/SecondBrain/inbox/` | Notebook pages not yet given a subject, each with a note carrying where it came from. |
+| `~/SecondBrain/learning/palaces/<Palace>/` | Photographs of a palace's loci, numbered in the order of the walk. |
 
 **Nothing is ever written into a picture or a video.** A grade goes in the
 sidecar, exporting writes a new file, and an export that would land on the
@@ -221,6 +320,12 @@ The photograph half works without GStreamer; it says so once and carries on.
 Extra pixbuf loaders — `libheif`, `libavif`, `libjxl`, `webp-pixbuf-loader` —
 add their formats, and The Eye says "no loader for HEIC on this machine"
 rather than showing a grey rectangle.
+
+For notebook pages, three more things help and none is required. `numpy`
+makes the straightening a few array operations; without it GdkPixbuf and
+cairo do the same work, a page in under two seconds here. `tesseract` (and
+`tesseract-data-hun`) reads print; Claude Code reads handwriting. With
+neither, pages are filed as images and the panel says why.
 
 Set up the same way as the rest of the apps here — a symlink into
 `~/.local/bin` so it is on the path and can still update itself from the
@@ -269,16 +374,26 @@ used off the main thread — the video export's — is Cairo there.
 python3 tests/test_theeye.py
 ```
 
-About seventy checks. Most of them are arithmetic — a known colour through a
+About a hundred checks. Most of them are arithmetic — a known colour through a
 known grade, compared against the number it should come out as — because that
 is where the bugs that matter would be: a transposed matrix or a channel swap
 looks plausible on screen and is obvious in a number. The rest build widgets,
 play the clips and export them.
 
-Test media is built rather than checked in: about a fifth of a second and two
-hundred kilobytes, by `tests/fixtures.py`. The EXIF test file is assembled byte
-by byte on purpose — a parser tested against the output of the library that
-inspired it only proves the two agree.
+The paper half is checked the same way, against a page whose answers are
+known: `fixtures.py` photographs a ruled, written-on sheet through a pinhole
+camera tilted towards it, under a light that falls off to one corner, so where
+its corners land and what shape it really is are numbers rather than
+opinions. The suite finds the corners, recovers the shape, compares the
+numpy, cairo and plain Python warps against each other, files pages into a
+scratch brain — never the real one — and reads them with stand-ins for
+Tesseract and Claude that check how they were called. Where Tesseract is
+installed with a language, it also reads the page's printed header for real.
+
+Test media is built rather than checked in: a second or two and a megabyte,
+by `tests/fixtures.py`. The EXIF test file is assembled byte by byte on
+purpose — a parser tested against the output of the library that inspired it
+only proves the two agree.
 
 Nothing in the suite puts a window on screen or makes a noise. Widgets are
 built and drawn into offscreen render nodes but never presented, and every

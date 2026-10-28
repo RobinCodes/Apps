@@ -92,6 +92,10 @@ DEFAULTS = {
     "export_quality": 95,
     "export_format": "same",   # same | png | jpeg | webp
 
+    # notebook pages
+    "page_subject": "",        # where the last page went: Inbox or a subject
+    "page_reader": "",         # claude | tesseract | none; "" for the best here
+
     # the window
     "window_width": 1280,
     "window_height": 800,
@@ -107,6 +111,7 @@ VALID = {
     "sort": ("name", "date", "size", "kind", "random"),
     "strip_at": ("bottom", "top", "start", "end"),
     "export_format": ("same", "png", "jpeg", "webp"),
+    "page_reader": ("", "claude", "tesseract", "none"),
 }
 
 LIMITS = {

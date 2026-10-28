@@ -33,6 +33,9 @@ SHORTCUTS: list[tuple[str, tuple, str, str, str]] = [
     ("win.open", ("<Control>o",), "Open a file", "Moving", "all"),
     ("win.open-folder", ("<Control><Shift>o",), "Open a folder", "Moving", "all"),
     ("win.reload", ("<Control>r", "F5"), "Load it again from disk", "Moving", "all"),
+    ("win.mark", ("<Control>m",), "Mark this one, to do something to several",
+     "Moving", "all"),
+    ("win.clear-marks", ("<Control><Shift>m",), "Clear the marks", "Moving", "all"),
 
     # Playing
     ("win.play-pause", ("space", "k"), "Play or pause", "Playing", "video"),
@@ -105,7 +108,16 @@ SHORTCUTS: list[tuple[str, tuple, str, str, str]] = [
     ("win.set-wallpaper", (), "Use it as the desktop background",
      "This file", "photo"),
 
+    # Into the brain. Ctrl+Shift+I is Notedown's key for the inbox too
+    # (SYSTEM.md §4.1), which is where a page goes unless it is told otherwise.
+    ("win.import-pages", ("<Control><Shift>i",), "Import notebook pages",
+     "Into the brain", "photo"),
+    ("win.palace-locus", (), "Use as a palace locus", "Into the brain", "photo"),
+    ("win.ask-claude", ("<Control><Shift>a",), "Ask Claude about this picture",
+     "Into the brain", "all"),
+
     # The window
+    ("win.palette", ("<Control>k",), "Every command, by name", "Window", "all"),
     ("win.theme-next", ("<Control>comma",), "The next theme", "Window", "all"),
     ("win.preferences", ("<Control>p",), "Preferences", "Window", "all"),
     ("win.shortcuts", ("<Control>question", "question", "F1"),
@@ -115,7 +127,8 @@ SHORTCUTS: list[tuple[str, tuple, str, str, str]] = [
     ("app.quit", ("<Control>q",), "Quit", "Window", "all"),
 ]
 
-GROUPS = ("Moving", "Playing", "Looking", "Editing", "This file", "Window")
+GROUPS = ("Moving", "Playing", "Looking", "Editing", "This file",
+          "Into the brain", "Window")
 
 
 def accelerators() -> list[tuple[str, tuple]]:

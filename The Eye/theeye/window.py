@@ -40,10 +40,11 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
-from . import (config as configuration, editor as editing,  # noqa: E402
-               export as exporting, filmstrip, glass, grade as grading,
-               housestyle, jobs, library, looks, media, metadata, photo,
-               player, stage as staging, theme as theming, thumbs,
+from . import (ask as asking, config as configuration,  # noqa: E402
+               editor as editing, export as exporting, filmstrip, glass,
+               grade as grading, housestyle, jobs, library, looks, media,
+               metadata, pages as paging, palette as palettes, photo, player,
+               stage as staging, theme as theming, thumbs,
                transport as transporting, widgets)
 from .grade import Grade  # noqa: E402
 
@@ -163,6 +164,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.root.add_overlay(self._osd())
         self.root.add_overlay(self._preview_card())
         self.root.add_overlay(self._progress_card())
+        self.root.add_overlay(self._ask_panel())
+        self.root.add_overlay(self._importer_panel())
+        self.root.add_overlay(self._palette_card())
+        self._guard_typing()
 
         # Any pointer movement brings the chrome back. On the root rather than
         # on the stage, so that moving over a bar counts as activity too and
@@ -260,6 +265,8 @@ class MainWindow(Adw.ApplicationWindow):
         work.append("Move to Wastebasket", "win.trash")
         menu.append_section("This file", work)
 
+        menu.append_section("Into the brain", self._brain_menu())
+
         app_items = Gio.Menu()
         app_items.append("Another Window", "app.new-window")
         app_items.append("Preferences…", "win.preferences")
@@ -287,6 +294,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.strip = filmstrip.Filmstrip(self.scheme, self.config["strip_size"])
         self.strip.set_sources(self.thumbs, self.state.progress_for)
         self.strip.connect("chosen", lambda _s, index: self.go_to(index))
+        self.strip.connect("marks-changed", lambda _s: self._refresh_title())
+        self.strip.connect("menu-wanted", self._strip_menu)
         self.strip_glass = widgets.Glass(
             self.strip, kind="strip", radius=14.0, scheme=self.scheme,
             translucency=self.config["translucency"])
@@ -402,6 +411,81 @@ class MainWindow(Adw.ApplicationWindow):
             transition_duration=140)
         return self.progress_reveal
 
+    def _ask_panel(self):
+        """Ask Claude about this picture: where the editor goes, and instead of it."""
+        self.asker = asking.AskPanel(self._toast, lambda: self._set_ask(False))
+        self.ask_glass = widgets.Glass(
+            self.asker, kind="panel", scheme=self.scheme,
+            translucency=self.config["translucency"])
+        self.ask_reveal = Gtk.Revealer(
+            child=self.ask_glass, halign=Gtk.Align.END,
+            transition_type=Gtk.RevealerTransitionType.SLIDE_LEFT,
+            transition_duration=200, reveal_child=False,
+            margin_top=78, margin_bottom=10, margin_end=10)
+        return self.ask_reveal
+
+    def _importer_panel(self):
+        """Import notebook pages, over the whole window while it lasts.
+
+        Shown and hidden rather than revealed: it covers the picture, and a
+        revealer that is not showing anything still stands in front of it.
+        """
+        self.importer = paging.Importer(self.scheme, self.config, self._toast)
+        self.importer.connect("closed", lambda _i: self._set_importer(False))
+        self.importer_glass = widgets.Glass(
+            self.importer, kind="panel", scheme=self.scheme,
+            translucency=self.config["translucency"])
+        for side in ("top", "bottom", "start", "end"):
+            getattr(self.importer_glass, f"set_margin_{side}")(10)
+        self.importer_glass.set_visible(False)
+        return self.importer_glass
+
+    def _palette_card(self):
+        self.palette = palettes.Palette(
+            lambda name: self.activate_action(name, None),
+            lambda: self._set_palette(False))
+        self.palette_glass = widgets.Glass(
+            self.palette, kind="card", scheme=self.scheme,
+            translucency=self.config["translucency"])
+        self.palette_glass.set_halign(Gtk.Align.CENTER)
+        self.palette_glass.set_valign(Gtk.Align.START)
+        self.palette_glass.set_margin_top(72)
+        self.palette_glass.set_visible(False)
+        return self.palette_glass
+
+    def _guard_typing(self):
+        """Let a text field have the keys before the shortcuts do.
+
+        GTK runs an application's accelerators in the capture phase, before
+        the widget with the focus sees the key — and nearly every key here is
+        a single letter, so typing "quiz" into the palette would close the
+        window at the q. While a text field has the focus the window's own
+        shortcut controller is moved to the bubble phase, after the field;
+        everywhere else nothing changes, so Space still plays with a button
+        focused. When GTK names that controller differently this does
+        nothing, which is how things were.
+        """
+        self._app_keys = None
+        controllers = self.observe_controllers()
+        for index in range(controllers.get_n_items()):
+            controller = controllers.get_item(index)
+            if (isinstance(controller, Gtk.ShortcutController)
+                    and controller.get_name() == "gtk-application-shortcuts"):
+                self._app_keys = controller
+                break
+        del controllers
+        self.connect("notify::focus-widget", lambda *_: self._on_focus_moved())
+
+    def _on_focus_moved(self):
+        if self._app_keys is None:
+            return
+        typing = isinstance(self.get_focus(), (Gtk.Text, Gtk.TextView))
+        self._app_keys.set_propagation_phase(
+            Gtk.PropagationPhase.BUBBLE if typing else Gtk.PropagationPhase.CAPTURE)
+
+    def _toast(self, text, timeout=4):
+        widgets.toast(self.toasts, text, timeout)
+
     # ------------------------------------------------------------- actions ----
 
     def _install_actions(self):
@@ -464,7 +548,13 @@ class MainWindow(Adw.ApplicationWindow):
             "preferences": self._preferences,
             "shortcuts": self._shortcuts_window,
             "about": self._about,
-            "close": self.close,
+            "mark": self._mark_current,
+            "clear-marks": lambda: self.strip.clear_marks(),
+            "import-pages": self._import_pages,
+            "palace-locus": self._palace_locus,
+            "ask-claude": self._ask_claude,
+            "palette": lambda: self._set_palette(True),
+            "close": self._close_front,
         }
         for name, handler in simple.items():
             action = Gio.SimpleAction.new(name, None)
@@ -612,10 +702,16 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------- loading ----
 
     def go_to(self, index: int):
+        if self._importing():
+            return
         if self.reel.go_to(index) is not None:
             self._load_current()
 
     def step(self, by: int):
+        # The pages being imported cover the picture; moving through the
+        # folder under them would only be confusing.
+        if self._importing():
+            return
         item = self.reel.step(by)
         if item is None:
             if self._slideshow:
@@ -1124,6 +1220,7 @@ class MainWindow(Adw.ApplicationWindow):
         """Reflow for a window too narrow for one row of transport controls."""
         self.transport.set_narrow(narrow)
         self.subtitle.set_visible(not narrow)
+        self.importer.set_narrow(narrow)
 
     def _on_motion(self, _controller, x, y):
         self.ambient.wake()
@@ -1164,7 +1261,9 @@ class MainWindow(Adw.ApplicationWindow):
         if (item.is_playable() and not self.engine.playing()
                 and not self._slideshow):
             return False
-        if self.editor_reveal.get_reveal_child() or self.info_reveal.get_reveal_child():
+        if (self.editor_reveal.get_reveal_child() or self.info_reveal.get_reveal_child()
+                or self.ask_reveal.get_reveal_child() or self._importing()
+                or self.palette_glass.get_visible()):
             return False
         if self._hovered or self.menu_button.get_active():
             return False
@@ -1214,6 +1313,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_chrome()
 
     def _set_editor(self, on):
+        if on and self.ask_reveal.get_reveal_child():
+            self._set_ask(False)
         self.config["editor_open"] = on
         self.lookup_action("editor").set_state(GLib.Variant.new_boolean(on))
         self.editor_button.set_active(on)
@@ -1259,9 +1360,12 @@ class MainWindow(Adw.ApplicationWindow):
         shrinks to meet the panel rather than sliding under it.
         """
         editor_on = self.editor_reveal.get_reveal_child()
+        ask_on = self.ask_reveal.get_reveal_child()
         info_on = self.info_reveal.get_reveal_child()
         strip_on = self.strip_reveal.get_reveal_child()
-        self.stage.set_margin_end(self.editor.WIDTH + 20 if editor_on else 0)
+        self.stage.set_margin_end(self.editor.WIDTH + 20 if editor_on
+                                  else asking.WIDTH + 48 if ask_on else 0)
+        editor_on = editor_on or ask_on
         self.stage.set_margin_start(320 if info_on else 0)
         if strip_on and self.config["strip_at"] in ("start", "end"):
             room = int(self.config["strip_size"]) + 40
@@ -1327,6 +1431,9 @@ class MainWindow(Adw.ApplicationWindow):
             look = looks.matching(self.grade)
             bits.append(looks.by_key(look)["name"] if look
                         else f"{touched} adjustment" + ("s" if touched > 1 else ""))
+        marked = len(self.strip.marked())
+        if marked:
+            bits.append(f"{marked} marked")
         self.subtitle.set_text("   ·   ".join(bits))
 
     def _refresh_info(self):
@@ -1765,6 +1872,135 @@ class MainWindow(Adw.ApplicationWindow):
 
         dialog.save(self, None, chosen)
 
+    # -------------------------------------------------------- into the brain ----
+
+    def _brain_menu(self):
+        menu = Gio.Menu()
+        menu.append("Import Notebook Pages…", "win.import-pages")
+        menu.append("Use as a Palace Locus…", "win.palace-locus")
+        menu.append("Ask Claude About This…", "win.ask-claude")
+        return menu
+
+    def _strip_menu(self, _strip, index, x, y):
+        """A right-click in the strip: for the marked ones, or for this one.
+
+        On a thumbnail that is not marked, the marks are let go of and that
+        picture is opened, so that what the menu does is to what is on screen.
+        """
+        if not self.strip.is_marked(index):
+            self.strip.clear_marks()
+            self.go_to(index)
+        menu = self._brain_menu()
+        marks = Gio.Menu()
+        marks.append("Mark or Unmark This One", "win.mark")
+        marks.append("Clear the Marks", "win.clear-marks")
+        menu.append_section(None, marks)
+        popover = Gtk.PopoverMenu.new_from_model(menu)
+        popover.set_parent(self.strip)
+        where = Gdk.Rectangle()
+        where.x, where.y, where.width, where.height = int(x), int(y), 1, 1
+        popover.set_pointing_to(where)
+        popover.set_has_arrow(False)
+        popover.connect("closed", lambda p: GLib.idle_add(
+            lambda: (p.unparent(), GLib.SOURCE_REMOVE)[1]))
+        popover.popup()
+
+    def _chosen_stills(self) -> list[str]:
+        """The photographs marked in the strip, or the one on screen."""
+        current = self.reel.current()
+        paths = self.strip.marked() or ([current.path] if current else [])
+        return [path for path in paths if media.is_photo(path)]
+
+    def _mark_current(self):
+        if self.reel.current() is not None:
+            self.strip.toggle_mark(self.reel.index)
+
+    def _importing(self) -> bool:
+        glass_ = getattr(self, "importer_glass", None)
+        return glass_ is not None and glass_.get_visible()
+
+    def _import_pages(self):
+        paths = self._chosen_stills()
+        if not paths or not self.importer.start(paths):
+            self._toast("Import notebook pages works on photographs — mark some in "
+                        "the strip, or open one", 5)
+            return
+        self._set_importer(True)
+
+    def _set_importer(self, on):
+        if on:
+            self._stop_slideshow()
+            self._set_palette(False)
+        self.importer_glass.set_visible(on)
+        if on:
+            self._show_chrome()
+        self._restart_hide_timer()
+
+    def _palace_locus(self):
+        item = self.reel.current()
+        if item is None or not item.is_photo():
+            self._toast("A palace locus is a photograph of the place")
+            return
+        from . import loci
+
+        # Presented on the content rather than on the window, so it still
+        # finds its way when the content is hosted somewhere else.
+        loci.LocusDialog(item.path, self._toast).present(self.toasts)
+
+    def _ask_claude(self):
+        item = self.reel.current()
+        if item is None:
+            return
+        frame = None
+        if item.is_playable():
+            frame = self.engine.frame() if item.is_video() else None
+            if frame is None:
+                self._toast("There is no picture on screen to ask about")
+                return
+        elif self._still is None or not self._still.ok():
+            self._toast("The picture has not loaded yet")
+            return
+        if self.asker.about(item.path, frame):
+            self._set_ask(True)
+
+    def _set_ask(self, on):
+        if on and self.editor_reveal.get_reveal_child():
+            self._set_editor(False)
+        self.ask_reveal.set_reveal_child(on)
+        self._inset_stage()
+        if on:
+            self._show_chrome()
+        else:
+            self._restart_hide_timer()
+
+    def _set_palette(self, on):
+        self.palette_glass.set_visible(on)
+        if on:
+            self.palette.open()
+            self._show_chrome()
+        else:
+            self.set_focus(None)
+            self._restart_hide_timer()
+
+    def _close_front(self):
+        """Escape, Q and Ctrl+W: whatever is in front goes first, then the window.
+
+        A dialog first of all: the window's shortcuts reach a key before the
+        dialog does, so without this Escape in the preferences closed the
+        window behind them.
+        """
+        dialog = self.get_visible_dialog() if hasattr(self, "get_visible_dialog") else None
+        if dialog is not None:
+            dialog.close()
+        elif self.palette_glass.get_visible():
+            self._set_palette(False)
+        elif self._importing():
+            self.importer.close()
+        elif self.ask_reveal.get_reveal_child():
+            self.asker.close()
+        else:
+            self.close()
+
     # ---------------------------------------------------------- preferences ----
 
     def _theme_key(self) -> str:
@@ -1809,9 +2045,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.transport.set_scheme(self.scheme)
         self.preview.set_scheme(self.scheme)
         self._sound_face.set_scheme(self.scheme)
+        self.importer.set_scheme(self.scheme)
         for panel in (self.top_glass, self.transport_glass, self.strip_glass,
                       self.editor_glass, self.info_glass, self.osd_glass,
-                      self.progress_glass):
+                      self.progress_glass, self.ask_glass, self.importer_glass,
+                      self.palette_glass):
             panel.set_scheme(self.scheme)
             panel.set_translucency(self.config["translucency"])
             panel.set_enabled(self.config["glass"])
@@ -1920,6 +2158,18 @@ class MainWindow(Adw.ApplicationWindow):
             widgets.confirm(self, "Stop the export?",
                             "The partly written file will be removed.",
                             "Stop and close", go)
+            return True
+        if self.importer.filer.busy() and not getattr(self, "_leaving", False):
+            def leave():
+                self._leaving = True
+                self.close()
+
+            # The images are already in place; what would be lost is the
+            # text still being read, which is the slow half.
+            widgets.confirm(self.toasts, "Pages are still being read",
+                            "They are filed already. Close now and the text of "
+                            "the ones still being read is not added to them.",
+                            "Close anyway", leave)
             return True
         self._save_geometry()
         self.config.save()
