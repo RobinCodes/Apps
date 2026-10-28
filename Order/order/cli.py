@@ -160,12 +160,29 @@ def _lock():
         return None
 
 
+def console_python() -> str:
+    """The console-subsystem Python beside whichever one is running.
+
+    The timer runs `pythonw.exe`, which has no console. On Windows every console
+    program it starts — git, and everything git starts — would then open a console
+    window of its own and flash it on screen. Starting the brain's own work with
+    `python.exe` and CREATE_NO_WINDOW instead gives that work one hidden console,
+    which everything below it inherits, so nothing ever appears.
+    """
+    exe = sys.executable
+    if WINDOWS and exe.lower().endswith("pythonw.exe"):
+        console = exe[:-len("pythonw.exe")] + "python.exe"
+        if os.path.isfile(console):
+            return console
+    return exe
+
+
 def _brain_sync(repo, say) -> bool:
     anam = repo.where / "anam.py"
     if not anam.is_file():
         say(f"  brain: no anam.py in {repo.where}")
         return False
-    done = subprocess.run([sys.executable, str(anam), "sync"], capture_output=True, text=True,
+    done = subprocess.run([console_python(), str(anam), "sync"], capture_output=True, text=True,
                           encoding="utf-8", errors="replace",
                           creationflags=gitrepo.NO_WINDOW)
     say(f"  brain: {(done.stdout or done.stderr).strip().splitlines()[-1] if (done.stdout or done.stderr).strip() else 'synced'}")
@@ -182,8 +199,12 @@ def _maybe_refresh(m, say) -> None:
     if not anam.is_file():
         return
     out = (cache() / "refresh.log").open("a", encoding="utf-8")
-    kwargs = {"creationflags": gitrepo.NO_WINDOW | 0x00000008} if WINDOWS else {"start_new_session": True}
-    subprocess.Popen([sys.executable, str(anam), "refresh"], stdout=out, stderr=out,
+    # A hidden console of its own (not DETACHED_PROCESS, which leaves it none, so
+    # every tool and git call beneath it would open a window), in its own group so
+    # it outlives this sync.
+    kwargs = ({"creationflags": gitrepo.NO_WINDOW | 0x00000200} if WINDOWS
+              else {"start_new_session": True})
+    subprocess.Popen([console_python(), str(anam), "refresh"], stdout=out, stderr=out,
                      stdin=subprocess.DEVNULL, **kwargs)
     state["last_refresh_epoch"] = time.time()
     save_state(state)
