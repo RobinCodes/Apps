@@ -1457,6 +1457,9 @@ def test_the_selection_goes_to_the_inbox_and_undo_takes_it_back(window):
     with open(os.path.join(inbox, made), encoding="utf-8") as fh:
         body = fh.read()
     assert "origin: notedown" in body and body.rstrip().endswith("a thought worth keeping")
+    # And where it came from, as the Order asks of every capture.
+    assert 'source: "Projects/Studies/Biology/capture.md"' in body, body
+    assert 'lines: "2"' in body, body
     assert made in toasts[0][0]
     # Sent, not moved: the note it came from is as it was.
     assert document.text() == "first line\na thought worth keeping\n"

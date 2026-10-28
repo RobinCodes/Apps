@@ -1374,9 +1374,19 @@ class MainWindow(Adw.ApplicationWindow):
         if not brain.places().exists():
             widgets.toast(self, "There is no second brain on this machine to send it to")
             return
+        # Where it came from, which the Order asks every capture to keep: the
+        # note, home-relative, and the lines the selection was on.
+        meta = {}
+        bounds = document.editor.buffer.get_selection_bounds()
+        if not whole and document.path and bounds:
+            first, last = bounds[0].get_line() + 1, bounds[1].get_line() + 1
+            if bounds[1].starts_line() and last > first:
+                last -= 1
+            meta = {"source": brain.places().relative(document.path),
+                    "lines": str(first) if first == last else f"{first}-{last}"}
 
         def work():
-            path = brain.capture_text(text, origin="notedown")
+            path = brain.capture_text(text, origin="notedown", meta=meta)
             return str(path), path.read_text(encoding="utf-8")
 
         def done(result):

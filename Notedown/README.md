@@ -195,8 +195,8 @@ not tomorrow.
 
 Ctrl+Shift+I sends the selection to the brain's inbox as a note of its own —
 `inbox/2026-10-27 0715 First line.md`, with front matter saying it came from
-here — and says what it was called. The selection stays where it was: sending
-is not moving.
+Notedown, from which note and from which lines — and says what it was called.
+The selection stays where it was: sending is not moving.
 
 With nothing selected, a new note that has never been saved goes whole, and
 its tab is left empty for the next thought. The thought is in the inbox now,
