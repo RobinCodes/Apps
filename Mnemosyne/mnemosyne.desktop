@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Mnemosyne
+GenericName=Flashcards and memory training
+Comment=Review the cards written in your notes, on screen or on paper
+Exec=/home/robin/.local/bin/mnemosyne
+Icon=mnemosyne
+Terminal=false
+Categories=Education;
+Keywords=flashcards;cards;review;spaced;repetition;fsrs;memory;palace;study;learn;mentalist;
+StartupNotify=true
+StartupWMClass=com.robin.Mnemosyne
+Actions=print-sheet;
+
+[Desktop Action print-sheet]
+Name=Print Today's Sheet
+Exec=/home/robin/.local/bin/mnemosyne --print

@@ -1,6 +1,6 @@
 # Apps
 
-Nine desktop applications, written for Linux; eight of them also run on
+Ten desktop applications, written for Linux; nine of them also run on
 Windows.
 
 | | What it is | Windows |
@@ -11,6 +11,7 @@ Windows.
 | [Hermione](Hermione/) | A file manager: two panes, tabs, a command palette, and a window made of glass | GTK4 via MSYS2 |
 | [LaRenderer](LaRenderer/) | A LaTeX editor with the compiled pages beside the text | GTK4 via MSYS2 |
 | [Lyndon Browser](Lyndon%20Browser/) | A small, fast, private browser | Win32 + WebView2 |
+| [Mnemosyne](Mnemosyne/) | The cards in your notes, scheduled by FSRS and reviewed on paper or on screen; memory palaces and drills | GTK4 via MSYS2 |
 | [Notedown](Notedown/) | A Markdown editor with the rendered page beside the text | GTK4 via MSYS2 |
 | [Order](Order/) | Every machine laid out the same: bootstrap, sync, doctor, drive plans | Both |
 | [Prism](Terminal/) | A terminal made of glass: tabs, splits, the house themes | Linux only — VTE has no Windows build |
@@ -304,6 +305,7 @@ What each suite covers:
 | Claude Desk | The protocol — slash commands, question parsing, the answer frame — the session state machine, and the widgets in a real window. `CLAUDE_DESK_LIVE=1` also drives a real child, which spends tokens. |
 | Git Manager | The porcelain parsers against throwaway repositories built for the purpose: status, renames, conflicts, log, branches, stashes, diffs. Then paths, settings and the ignore rules. No network. |
 | LaRenderer | The engine-log parser against captured text, which needs nothing installed, and a real compile where there is an engine to do it. |
+| Mnemosyne | The day's queue — paper, siblings, test dates, decks switched off — sheets and their PDFs, the trainers' arithmetic, the week, the FSRS fitter and the command line, against a scratch home; then the real window driven by its keys, and its content hosted in another window. |
 | Fathom | A small filesystem built for the purpose — hardlink, symlink loop, unreadable folder, empty folder — and the totals that come back off it, checked against `du` where there is a `du`. Then the treemap as geometry, and a real window that deletes real files in its own scratch directory. |
 | Notedown | The Markdown parser against documents built to break it — positions, tight and loose lists, tables, footnotes, front matter — then the editing courtesies against a real text buffer, the preview's widget reuse, and a window that opens and saves real files. Also that the window still fits a 455px tiling column. |
 | Lyndon Browser | The filter-list compiler on Linux, the request matcher on Windows, and on both the shared URL handling — address-or-search, first-party grouping, a file named on the command line, and the JavaScript escaping the password manager fills through. |
