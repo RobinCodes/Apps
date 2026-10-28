@@ -1121,8 +1121,18 @@ def test_opening_a_folder_in_the_window():
             if len(win.reel) < 6:
                 trouble.append(f"only {len(win.reel)} items in the reel")
                 return
+            # Waited for by name: the stage already shows the folder's first
+            # picture, so "something is on the stage" is true before the
+            # second scan has even finished.
             win.open_path(os.path.join(MEDIA, "test.png"))
-            if not _pump_until(lambda: win.stage.content() is not None, 8):
+            if not _pump_until(lambda: win.reel.current() is not None
+                               and win.reel.current().name == "test.png", 8):
+                landed = win.reel.current().name if win.reel.current() else None
+                trouble.append(f"the reel landed on {landed!r}, not on test.png")
+                return
+            if not _pump_until(lambda: win._still is not None
+                               and win._still.path == win.reel.current().path
+                               and win.stage.content() is not None, 8):
                 trouble.append("the picture never reached the stage")
                 return
             if "test.png" not in win.title.get_text():
