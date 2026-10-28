@@ -14,12 +14,17 @@ bar along the bottom, where six pages fit at 455, and the Claude panel becomes
 an overlay instead of a side column. The test suite checks the window can be
 made 360px wide.
 
-*It may not be the window.* The unified app (Mind Palace) builds this window
-without presenting it and hosts `get_content()` in one of its own, with this
-window inserted as the content's "win" action group. So every shortcut is on
-a controller inside the content as well as on the application, every dialog
-is presented on a widget in the content, and nothing here asks a widget for
-its root expecting to find a `MainWindow`.
+*It may not be the window.* In Mind Palace, Mnemosyne is a room (room.py):
+this class is built with a `host` and never presented, and what the palace
+shows is `room_widget` — the same pages and activities, under a bar of the
+room's own buttons instead of a header bar, with no glass of its own (the
+palace has the glass), its breakpoints on an `Adw.BreakpointBin`, and this
+window inserted as the widget's "win" action group so every `win.*` name
+still resolves. The window is not given the application in that case: an
+application keeps running while it has a window, hidden or not, and a room
+must not keep the palace alive after its own window has closed. Every dialog
+is presented on a widget inside the content, and nothing here asks a widget
+for its root expecting to find a `MainWindow`.
 """
 
 from __future__ import annotations
@@ -73,9 +78,38 @@ SHORTCUTS = (
 )
 
 
+class RoomBar(Gtk.CenterBox):
+    """A header bar without a window to head: the room's own buttons, and no more.
+
+    Answers the three calls the window makes of an `Adw.HeaderBar`, so the
+    rest of this class builds one bar or the other the same way.
+    """
+
+    def __init__(self):
+        super().__init__(css_classes=["toolbar", "room-bar"])
+        self._start = Gtk.Box(spacing=4)
+        self._end = Gtk.Box(spacing=4)
+        self.set_start_widget(self._start)
+        self.set_end_widget(self._end)
+
+    def pack_start(self, widget):
+        self._start.append(widget)
+
+    def pack_end(self, widget):
+        # As a header bar does it: the first packed is the outermost.
+        self._end.prepend(widget)
+
+    def set_title_widget(self, widget):
+        self.set_center_widget(widget)
+
+
 class MainWindow(Adw.ApplicationWindow):
-    def __init__(self, app, library: Library | None = None):
-        super().__init__(application=app, title="Mnemosyne")
+    def __init__(self, app, library: Library | None = None, host=None):
+        self.host = host
+        if host is None:
+            super().__init__(application=app, title="Mnemosyne")
+        else:
+            super().__init__(title="Mnemosyne")
         self.config = Config()
         self.library = library or Library()
         self.activity = None
@@ -88,27 +122,49 @@ class MainWindow(Adw.ApplicationWindow):
         # housestyle.Geometry for why the maximise is treated differently
         # under a tiling compositor.
         self.geometry = housestyle.Geometry(self, self.config, minimum=(360, 360))
-        self.geometry.restore()
+        if host is None:
+            self.geometry.restore()
 
         self.assistant = Assistant(self)
         self._build_actions()
         self._build_ui()
         self._install_shortcuts()
 
-        self.connect("close-request", self._on_close)
-        self.connect("notify::is-active", self._on_active_changed)
+        if host is None:
+            self.connect("close-request", self._on_close)
+            self.connect("notify::is-active", self._on_active_changed)
+        else:
+            # A room is never the active window; coming into view is the
+            # moment to read the notes again.
+            self.room_widget.connect("map", self._on_active_changed)
         GLib.idle_add(self.refresh)
 
     # ------------------------------------------------------------ building --
 
     def _build_ui(self):
         self.toasts = Adw.ToastOverlay()
-        # The house style: the window paints nothing and everything sits on
-        # one rounded, translucent slab of glass inside it.
-        self.glazing = housestyle.Glazing(self, self.config,
-                                          extra=widgets.css(self.config["card_font_size"]),
-                                          app_class="mnemosyne")
-        self.glazing.wrap(self.toasts)
+        if self.host is None:
+            # The house style: the window paints nothing and everything sits
+            # on one rounded, translucent slab of glass inside it.
+            self.glazing = housestyle.Glazing(
+                self, self.config, extra=widgets.css(self.config["card_font_size"]),
+                app_class="mnemosyne")
+            self.glazing.wrap(self.toasts)
+            self.room_widget = None
+        else:
+            # A room: the palace has the glass and the house sheet. This app's
+            # own rules go on a provider of their own, so that installing them
+            # does not replace whatever the palace installed.
+            self.glazing = None
+            self.room_widget = Adw.BreakpointBin(width_request=360, height_request=360,
+                                                 css_classes=["mnemosyne"])
+            self.room_widget.set_child(self.toasts)
+            self.toasts.insert_action_group("win", self)
+            self._room_css = Gtk.CssProvider()
+            self._room_css.load_from_string(widgets.css(self.config["card_font_size"]))
+            Gtk.StyleContext.add_provider_for_display(
+                Gdk.Display.get_default(), self._room_css,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
 
         # The Claude panel shares the width with everything else, and folds
         # over it in a narrow column.
@@ -122,7 +178,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.split.set_content(outer)
         self.content_box = outer
 
-        self.header = Adw.HeaderBar()
+        self.header = Adw.HeaderBar() if self.host is None else RoomBar()
         outer.append(self.header)
 
         self.back_button = widgets.flat("go-previous-symbolic", "Back (Esc)")
@@ -198,13 +254,14 @@ class MainWindow(Adw.ApplicationWindow):
         medium = Adw.Breakpoint.new(Adw.BreakpointCondition.new_length(
             Adw.BreakpointConditionLengthType.MAX_WIDTH, MEDIUM, Adw.LengthUnit.PX))
         medium.add_setter(self.switcher, "policy", Adw.ViewSwitcherPolicy.NARROW)
-        self.add_breakpoint(medium)
+        holder = self.room_widget or self
+        holder.add_breakpoint(medium)
         condition = Adw.BreakpointCondition.new_length(
             Adw.BreakpointConditionLengthType.MAX_WIDTH, NARROW, Adw.LengthUnit.PX)
         self.narrow = Adw.Breakpoint.new(condition)
         self.narrow.connect("apply", lambda *_: self._set_narrow(True))
         self.narrow.connect("unapply", lambda *_: self._set_narrow(False))
-        self.add_breakpoint(self.narrow)
+        holder.add_breakpoint(self.narrow)
         self._narrow = False
         self._set_narrow(False)
 
@@ -298,7 +355,11 @@ class MainWindow(Adw.ApplicationWindow):
         if app is not None:
             for action, keys in SHORTCUTS:
                 app.set_accels_for_action(action, keys)
-        controller = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
+        # In a room, only while the focus is inside it: the palace applies the
+        # room's accelerators itself while the room is the one on show.
+        controller = Gtk.ShortcutController(
+            scope=Gtk.ShortcutScope.MANAGED if self.host is None
+            else Gtk.ShortcutScope.LOCAL)
         for action, keys in SHORTCUTS:
             for key in keys:
                 trigger = Gtk.ShortcutTrigger.parse_string(key)
@@ -392,7 +453,8 @@ class MainWindow(Adw.ApplicationWindow):
         # again, unless something is being studied right now.
         # Not more than once a minute: a tiling desktop moves the focus about
         # all day, and a rescan is the most expensive thing this app does.
-        if (self.props.is_active and self.activity is None and self.library.loaded
+        shown = self.host is not None or self.props.is_active
+        if (shown and self.activity is None and self.library.loaded
                 and time.monotonic() - self._refreshed_at > 60):
             self.refresh()
 
@@ -515,6 +577,14 @@ class MainWindow(Adw.ApplicationWindow):
     def open_note(self, path, line=None):
         """Open a note in Notedown when it is beside this app, else as the desktop would."""
         path = str(path)
+        # In the palace, Notedown is a room too: the note opens there.
+        opener = getattr(self.host, "open", None)
+        if callable(opener):
+            try:
+                if opener(path):
+                    return
+            except Exception:  # noqa: BLE001 - the window's own way still works
+                pass
         notedown = _sibling("Notedown", "notedown.py")
         if notedown:
             exe = sys.executable
@@ -536,6 +606,9 @@ class MainWindow(Adw.ApplicationWindow):
         preferences(self).present(self.toasts)
 
     def apply_card_size(self):
+        if self.glazing is None:
+            self._room_css.load_from_string(widgets.css(self.config["card_font_size"]))
+            return
         self.glazing.extra = widgets.css(self.config["card_font_size"])
         self.glazing.apply()
 

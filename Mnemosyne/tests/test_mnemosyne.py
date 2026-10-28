@@ -1175,6 +1175,78 @@ def test_a_deck_switched_off_in_preferences_leaves_the_queue(app):
     window.close()
 
 
+class FakePalace:
+    """The host side of Mind Palace's room contract, as little of it as a room uses."""
+
+    def __init__(self, app):
+        self.app = app
+        self.parent = None
+        self.toasts, self.opened, self.asked, self.shown = [], [], [], []
+
+    def toast(self, text, undo=None):
+        self.toasts.append(text)
+
+    def open(self, path):
+        self.opened.append(str(path))
+        return True
+
+    def show(self, title):
+        self.shown.append(title)
+
+    def ask_claude(self, prompt, files):
+        self.asked.append((prompt, list(files)))
+
+
+def _descendants(widget):
+    child = widget.get_first_child()
+    while child is not None:
+        yield child
+        yield from _descendants(child)
+        child = child.get_next_sibling()
+
+
+def test_mnemosyne_is_a_room_of_the_palace(app):
+    from mnemosyne import room
+
+    where = make_home("w-room")
+    use_home(where)
+    host = FakePalace(app)
+    assert room.TITLE == "Mnemosyne" and isinstance(room.ORDER, int)
+    assert os.path.isfile(os.path.join(ROOT, f"{room.ICON}.svg"))
+    opened = room.build(host)
+    widget = opened.widget
+    assert not any(isinstance(w, Adw.HeaderBar) for w in _descendants(widget)), \
+        "a room has no header bar of its own"
+    assert opened.window not in app.get_windows(), "a room must not keep the app alive"
+    assert all(action.startswith("room.") for action, _keys in opened.accels)
+
+    palace = Adw.ApplicationWindow(application=app)
+    palace.set_default_size(455, 720)
+    palace.set_content(widget)
+    widget.insert_action_group("room", opened.actions)
+    palace.present()
+    assert settle(lambda: opened.window.library.loaded and not opened.window._refreshing)
+    pump(100)
+    assert palace.measure(Gtk.Orientation.HORIZONTAL, -1)[0] <= 455
+
+    widget.activate_action("room.page-week", None)
+    assert opened.window.views.get_visible_child_name() == "week"
+    note = where.studies / "Biology" / "2026-10-22.md"
+    assert not opened.open(str(note)), "a plain note is Notedown's"
+    assert opened.open(f"study:{note}")
+    view = opened.window.activity
+    assert view is not None and view.session.total == 4
+    view.handle_key(Gdk.KEY_e, Gdk.ModifierType(0))
+    assert host.opened == [str(where.home / view.session.current.card.path)]
+    opened.window.assistant.available = True
+    opened.window.assistant.explain(view.session.current.card)
+    assert host.asked and host.asked[0][1][0].endswith("2026-10-22.md")
+    opened.window.close_activity()
+    opened.save_state()
+    assert opened.can_close()
+    palace.close()
+
+
 def test_the_content_works_hosted_in_another_window(app):
     """What Mind Palace does: take the content, host it, act through "win"."""
     window, where = fresh_window(app, "w-hosted")

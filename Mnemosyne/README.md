@@ -204,9 +204,17 @@ content instead of beside it, so the whole window works in a 455px column; the
 test suite checks it can be made 360px wide. The size is remembered and the
 maximise is not, under a tiling compositor — see `housestyle.Geometry`.
 
-The window's content stands on its own: every shortcut is on a controller
-inside it as well as on the application, and every dialog is presented on a
-widget inside it, so Mind Palace can host it in a window of its own.
+## In Mind Palace
+
+Mnemosyne is also a room of Mind Palace, through `mnemosyne/room.py`: `TITLE`,
+`ICON`, `ORDER` and `build(host)`. The room is the same window built with the
+host in hand and never shown — the same pages and activities, under a bar of
+the room's own buttons instead of a header bar, without glass of its own — so
+there is one Mnemosyne, not two. Its keys come as `room.*` accelerators for the
+palace to apply while the room is on show; a card's note opens through
+`host.open`, in whichever room opens notes; Explain and Ask go to the palace's
+Claude. `room.open("study:<note>")` is the palace's `--study`. Run on its own,
+nothing about the app changes.
 
 ## The house style
 
@@ -269,7 +277,8 @@ the viewer a printed sheet would open is replaced by one that only records.
 | `latex.py` | maths drawn with Unicode and Pango, the copy Notedown and Claude Desk carry |
 | `yamlite.py` | the YAML people write by hand, without PyYAML |
 | `cli.py` | `--due`, `--print`: answered before GTK is imported |
-| `window.py` | the pages, the activities, the menus, the keys |
+| `window.py` | the pages, the activities, the menus, the keys; and the same as a room |
+| `room.py` | Mnemosyne as a room of Mind Palace |
 | `today.py` `decks.py` `paperpage.py` `palaces.py` `drills.py` `week.py` | the six pages |
 | `study.py` | the review itself |
 | `assistant.py` | Claude: explain, make cards, ask |

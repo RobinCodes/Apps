@@ -169,6 +169,12 @@ class Assistant:
     # -- running a request --------------------------------------------------
     def start(self, prompt: str, *, files=(), heading="Claude", on_done=None,
               resume=None, question="", show=True):
+        # In the palace, a question with nothing waiting on its answer goes to
+        # the palace's own Claude, which every room shares.
+        ask = getattr(self.window.host, "ask_claude", None)
+        if callable(ask) and on_done is None and resume is None:
+            ask(prompt, [str(f) for f in files])
+            return
         self.cancel()
         if show:
             self.panel.begin(heading, question)

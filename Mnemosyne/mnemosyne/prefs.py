@@ -21,7 +21,9 @@ from .config import NEW_RANGE, RETENTION_RANGE  # noqa: E402
 
 def preferences(window) -> Adw.PreferencesDialog:
     dialog = Adw.PreferencesDialog(title="Preferences")
-    dialog.add(housestyle.look_page(window.config, window.glazing.restyle))
+    if window.glazing is not None:
+        # In the palace the look is the palace's to choose.
+        dialog.add(housestyle.look_page(window.config, window.glazing.restyle))
     dialog.add(_learning_page(window))
     dialog.add(_paper_page(window))
     return dialog
