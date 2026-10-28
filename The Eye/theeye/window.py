@@ -57,14 +57,56 @@ NARROW = 720
 # survives the app's own state being cleared and travels with the folder.
 SIDECAR = ".the-eye.grades.json"
 
+# The class the content carries when it is a room of the Mind Palace, and
+# what the stylesheet is scoped to then, so The Eye's rules stay in The Eye.
+ROOM_SCOPE = "the-eye-room"
+
+
+def guard_typing(window: Gtk.Window):
+    """Move `window`'s application shortcuts after a focused text field.
+
+    While a text field has the focus the window's own shortcut controller is
+    moved to the bubble phase, after the field; everywhere else nothing
+    changes, so Space still plays with a button focused. Returns the
+    controller, or None when GTK names it differently — and then this does
+    nothing, which is how things were. Safe to call twice on one window.
+    """
+    found = getattr(window, "_the_eye_typing", None)
+    if found is not None:
+        return found
+    controller = None
+    controllers = window.observe_controllers()
+    for index in range(controllers.get_n_items()):
+        item = controllers.get_item(index)
+        if (isinstance(item, Gtk.ShortcutController)
+                and item.get_name() == "gtk-application-shortcuts"):
+            controller = item
+            break
+    del controllers
+    if controller is None:
+        return None
+
+    def moved(*_args):
+        typing = isinstance(window.get_focus(), (Gtk.Text, Gtk.TextView))
+        controller.set_propagation_phase(
+            Gtk.PropagationPhase.BUBBLE if typing else Gtk.PropagationPhase.CAPTURE)
+
+    window.connect("notify::focus-widget", moved)
+    window._the_eye_typing = controller
+    return controller
+
 
 class MainWindow(Adw.ApplicationWindow):
     """One window, on one folder, showing one thing from it."""
 
     __gtype_name__ = "TheEyeWindow"
 
-    def __init__(self, app, config=None, state=None):
+    def __init__(self, app, config=None, state=None, hosted=False):
         super().__init__(application=app)
+        # Hosted: built for its content only, which the Mind Palace takes and
+        # shows in a window of its own (room.py). Nothing here is presented
+        # then, so nothing may assume this window is the one on screen.
+        self.hosted = hosted
         self.config = config if config is not None else configuration.Config()
         self.state = state if state is not None else configuration.State()
         self.scheme = theming.get(self._theme_key())
@@ -94,7 +136,8 @@ class MainWindow(Adw.ApplicationWindow):
         # see housestyle.Geometry for why the two are treated differently
         # under a tiling compositor.
         self.geometry = housestyle.Geometry(self, self.config)
-        self.geometry.restore()
+        if not hosted:
+            self.geometry.restore()
 
         self.thumbs = thumbs.Cache(self.config["strip_size"])
         self.engine = player.Engine(max_size=self._frame_cap())
@@ -217,9 +260,7 @@ class MainWindow(Adw.ApplicationWindow):
             titles, strip_button, self.info_button, self.editor_button,
             widgets.icon_button("view-fullscreen-symbolic",
                                 "Fullscreen  (F)", "win.fullscreen"),
-            menu,
-            widgets.icon_button("window-close-symbolic", "Close  (Ctrl+W)",
-                                "win.close"),
+            menu, self._close_button(),
             spacing=2, margin_start=12, margin_end=10,
             margin_top=8, margin_bottom=8)
 
@@ -230,12 +271,23 @@ class MainWindow(Adw.ApplicationWindow):
             transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN,
             transition_duration=180, reveal_child=True,
             margin_start=10, margin_end=10, margin_top=10)
+        self._watch_hover(self.top_glass)
+        if self.hosted:
+            # The palace's window is the palace's to move.
+            self.top_reveal.set_valign(Gtk.Align.START)
+            return self.top_reveal
         # The window has to be draggable by its glass, since there is no real
         # header bar to grab.
         drag = Gtk.WindowHandle(child=self.top_reveal)
         drag.set_valign(Gtk.Align.START)
-        self._watch_hover(self.top_glass)
         return drag
+
+    def _close_button(self):
+        """Closing the window — which, as a room of the palace, is not ours to do."""
+        button = widgets.icon_button("window-close-symbolic", "Close  (Ctrl+W)",
+                                     "win.close")
+        button.set_visible(not self.hosted)
+        return button
 
     def _menu(self):
         menu = Gio.Menu()
@@ -459,29 +511,10 @@ class MainWindow(Adw.ApplicationWindow):
         GTK runs an application's accelerators in the capture phase, before
         the widget with the focus sees the key — and nearly every key here is
         a single letter, so typing "quiz" into the palette would close the
-        window at the q. While a text field has the focus the window's own
-        shortcut controller is moved to the bubble phase, after the field;
-        everywhere else nothing changes, so Space still plays with a button
-        focused. When GTK names that controller differently this does
-        nothing, which is how things were.
+        window at the q. See `guard_typing`, which a room also applies to the
+        window that hosts it.
         """
-        self._app_keys = None
-        controllers = self.observe_controllers()
-        for index in range(controllers.get_n_items()):
-            controller = controllers.get_item(index)
-            if (isinstance(controller, Gtk.ShortcutController)
-                    and controller.get_name() == "gtk-application-shortcuts"):
-                self._app_keys = controller
-                break
-        del controllers
-        self.connect("notify::focus-widget", lambda *_: self._on_focus_moved())
-
-    def _on_focus_moved(self):
-        if self._app_keys is None:
-            return
-        typing = isinstance(self.get_focus(), (Gtk.Text, Gtk.TextView))
-        self._app_keys.set_propagation_phase(
-            Gtk.PropagationPhase.BUBBLE if typing else Gtk.PropagationPhase.CAPTURE)
+        self._app_keys = guard_typing(self)
 
     def _toast(self, text, timeout=4):
         widgets.toast(self.toasts, text, timeout)
@@ -1285,14 +1318,14 @@ class MainWindow(Adw.ApplicationWindow):
         self._hovered.clear()
         self._chrome_shown = False
         self._refresh_chrome()
-        self.set_cursor(Gdk.Cursor.new_from_name("none", None))
+        self.root.set_cursor(Gdk.Cursor.new_from_name("none", None))
         return GLib.SOURCE_REMOVE
 
     def _show_chrome(self):
         if self._chrome_shown:
             return
         self._chrome_shown = True
-        self.set_cursor(None)
+        self.root.set_cursor(None)
         self._refresh_chrome()
 
     def _refresh_chrome(self):
@@ -1507,11 +1540,17 @@ class MainWindow(Adw.ApplicationWindow):
         self._flash({"window": "Fit", "actual": "100%", "fill": "Fill"}
                     .get(mode, mode))
 
+    def _toplevel(self) -> Gtk.Window:
+        """The window this is on screen in: this one, or the one hosting it."""
+        root = self.toasts.get_root()
+        return root if isinstance(root, Gtk.Window) else self
+
     def _toggle_fullscreen(self):
-        if self.is_fullscreen():
-            self.unfullscreen()
+        window = self._toplevel()
+        if window.is_fullscreen():
+            window.unfullscreen()
         else:
-            self.fullscreen()
+            window.fullscreen()
         self._restart_hide_timer()
 
     # ------------------------------------------------------------ slideshow ----
@@ -1620,7 +1659,7 @@ class MainWindow(Adw.ApplicationWindow):
             if file is not None and file.get_path():
                 self.open_path(file.get_path())
 
-        dialog.open(self, None, chosen)
+        dialog.open(self._toplevel(), None, chosen)
 
     def _choose_folder(self):
         dialog = Gtk.FileDialog(title="Open a folder")
@@ -1633,7 +1672,7 @@ class MainWindow(Adw.ApplicationWindow):
             if file is not None and file.get_path():
                 self.open_path(file.get_path())
 
-        dialog.select_folder(self, None, chosen)
+        dialog.select_folder(self._toplevel(), None, chosen)
 
     def _filters(self):
         # What this machine can open, not what a well-equipped one could: a
@@ -1685,7 +1724,7 @@ class MainWindow(Adw.ApplicationWindow):
         if item is None:
             return
         launcher = Gtk.FileLauncher.new(Gio.File.new_for_path(item.path))
-        launcher.open_containing_folder(self, None, None)
+        launcher.open_containing_folder(self._toplevel(), None, None)
 
     def _trash(self):
         item = self.reel.current()
@@ -1708,7 +1747,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self._load_current()
             widgets.toast(self, f"{item.name} moved to the wastebasket")
 
-        widgets.confirm(self, "Move to the wastebasket?",
+        widgets.confirm(self.toasts, "Move to the wastebasket?",
                         f"{item.name} can be put back from there.",
                         "Move", go)
 
@@ -1760,7 +1799,7 @@ class MainWindow(Adw.ApplicationWindow):
             widgets.toast(self, "Exporting…")
             jobs.run(work, done, lambda exc: widgets.error_toast(self, exc))
 
-        dialog.save(self, None, chosen)
+        dialog.save(self._toplevel(), None, chosen)
 
     def _export_video_dialog(self, item):
         settings = self.grade.copy()
@@ -1784,7 +1823,7 @@ class MainWindow(Adw.ApplicationWindow):
                 return
             self._pick_video_destination(item, settings)
 
-        dialog.choose(self, None, answered)
+        dialog.choose(self.toasts, None, answered)
 
     def _pick_video_destination(self, item, settings):
         extension = media.extension(item.path)
@@ -1804,7 +1843,7 @@ class MainWindow(Adw.ApplicationWindow):
                 return
             self._start_video_export(item, settings, file.get_path())
 
-        dialog.save(self, None, chosen)
+        dialog.save(self._toplevel(), None, chosen)
 
     def _start_video_export(self, item, settings, destination):
         try:
@@ -1870,7 +1909,7 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception as exc:                    # noqa: BLE001
                 widgets.error_toast(self, exc)
 
-        dialog.save(self, None, chosen)
+        dialog.save(self._toplevel(), None, chosen)
 
     # -------------------------------------------------------- into the brain ----
 
@@ -1998,7 +2037,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.importer.close()
         elif self.ask_reveal.get_reveal_child():
             self.asker.close()
-        else:
+        elif not self.hosted:
+            # Hosted, the window is the palace's to close, not a room's.
             self.close()
 
     # ---------------------------------------------------------- preferences ----
@@ -2038,7 +2078,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._flash(self.scheme.name)
 
     def _apply_theme(self):
-        widgets.install_css(self.scheme, self.config["translucency"])
+        widgets.install_css(self.scheme, self.config["translucency"],
+                            scope=ROOM_SCOPE if self.hosted else "")
         self.ambient.set_scheme(self.scheme)
         self.stage.set_scheme(self.scheme)
         self.strip.set_scheme(self.scheme)
@@ -2070,7 +2111,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.strip_button.set_active(self.config["show_strip"])
         self._set_editor(self.config["editor_open"])
         self._set_info(self.config["show_info"])
-        if self.config["fullscreen_on_open"]:
+        if self.config["fullscreen_on_open"] and not self.hosted:
             self.fullscreen()
         if not hasattr(self, "_volume_wired"):
             self._volume_wired = True
@@ -2089,7 +2130,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _preferences(self):
         from . import prefs
 
-        prefs.Preferences(self).present(self)
+        prefs.Preferences(self).present(self.toasts)
 
     def _sort_dialog(self):
         box = widgets.column(spacing=4, margin_top=10, margin_bottom=10,
@@ -2124,7 +2165,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _shortcuts_window(self):
         from . import help as helping
 
-        helping.ShortcutsWindow().present(self)
+        helping.ShortcutsWindow().present(self.toasts)
 
     def _about(self):
         from . import __version__
@@ -2140,7 +2181,7 @@ class MainWindow(Adw.ApplicationWindow):
             license_type=Gtk.License.MIT_X11)
         about.add_credit_section("Built on", [
             "GTK 4 and libadwaita", "GStreamer", "GdkPixbuf"])
-        about.present(self)
+        about.present(self.toasts)
 
     # ----------------------------------------------------------- closing down ----
 
@@ -2155,7 +2196,7 @@ class MainWindow(Adw.ApplicationWindow):
                 job.cancel()
                 self.destroy()
 
-            widgets.confirm(self, "Stop the export?",
+            widgets.confirm(self.toasts, "Stop the export?",
                             "The partly written file will be removed.",
                             "Stop and close", go)
             return True
@@ -2178,4 +2219,6 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def _save_geometry(self):
-        self.geometry.save()
+        # Hosted, this window was never on screen and its size is nobody's.
+        if not self.hosted:
+            self.geometry.save()

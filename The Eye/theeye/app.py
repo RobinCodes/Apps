@@ -139,15 +139,19 @@ class TheEyeApp(Adw.Application):
             if not os.path.isabs(target):
                 target = os.path.join(cwd, target)
             window.open_path(target)
-        elif self.state.recent_files():
-            # Nothing asked for: carry on from the last thing looked at, which
-            # is almost always what was wanted.
-            window.open_path(self.state.recent_files()[0])
-        elif self.state.recent_folders():
-            window.open_path(self.state.recent_folders()[0])
         else:
-            window.open_path(_pictures_folder())
+            window.open_path(starting_point(self.state))
         return 0
+
+
+def starting_point(state) -> str:
+    """Where to open with nothing asked for: the last thing looked at, which
+    is almost always what was wanted, then the last folder, then Pictures."""
+    if state.recent_files():
+        return state.recent_files()[0]
+    if state.recent_folders():
+        return state.recent_folders()[0]
+    return _pictures_folder()
 
 
 def _pictures_folder() -> str:

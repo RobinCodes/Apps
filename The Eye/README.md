@@ -368,6 +368,17 @@ extensions rather than MIME types, so they are converted before being asked
 about; and a GL context belongs to the thread that made it, so a renderer
 used off the main thread — the video export's — is Cairo there.
 
+### In the Mind Palace
+
+The Eye is also a room of the Mind Palace, the one window with every app in
+it, through `theeye/room.py`: the same window as here, built without being
+shown, its content handed to the palace with its actions and keys. Being
+hosted changes only what being a window meant — the stylesheet is kept to
+the room's content rather than restyling every room, dialogs land in the
+palace's window, Escape never closes the palace, the glass bar loses its
+close button and stops dragging the window, and the narrow layout follows
+the room's width. On its own The Eye is exactly what it was.
+
 ## The tests
 
 ```bash

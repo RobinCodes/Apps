@@ -48,7 +48,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Gsk", "4.0")
 
-from gi.repository import Gdk, GLib, Gsk, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, Gsk, Gtk  # noqa: E402
 
 import fixtures  # noqa: E402
 
@@ -1742,6 +1742,110 @@ def test_asking_claude_needs_claude():
         assert said and "not installed" in said[0], said
 
 
+def test_the_stylesheet_can_be_kept_to_one_room():
+    css = widgets.scoped("/* a comment */ label { color: red; }\n"
+                         "window.the-eye, window.the-eye > * { background: none; }\n"
+                         "button.pill:hover, entry > text { padding: 0; }", "the-eye-room")
+    assert ".the-eye-room label {" in css, css
+    assert ".the-eye-room, .the-eye-room > * {" in css, css
+    assert ".the-eye-room button.pill:hover, .the-eye-room entry > text {" in css, css
+    assert "comment" not in css and "window" not in css, css
+    full = widgets.scoped(widgets.stylesheet(theme.get(theme.DEFAULT), 0.86, False),
+                          "the-eye-room")
+    assert "@define-color" not in full, "a room defined colours for the whole palace"
+    errors = []
+    provider = Gtk.CssProvider()
+    provider.connect("parsing-error", lambda _p, _s, error: errors.append(error.message))
+    provider.load_from_string(full)
+    assert not errors, errors[:3]
+
+
+class _Host:
+    """What the Mind Palace gives a room, as little of it as a room uses."""
+
+    def __init__(self, app, parent):
+        self.app = app
+        self.parent = parent
+        self.said = []
+        self.opened = []
+
+    def toast(self, text, undo=None):
+        self.said.append(text)
+
+    def open(self, path):
+        self.opened.append(path)
+
+    def show(self, title):
+        pass
+
+    def ask_claude(self, prompt, files):
+        pass
+
+
+def test_the_eye_is_a_room_of_the_palace():
+    """Built the way the palace builds it: the content in someone else's window."""
+    from theeye import room as rooms
+
+    assert os.path.isfile(os.path.join(ROOT, rooms.ICON + ".svg")), rooms.ICON
+    assert rooms.TITLE == "The Eye" and isinstance(rooms.ORDER, int)
+    app = Gtk.Application(application_id="com.robin.TheEyeTest5")
+    trouble = []
+    styles = Adw.StyleManager.get_default()
+
+    def ready(_app):
+        palace = Gtk.ApplicationWindow(application=app)
+        styles.set_color_scheme(Adw.ColorScheme.DEFAULT)
+        room = rooms.build(_Host(app, palace))
+        try:
+            palace.set_child(room.widget)
+            room.widget.insert_action_group("room", room.actions)
+            if styles.get_color_scheme() != Adw.ColorScheme.DEFAULT:
+                trouble.append("the room forced light or dark on the whole palace")
+            if room.widget.get_root() is not palace or room.window._toplevel() is not palace:
+                trouble.append("the room is not in the palace's window")
+            if room.window in app.get_windows():
+                trouble.append("the room's own window is in the palace's list of windows")
+            if ("room.import-pages", ["<Control><Shift>i"]) not in room.accels:
+                trouble.append("the keys are not offered as room.*")
+            if any(not action.startswith("room.") for action, _k in room.accels):
+                trouble.append("a key for an action the room does not have")
+            if room.open(os.path.join(MEDIA, "clip.srt")):
+                trouble.append("a subtitle file was taken for a picture")
+            if not room.open(os.path.join(MEDIA, "test.png")):
+                trouble.append("the room would not open a picture")
+            if not _pump_until(lambda: room.window.reel.current() is not None
+                               and room.window.reel.current().name == "test.png", 8):
+                trouble.append("the picture never opened in the room")
+                return
+            room.widget.activate_action("room.palette", None)
+            if not room.window.palette_glass.get_visible():
+                trouble.append("room.palette did not open the palette")
+            closed = []
+            room.window.close = lambda: closed.append(True)
+            room.widget.activate_action("room.close", None)
+            if room.window.palette_glass.get_visible():
+                trouble.append("Escape did not close the palette")
+            room.widget.activate_action("room.close", None)
+            if closed:
+                trouble.append("Escape tried to close the window the room lives in")
+            if not room.can_close():
+                trouble.append("an idle room would not let itself be closed")
+            room.save_state()
+            if rooms.guard_typing(palace) is not rooms.guard_typing(palace):
+                trouble.append("the palace's window was guarded twice")
+        except Exception as exc:                        # noqa: BLE001
+            trouble.append(f"{type(exc).__name__}: {exc}")
+        finally:
+            room.shutdown()
+            palace.destroy()
+            app.quit()
+
+    app.connect("activate", ready)
+    app.run([])
+    styles.set_color_scheme(Adw.ColorScheme.DEFAULT)
+    assert not trouble, "; ".join(trouble)
+
+
 # ==================================================================== main ====
 
 def main():
@@ -1971,6 +2075,12 @@ def main():
                     test_the_palace_dialog_puts_it_there, "page.jpg")
         needs_media("asking Claude needs Claude", test_asking_claude_needs_claude,
                     "page.jpg")
+
+        print("\n-- a room of the Mind Palace " + "-" * 31)
+        check("the stylesheet can be kept to one room",
+              test_the_stylesheet_can_be_kept_to_one_room)
+        needs_media("The Eye is a room of the palace",
+                    test_the_eye_is_a_room_of_the_palace, "test.png", "clip.srt")
 
     print("\n" + "=" * 60)
     if skipped:

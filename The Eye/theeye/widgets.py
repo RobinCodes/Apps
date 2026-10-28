@@ -13,6 +13,8 @@ libadwaita already does well is used as it comes.
 
 from __future__ import annotations
 
+import re
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -55,18 +57,33 @@ def _radius_class(radius, kind: str) -> str:
 
 
 _provider: Gtk.CssProvider | None = None
+_scoped: dict[str, Gtk.CssProvider] = {}
 
 
-def install_css(scheme: theming.Theme, translucency: float = 0.9):
+def install_css(scheme: theming.Theme, translucency: float = 0.9, scope: str = ""):
     """Put the stylesheet for `scheme` on the display, replacing any before it.
 
     One provider, swapped in place, so that changing theme is immediate and
     does not leave the previous theme's rules underneath fighting for
     specificity.
+
+    With a `scope` — a CSS class — the rules apply only inside widgets that
+    carry it, and nothing global is touched: no named colours, no forced
+    light or dark. That is The Eye as a room of the Mind Palace, where one
+    display holds every app and the palace decides what the whole of it
+    looks like.
     """
     global _provider
     display = Gdk.Display.get_default()
     if display is None:
+        return
+    if scope:
+        provider = _scoped.get(scope)
+        if provider is None:
+            provider = _scoped[scope] = Gtk.CssProvider()
+            Gtk.StyleContext.add_provider_for_display(
+                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        provider.load_from_string(scoped(stylesheet(scheme, translucency, False), scope))
         return
     if _provider is None:
         _provider = Gtk.CssProvider()
@@ -82,7 +99,8 @@ def install_css(scheme: theming.Theme, translucency: float = 0.9):
                              else Adw.ColorScheme.FORCE_LIGHT)
 
 
-def stylesheet(scheme: theming.Theme, translucency: float = 0.9) -> str:
+def stylesheet(scheme: theming.Theme, translucency: float = 0.9,
+               palette: bool = True) -> str:
     """The CSS for one theme.
 
     The house palette comes first: the rules below cover every widget this
@@ -100,7 +118,8 @@ def stylesheet(scheme: theming.Theme, translucency: float = 0.9) -> str:
     sunk = "rgba(0,0,0,0.30)" if scheme.dark else "rgba(0,0,0,0.12)"
     card = glass.shade(scheme.glass, 0.06 if scheme.dark else -0.02)
     blur = glass.blur_css()
-    return housestyle.palette(scheme, translucency) + f"""
+    named = housestyle.palette(scheme, translucency) if palette else ""
+    return named + f"""
 /* The window itself is transparent: every surface is drawn by glass.py, and
    a background here would sit on top of the ambient layer. */
 window.the-eye, window.the-eye > * {{
@@ -275,6 +294,34 @@ progressbar progress {{ background: {accent}; border-radius: 999px; min-height: 
 .glass-blur.r-start {{ border-radius: 0 18px 18px 0; }}
 .glass-blur.r-end {{ border-radius: 18px 0 0 18px; }}
 """
+
+
+def scoped(css: str, scope: str) -> str:
+    """A stylesheet whose every rule applies only inside `.scope`.
+
+    `window.the-eye` becomes the scope itself, since the content is what is
+    hosted and the window is not; every other selector becomes a descendant
+    of it. Comments go, and anything that is not a plain rule is left out —
+    there are none in this app's own rules.
+    """
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    rules = []
+    for block in css.split("}"):
+        if "{" not in block:
+            continue
+        selectors, body = block.split("{", 1)
+        selectors = selectors.strip()
+        if not selectors or selectors.startswith("@"):
+            continue
+        parts = []
+        for selector in selectors.split(","):
+            selector = selector.strip()
+            if selector.startswith("window.the-eye"):
+                parts.append(f".{scope}{selector[len('window.the-eye'):]}")
+            else:
+                parts.append(f".{scope} {selector}")
+        rules.append(", ".join(parts) + " {" + body.rstrip() + "\n}")
+    return "\n".join(rules) + "\n"
 
 
 # ------------------------------------------------------------------ panels ----
