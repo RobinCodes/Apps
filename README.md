@@ -12,6 +12,7 @@ Windows.
 | [LaRenderer](LaRenderer/) | A LaTeX editor with the compiled pages beside the text | GTK4 via MSYS2 |
 | [Lyndon Browser](Lyndon%20Browser/) | A small, fast, private browser | Win32 + WebView2 |
 | [Notedown](Notedown/) | A Markdown editor with the rendered page beside the text | GTK4 via MSYS2 |
+| [Order](Order/) | Every machine laid out the same: bootstrap, sync, doctor, drive plans | Both |
 | [Prism](Terminal/) | A terminal made of glass: tabs, splits, the house themes | Linux only — VTE has no Windows build |
 | [The Eye](The%20Eye/) | A viewer for photographs and video, with a colour grading editor built in | GTK4 and GStreamer via MSYS2 |
 
