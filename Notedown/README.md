@@ -6,6 +6,10 @@ Type on the left, read on the right. Both halves scroll together, a click in
 the page puts the cursor in the line that made it, and ticking a checkbox in
 the page ticks it in the file.
 
+It is also the writing half of the second brain — notes that link to one
+another, the inbox, and cards written where the knowledge is. See
+[Links between notes](#links-between-notes).
+
 ```bash
 python3 notedown.py            # reopens whatever you had open last
 python3 notedown.py notes.md
@@ -122,9 +126,133 @@ The courtesies are the other half of it:
 | Ctrl+Shift+F | Focus mode | Ctrl+Shift+Q | Block quote |
 | Ctrl+Shift+C | Statistics | Ctrl+/ | Comment out |
 | Ctrl+Shift+E | Export as HTML | Ctrl+Tab | Next tab |
+| Ctrl+P | Go to a note | Ctrl+Shift+B | Backlinks |
+| Ctrl+Shift+D | Today's note | Ctrl+Shift+I | Send to the inbox |
+| Ctrl+Shift+A | Ask Claude | `[[` | Link to a note |
 
 Find and replace does whole-word, match-case and regular expressions, and
 counts the matches as you type.
+
+## Links between notes
+
+The second brain — Anamnesis, and the Order around it, whose contract is
+`~/SecondBrain/SYSTEM.md` — is mostly written here, and that mostly comes
+down to one piece of syntax:
+
+```markdown
+See [[Library of Wisdom]], [[Fémek#Áram]], or [[Fémek#Áram|the current]].
+```
+
+A link names a note, not a file. It is matched the way the Order's index
+matches a name — title, then alias, then file name, accents and case aside —
+so `[[femek]]` reaches `Fémek.md`, and a note can be moved without a link to
+it breaking. Of two notes with the same name, the one nearer the linking note
+wins. In a folder the Order does not index, a project's docs or a stick, a
+link still reaches a file of that name beside the note.
+
+In the page a link that leads somewhere is an ordinary link: click it and the
+note opens in a tab, at the heading if the link names one. A link to a note
+not written yet is drawn quieter, and clicking it offers to start that note
+beside the one you are in. A link to nothing is a promise, and the moment it
+is clicked is the cheapest moment to keep it.
+
+Typing `[[` opens a list of notes under the cursor, narrowed by every letter
+typed after it, and Enter or Tab puts the name in and closes the link; with
+nothing typed yet it is the notes opened last. What goes in is the note's
+title — unless another note answers to that title from here, and then it is
+the way there, with the title as its label. The text view keeps the keyboard
+the whole time: the list never takes the focus, it is handed the four keys a
+list needs.
+
+`![[picture.png]]` is that picture. The HTML export links to a note's file
+where there is one and keeps the words where there is not, so a page sent to
+someone is not full of links to nothing; the plain-text export keeps the words.
+
+### What links here
+
+Ctrl+Shift+B opens a drawer under the page listing every note that links to
+this one, with the line it does it on, and a click opens that note at that
+line. Below them are this note's own links that lead nowhere yet, and how
+many there are — a list of what is still to write. A drawer rather than a
+sidebar, because a sidebar is the first thing to go in a 455px column and this
+is most worth having exactly when a note is open on its own in one.
+
+### Every note by name
+
+Ctrl+P is any note in the Order by name: a few letters of its title or of an
+alias, then Enter. With nothing typed it lists the notes opened last, because
+the next note wanted is usually one of those. Ctrl+Shift+D opens today's page
+in the journal, `journal/YYYY/YYYY-MM-DD.md`, starting it with its date if it
+is new.
+
+The index behind all of this is the Order's own: one small SQLite file in the
+cache folder, shared by every app that joins the brain. Notedown brings it up
+to date once, in the background, when it starts, and puts a note into it the
+moment it is saved — so a link to a note written a minute ago resolves now,
+not tomorrow.
+
+## The inbox
+
+Ctrl+Shift+I sends the selection to the brain's inbox as a note of its own —
+`inbox/2026-10-27 0715 First line.md`, with front matter saying it came from
+here — and says what it was called. The selection stays where it was: sending
+is not moving.
+
+With nothing selected, a new note that has never been saved goes whole, and
+its tab is left empty for the next thought. The thought is in the inbox now,
+and a copy is a bug. A saved note with nothing selected is not sent; it
+already has a place. Either way the toast has an Undo, which takes the note
+back out of the inbox if nothing has touched it since, and puts the text back
+in its tab.
+
+## Cards
+
+The Order's cards (SYSTEM.md §7) are written in the note itself, so they are
+written here:
+
+```markdown
+- Wilson-tétel :: (p−1)! ≡ −1 (mod p)
+- il gesso ::: kréta
+
+Q: Miért kevés a gyökérnyomás önmagában?
+A: Mert csak néhány méterre emeli a vizet.
+
+A {{mitokondrium}} termeli az {{ATP|energia}}-t.
+```
+
+What is a card is not decided here. The text, the page and the status bar
+all ask `cards.py`, the parser Mnemosyne schedules from, so a `::` in a code
+span, in a fence or in a note with `cards: false` is not drawn as a card,
+because it is not one. In the text the `::`, the `Q:` and the `A:` carry the
+colour, the way a list marker does, and a gap is tinted with its braces
+dimmed. In the page a card is drawn as a quiet card — the front, a hairline,
+the back — and a gap is its answer, highlighted, with the hint beside it.
+
+The status bar counts them: both directions of a `:::`, and every gap, which
+is the number Mnemosyne will find. When Mnemosyne is installed beside Notedown
+in the checkout, **Study This Note** in the menu opens it on this note
+(`mnemosyne --study`), saving first so that what is studied is what is on the
+screen. When it is not installed, the item is not there.
+
+## Asking Claude
+
+With Claude Code installed, Ctrl+Shift+A opens Claude at the side of the note
+— beside it in a wide window, over it in a narrow one. Type what you want.
+The note goes with the request, and the selection when there is one; Claude
+reads it from the brain, with the Order's contract as its briefing, and the
+answer streams into the panel drawn as a page, the way the note is, links and
+cards and all. Copy and Insert take it out again.
+
+**Make cards** asks Claude for the note's cards, in the Order's format. What
+comes back is read with `cards.py`: anything that is not a card is dropped,
+and so is any card the note already has. The rest are shown as the cards they
+would be, and nothing is written until the button that says how many is
+pressed — then they go at the end of the note as one edit, so Ctrl+Z takes
+them out again. **Continue in Claude Desk** carries the conversation on
+there, for when an answer turns into a piece of work.
+
+Claude only reads. It runs in Claude Code's default mode, which changes no
+file, and without Claude Code none of this is in the menus.
 
 ## Getting it out again
 
@@ -180,6 +308,7 @@ menus. The ones worth knowing about:
 | `trim_trailing_space` | off by default — two trailing spaces are a line break |
 | `backup_on_save` | keep the previous version as `file.md~` |
 | `load_remote_images` | off by default, see above |
+| `backlinks_visible` | whether the drawer of notes that link here is open |
 
 Both fonts are in the menu as well, under **Text → Fonts…**, where they are
 picked and applied as you pick them; a family with nothing chosen is the one
@@ -265,6 +394,11 @@ a scratch directory it removes afterwards. Nothing in it follows a link —
 a test that activates a URL hands it to the desktop portal, which opens a
 browser on whatever session the suite is running in.
 
+The Order is a scratch one too. The suite gives itself a home with a brain in
+it (`ORDER_HOME`), keeps the shared note index in the scratch directory rather
+than the real cache, and has Claude Code played by a script that answers from
+a file, so nothing it does reaches the real brain or a model.
+
 ## How it is put together
 
 | | |
@@ -277,6 +411,12 @@ browser on whatever session the suite is running in.
 | `export.py` | HTML and plain text from the same tree; pandoc for the rest |
 | `search.py` | find and replace, matched over the text rather than the buffer |
 | `outline.py` | the headings sidebar |
+| `completion.py` | the list `[[` opens |
+| `backlinks.py` | the drawer of notes that link here |
+| `switcher.py` | every note by name, Ctrl+P |
+| `assistant.py` | Claude, at the side |
+| `order.py` | the Order as the editor sees it: where a link leads, what a note made from one is called, what in an answer is a card |
+| `brain.py` `cards.py` `fsrs.py` `claude.py` | the house's, copied in by `house/sync.py`: the Order's layout and index, cards, the scheduler, Claude Code |
 | `document.py` | one open document: editor, preview, and the scroll sync |
 | `window.py` | tabs, files, menus, keyboard, geometry |
 | `config.py` | settings, in JSON, with the defaults as the schema |

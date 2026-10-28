@@ -59,6 +59,7 @@ DEFAULTS = {
     "split_fraction": 0.5,
     "sidebar_visible": False,
     "sidebar_width": 230,
+    "backlinks_visible": False,     # the drawer of notes that link here
 
     # What was open last time.
     "open_files": [],

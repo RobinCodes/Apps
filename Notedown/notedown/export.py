@@ -20,6 +20,7 @@ import base64
 import html
 import mimetypes
 import os
+import pathlib
 
 from . import highlight, latex, markdown, winenv
 
@@ -98,6 +99,13 @@ def _block_html(block, document, base_dir, embed):
                 f"{rendered}</div>\n")
     if kind == "html":
         return block.text + "\n"
+    if kind == "card":
+        front = _spans_html(block.spans, base_dir, embed)
+        if block.back is None:
+            return f'<div class="card cloze"><p>{front}</p></div>\n'
+        back = _spans_html(block.back, base_dir, embed)
+        return (f'<div class="card {block.form}"><p class="front">{front}</p>'
+                f'<p class="back">{back}</p></div>\n')
     if kind == "frontmatter":
         rows = []
         for line in block.text.split("\n"):
@@ -199,7 +207,28 @@ def _span_html(node, base_dir, embed):
     if kind == "footref":
         label = html.escape(node.text)
         return f'<sup><a href="#fn-{label}" id="fnref-{label}">{label}</a></sup>'
+    if kind == "wikilink":
+        # A link to the note where there is one, and its words where there is
+        # not: a page sent to someone should not be full of links to nothing.
+        label = _spans_html(node.children, base_dir, embed)
+        if not node.url:
+            return label
+        return f'<a href="{html.escape(_note_href(node.url, base_dir, node.title))}">{label}</a>'
+    if kind == "cloze":
+        title = f' title="{html.escape(node.title)}"' if node.title else ""
+        return f'<span class="cloze"{title}>{_spans_html(node.children, base_dir, embed)}</span>'
     return html.escape(markdown.node_text(node))
+
+
+def _note_href(path, base_dir, heading=""):
+    """Where a linked note is, from the folder the document is in."""
+    anchor = "#" + markdown.slug(heading) if heading else ""
+    if base_dir:
+        try:
+            return os.path.relpath(path, base_dir).replace(os.sep, "/") + anchor
+        except ValueError:
+            pass            # another drive, on Windows
+    return pathlib.Path(path).as_uri() + anchor
 
 
 def _image_source(url, base_dir, embed):
@@ -240,6 +269,20 @@ def _text_blocks(blocks) -> list[str]:
             # than an accident of wrapping.
             text = markdown.spans_text(block.spans, "\n").strip()
             out.extend(text.split("\n"))
+            out.append("")
+        elif block.kind == "card":
+            # The shape of a card is a question and its answer; the `::` that
+            # said so is syntax, and goes like the rest of it.
+            front = markdown.spans_text(block.spans, "\n").strip()
+            if block.back is None:
+                out.extend(front.split("\n"))
+            elif block.form == "qa":
+                back = markdown.spans_text(block.back, "\n").strip()
+                out.extend(("Q: " + front).split("\n"))
+                out.extend(("A: " + back).split("\n"))
+            else:
+                arrow = " ↔ " if block.form == "both" else " → "
+                out.append(front + arrow + markdown.spans_text(block.back).strip())
             out.append("")
         elif block.kind == "code":
             out.extend("    " + line for line in block.text.split("\n"))
@@ -409,7 +452,21 @@ dl.frontmatter dt { font-weight: 700; opacity: 0.6; text-transform: uppercase;
   font-size: 0.8em; letter-spacing: 0.04em; align-self: center; }
 dl.frontmatter dd { margin: 0; }
 .footnotes { margin-top: 3em; font-size: 0.92em; opacity: 0.85; }
+.card {
+  margin: 0 0 1em; padding: 0.6em 1em; border-radius: 8px;
+  background: rgba(0,0,0,0.02); border: 1px solid rgba(0,0,0,0.09);
+}
+li > .card { margin: 0.3em 0; }
+.card p { margin: 0; }
+.card .back {
+  margin-top: 0.45em; padding-top: 0.45em; opacity: 0.85;
+  border-top: 1px solid rgba(0,0,0,0.08);
+}
+.cloze { background: #ffe2bf; padding: 0 0.15em; border-radius: 3px; }
 @media (prefers-color-scheme: dark) {
+  .card { background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.1); }
+  .card .back { border-top-color: rgba(255,255,255,0.1); }
+  .cloze { background: rgba(255,159,64,0.2); }
   body { background: #16181c; color: #e3e3e3; }
   a { color: #8ab4f8; }
   hr { border-top-color: rgba(255,255,255,0.15); }

@@ -157,11 +157,49 @@ def _span(node, dark):
     if kind == "footref":
         return (f'<a href="#fn-{esc(node.text)}">'
                 f'<sup>[{esc(node.text)}]</sup></a>')
+    if kind == "wikilink":
+        label = to_pango(node.children, dark) or esc(node.text)
+        href = esc(wiki_href(node.text, node.title))
+        if node.url:
+            return f'<a href="{href}" title="{esc(_tilde(node.url))}">{label}</a>'
+        # Not written yet: still a link, because following it is how the
+        # note gets written, but a quieter one, so a page of them does not
+        # read as a page of places to go.
+        return (f'<a href="{href}" title="Not written yet — click to make it">'
+                f'<span alpha="55%">{label}</span></a>')
+    if kind == "cloze":
+        shade = "#ff9f4033" if dark else "#ffe2bf"
+        hint = (f'<span size="80%" alpha="60%"> ({esc(node.title)})</span>'
+                if node.title else "")
+        return f'<span background="{shade}">{to_pango(node.children, dark)}</span>{hint}'
     return esc(markdown.node_text(node))
 
 
 def esc(text):
     return GLib.markup_escape_text(text or "")
+
+
+# A `[[link]]` in the page is an ordinary <a>, with its target in a scheme of
+# its own so that a click comes back here instead of going to a browser. The
+# target rather than the file: a link to a note not written yet has no file,
+# and following it is how that note gets made.
+WIKI = "wiki:"
+
+
+def wiki_href(target: str, heading: str = "") -> str:
+    href = WIKI + urllib.parse.quote(target)
+    return href + "#" + urllib.parse.quote(heading) if heading else href
+
+
+def parse_wiki_href(url: str) -> tuple[str, str]:
+    """(target, heading) back out of `wiki_href`."""
+    target, _, heading = url[len(WIKI):].partition("#")
+    return urllib.parse.unquote(target), urllib.parse.unquote(heading)
+
+
+def _tilde(path: str) -> str:
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path.startswith(home) else path
 
 
 # ------------------------------------------------------------- the preview --
@@ -482,6 +520,40 @@ class Preview(Gtk.ScrolledWindow):
         label.connect("activate-link", self._link_clicked)
         return label
 
+    def _card(self, block, dark, _document):
+        """A card, drawn as one: the front, a hairline, the back.
+
+        Quiet on purpose. A note is mostly cards on the evenings it is
+        written for learning, and a page of loud boxes is harder to read
+        than the plain lines it came from.
+        """
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.add_css_class("md-card")
+        box.add_css_class(f"md-card-{block.form}")
+        box.set_baseline_child(0)
+
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        front = _text_label(None, ["md-card-front"])
+        front.set_hexpand(True)
+        front.set_markup(to_pango(block.spans, dark))
+        front.connect("activate-link", self._link_clicked)
+        top.append(front)
+        if block.form == "both":
+            both = Gtk.Label(label="⇄", valign=Gtk.Align.START,
+                             css_classes=["md-card-ways"],
+                             tooltip_text="Asked both ways")
+            top.append(both)
+        box.append(top)
+
+        if block.back is not None:
+            box.append(Gtk.Box(css_classes=["md-card-rule"]))
+            back = _text_label(None, ["md-card-back"])
+            back.set_markup(to_pango(block.back, dark))
+            back.connect("activate-link", self._link_clicked)
+            box.append(back)
+        self._clickable(box, block.line)
+        return box
+
     def _rule(self, block, _dark, _document):
         rule = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         rule.add_css_class("md-rule")
@@ -664,12 +736,13 @@ def _signature(block, dark):
     """
     parts = [block.kind, "d" if dark else "l"]
     for name in ("level", "language", "text", "ordered", "start", "tight", "aligns",
-                 "url", "title"):
+                 "url", "title", "form"):
         value = getattr(block, name, None)
         if value is not None:
             parts.append(repr(value))
-    if block.kind in ("heading", "para", "image"):
+    if block.kind in ("heading", "para", "image", "card"):
         parts.append(_spans_key(block.spans))
+        parts.append(_spans_key(block.back))
     elif block.kind == "table":
         parts.append(repr([[_spans_key(cell) for cell in block.header],
                            [[_spans_key(cell) for cell in row] for row in block.rows]]))
@@ -681,7 +754,9 @@ def _signature(block, dark):
 
 
 def _spans_key(spans):
-    return repr([(node.kind, node.text, node.url, _spans_key(node.children))
+    # The title too: it is a link's tooltip and a wiki link's heading, and a
+    # widget kept for a link whose heading changed would still go to the old one.
+    return repr([(node.kind, node.text, node.url, node.title, _spans_key(node.children))
                  for node in spans or []])
 
 

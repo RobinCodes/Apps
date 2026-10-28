@@ -24,7 +24,11 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import gi
 
@@ -33,14 +37,102 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import __version__, export, housestyle, jobs, markdown  # noqa: E402
-from . import render, widgets  # noqa: E402
+from . import __version__, brain, claude, export, housestyle, jobs, markdown  # noqa: E402
+from . import order, render, widgets, winenv  # noqa: E402
+from .assistant import Assistant  # noqa: E402
+from .backlinks import Backlinks  # noqa: E402
 from .config import Config, DEFAULTS  # noqa: E402
 from .document import MARKDOWN_EXTENSIONS, UNTITLED, Document  # noqa: E402
 from .outline import Outline  # noqa: E402
 from .search import FindBar  # noqa: E402
+from .switcher import Switcher  # noqa: E402
 
 MAX_FILE_BYTES = 40 * 1024 * 1024
+
+# Every key the window answers to. Kept here rather than inside the method
+# that installs them so that the suite can hold this, the sheet below and the
+# README's table to one another — a key bound twice is a key that does one of
+# its two things, silently.
+ACCELERATORS = (
+    ("win.new", ["<Control>n", "<Control>t"]),
+    ("win.open", ["<Control>o"]),
+    ("win.save", ["<Control>s"]),
+    ("win.save-as", ["<Control><Shift>s"]),
+    ("win.close-tab", ["<Control>w"]),
+    ("win.preferences", ["<Control>comma"]),
+    ("win.find", ["<Control>f"]),
+    ("win.replace", ["<Control>h"]),
+    ("win.find-next", ["<Control>g", "F3"]),
+    ("win.find-previous", ["<Control><Shift>g", "<Shift>F3"]),
+    ("win.bold", ["<Control>b"]),
+    ("win.italic", ["<Control>i"]),
+    ("win.code", ["<Control>e"]),
+    ("win.strike", ["<Control><Shift>x"]),
+    ("win.highlight", ["<Control><Shift>h"]),
+    ("win.link", ["<Control>k"]),
+    ("win.quote", ["<Control><Shift>q"]),
+    ("win.list-bullet", ["<Control><Shift>l"]),
+    ("win.list-ordered", ["<Control><Shift>o"]),
+    ("win.list-task", ["<Control><Shift>t"]),
+    ("win.toggle-task", ["<Control>d"]),
+    ("win.comment", ["<Control>slash"]),
+    ("win.toggle-sidebar", ["F9"]),
+    ("win.toggle-focus", ["<Control><Shift>f"]),
+    ("win.statistics", ["<Control><Shift>c"]),
+    ("win.shortcuts", ["<Control>question"]),
+    ("win.export-html", ["<Control><Shift>e"]),
+    ("win.zoom-in", ["<Control>plus", "<Control>equal"]),
+    ("win.zoom-out", ["<Control>minus"]),
+    ("win.zoom-reset", ["<Control>0"]),
+    ("win.next-tab", ["<Control>Page_Down", "<Control>Tab"]),
+    ("win.previous-tab", ["<Control>Page_Up", "<Control><Shift>Tab"]),
+    # The Order.
+    ("win.switcher", ["<Control>p"]),
+    ("win.toggle-backlinks", ["<Control><Shift>b"]),
+    ("win.daily-note", ["<Control><Shift>d"]),
+    ("win.send-to-inbox", ["<Control><Shift>i"]),
+    ("win.ask-claude", ["<Control><Shift>a"]),
+)
+
+# The in-app sheet (Ctrl+?), in the groups it is read in.
+SHORTCUTS = [
+    ("Files", [
+        ("Ctrl+N / Ctrl+T", "New document"), ("Ctrl+O", "Open"),
+        ("Ctrl+S", "Save"), ("Ctrl+Shift+S", "Save as"),
+        ("Ctrl+W", "Close tab"), ("Ctrl+Shift+E", "Export as HTML"),
+    ]),
+    ("Writing", [
+        ("Ctrl+B", "Bold"), ("Ctrl+I", "Italic"),
+        ("Ctrl+E", "Inline code"), ("Ctrl+K", "Link"),
+        ("Ctrl+Shift+X", "Strikethrough"), ("Ctrl+Shift+H", "Highlight"),
+        ("Ctrl+1…6", "Heading level"), ("Ctrl+7", "No heading"),
+        ("Ctrl+Shift+L", "Bulleted list"), ("Ctrl+Shift+O", "Numbered list"),
+        ("Ctrl+Shift+T", "Task list"), ("Ctrl+D", "Tick or untick"),
+        ("Ctrl+Shift+Q", "Block quote"), ("Ctrl+/", "Comment out"),
+    ]),
+    ("The second brain", [
+        ("[[", "Link to a note"), ("Ctrl+P", "Go to a note"),
+        ("Ctrl+Shift+B", "Backlinks"), ("Ctrl+Shift+D", "Today's note"),
+        ("Ctrl+Shift+I", "Send to the inbox"), ("Ctrl+Shift+A", "Ask Claude"),
+    ]),
+    ("Moving about", [
+        ("Ctrl+F", "Find"), ("Ctrl+H", "Replace"),
+        ("Ctrl+G", "Next match"), ("F9", "Outline"),
+        ("Ctrl+Tab", "Next tab"), ("Alt+1/2/3", "Text, split, page"),
+    ]),
+    ("The view", [
+        ("Ctrl++ / Ctrl+-", "Text size"), ("Ctrl+0", "Reset text size"),
+        ("Ctrl+Shift+F", "Focus mode"), ("Ctrl+Shift+C", "Statistics"),
+    ]),
+    ("In the text", [
+        ("Enter", "Continue the list or quote"),
+        ("Enter twice", "Leave the list"),
+        ("Tab", "Indent the item, or next table cell"),
+        ("Backspace", "Remove the list marker"),
+        ("Paste a URL", "Wraps the selection in a link"),
+        ("Double-click the page", "Jump to that line in the text"),
+    ]),
+]
 
 
 
@@ -50,6 +142,13 @@ def _markdown_filter():
     for extension in MARKDOWN_EXTENSIONS:
         markdown_filter.add_pattern("*" + extension)
     return markdown_filter
+
+
+def _hidden_without(label, action):
+    """A menu item that is not drawn at all while its action does not exist."""
+    item = Gio.MenuItem.new(label, action)
+    item.set_attribute_value("hidden-when", GLib.Variant.new_string("action-missing"))
+    return item
 
 
 def with_extension(path, extension):
@@ -71,6 +170,14 @@ class MainWindow(Adw.ApplicationWindow):
         self._closing = False
         self._setting_view = False
         self._reload_asked: dict[str, float] = {}
+
+        # The Order's index of every note: one per process, shared by every
+        # window, and the same file every app that joins the brain keeps up.
+        # The app refreshes it once at start-up, off the main loop.
+        self.notes = brain.Notes.shared()
+        self._index_ready = order.index_ready(self.notes)
+        self._resolved: dict[tuple[str, str], str] = {}
+        self._backlinks_for: tuple[str | None, list] = (None, [])
 
         # The remembered size and maximise, applied before the first map —
         # see housestyle.Geometry for why the two are treated differently
@@ -192,9 +299,29 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.side_paned.set_start_child(self.outline)
         self.side_paned.set_end_child(self.tabs)
-        outer.append(self.side_paned)
         self.outline.set_visible(bool(self.config["sidebar_visible"]))
         self.sidebar_button.set_active(bool(self.config["sidebar_visible"]))
+
+        # -- Claude, at the side -------------------------------------------
+        # An overlay split rather than another pane: below the breakpoint it
+        # slides over the page instead of taking a column the window does
+        # not have. Only there at all when Claude Code is installed.
+        self.claude_split = Adw.OverlaySplitView(
+            content=self.side_paned, sidebar_position=Gtk.PackType.END,
+            show_sidebar=False, enable_show_gesture=False,
+            min_sidebar_width=260, max_sidebar_width=420, sidebar_width_fraction=0.34,
+            vexpand=True)
+        self.assistant = Assistant(self) if claude.available() else None
+        if self.assistant is not None:
+            self.claude_split.set_sidebar(self.assistant)
+        outer.append(self.claude_split)
+
+        # -- backlinks, under the page -------------------------------------
+        self.backlinks = Backlinks(
+            on_open=self.open_at_line,
+            on_unwritten=lambda target: self.offer_new_note(self.active, target))
+        self.backlinks.set_reveal_child(bool(self.config["backlinks_visible"]))
+        outer.append(self.backlinks)
 
         # -- find bar and status strip -------------------------------------
         self.find = FindBar(get_editor=lambda: self.active.editor if self.active else None)
@@ -228,6 +355,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.status_words = Gtk.Label(label="", xalign=0)
         strip.append(self.status_words)
+
+        # How many cards Mnemosyne will find in this note — counted by the
+        # same parser it counts them with.
+        self.status_cards = Gtk.Label(label="", xalign=0, visible=False,
+                                      tooltip_text="Cards in this note (SYSTEM.md §7)")
+        strip.append(self.status_cards)
 
         self.status_reading = Gtk.Label(label="", xalign=0)
         strip.append(self.status_reading)
@@ -270,6 +403,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.new_button.set_visible(not narrow)
         self.status_reading.set_visible(not narrow)
         self.status_kind.set_visible(not narrow)
+        self.claude_split.set_collapsed(narrow)
         self.find.set_narrow(narrow)
         for document in self.documents:
             document.paned.set_orientation(
@@ -301,6 +435,22 @@ class MainWindow(Adw.ApplicationWindow):
         files.append_submenu("Open Recent", self.recent_menu)
         menu.append_section(None, files)
 
+        # The Order. "Study" is there only when Mnemosyne is, and the Claude
+        # items only when Claude Code is: an item that can only fail is
+        # worse than no item.
+        order_items = Gio.Menu()
+        order_items.append("Go to Note…", "win.switcher")
+        order_items.append("Today's Note", "win.daily-note")
+        order_items.append("Send to Inbox", "win.send-to-inbox")
+        order_items.append_item(_hidden_without("Study This Note", "win.study"))
+        menu.append_section(None, order_items)
+
+        asking = Gio.Menu()
+        asking.append_item(_hidden_without("Ask Claude…", "win.ask-claude"))
+        asking.append_item(_hidden_without("Make Cards with Claude", "win.claude-cards"))
+        asking.append_item(_hidden_without("Continue in Claude Desk", "win.claude-desk"))
+        menu.append_section(None, asking)
+
         saving = Gio.Menu()
         saving.append("Save", "win.save")
         saving.append("Save As…", "win.save-as")
@@ -322,6 +472,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         view = Gio.Menu()
         view.append("Outline", "win.toggle-sidebar")
+        view.append("Backlinks", "win.toggle-backlinks")
         view.append("Focus Mode", "win.toggle-focus")
         view.append("Typewriter Scrolling", "win.toggle-typewriter")
         view.append("Word Wrap", "win.toggle-wrap")
@@ -451,6 +602,10 @@ class MainWindow(Adw.ApplicationWindow):
             "comment": lambda: self.editor.toggle_comment(),
             "next-tab": lambda: self.tabs.select_next_page(),
             "previous-tab": lambda: self.tabs.select_previous_page(),
+            # The Order.
+            "switcher": self.show_switcher,
+            "daily-note": self.open_daily_note,
+            "send-to-inbox": self.send_to_inbox,
         }
         for name, handler in simple.items():
             action = Gio.SimpleAction.new(name, None)
@@ -471,6 +626,7 @@ class MainWindow(Adw.ApplicationWindow):
         # Stateful settings, so the menu shows a tick.
         self._toggles = {
             "toggle-sidebar": ("sidebar_visible", self._apply_sidebar),
+            "toggle-backlinks": ("backlinks_visible", self._apply_backlinks),
             "toggle-focus": ("focus_mode", self._apply_focus),
             "toggle-typewriter": ("typewriter", self._apply_typewriter),
             "toggle-wrap": ("wrap", self._apply_wrap),
@@ -497,6 +653,9 @@ class MainWindow(Adw.ApplicationWindow):
             GLib.Variant.new_string(self._view_mode_from_config()))
         view.connect("activate", lambda _a, value: self.set_view_mode(value.get_string()))
         self.add_action(view)
+
+        self._offer_study()
+        self._offer_claude()
 
     def _guarded(self, fn):
         """Run an action only when there is a document for it to act on."""
@@ -530,40 +689,7 @@ class MainWindow(Adw.ApplicationWindow):
         app = self.get_application()
         if app is None:
             return
-        for action, keys in (
-            ("win.new", ["<Control>n", "<Control>t"]),
-            ("win.open", ["<Control>o"]),
-            ("win.save", ["<Control>s"]),
-            ("win.save-as", ["<Control><Shift>s"]),
-            ("win.close-tab", ["<Control>w"]),
-            ("win.preferences", ["<Control>comma"]),
-            ("win.find", ["<Control>f"]),
-            ("win.replace", ["<Control>h"]),
-            ("win.find-next", ["<Control>g", "F3"]),
-            ("win.find-previous", ["<Control><Shift>g", "<Shift>F3"]),
-            ("win.bold", ["<Control>b"]),
-            ("win.italic", ["<Control>i"]),
-            ("win.code", ["<Control>e"]),
-            ("win.strike", ["<Control><Shift>x"]),
-            ("win.highlight", ["<Control><Shift>h"]),
-            ("win.link", ["<Control>k"]),
-            ("win.quote", ["<Control><Shift>q"]),
-            ("win.list-bullet", ["<Control><Shift>l"]),
-            ("win.list-ordered", ["<Control><Shift>o"]),
-            ("win.list-task", ["<Control><Shift>t"]),
-            ("win.toggle-task", ["<Control>d"]),
-            ("win.comment", ["<Control>slash"]),
-            ("win.toggle-sidebar", ["F9"]),
-            ("win.toggle-focus", ["<Control><Shift>f"]),
-            ("win.statistics", ["<Control><Shift>c"]),
-            ("win.shortcuts", ["<Control>question"]),
-            ("win.export-html", ["<Control><Shift>e"]),
-            ("win.zoom-in", ["<Control>plus", "<Control>equal"]),
-            ("win.zoom-out", ["<Control>minus"]),
-            ("win.zoom-reset", ["<Control>0"]),
-            ("win.next-tab", ["<Control>Page_Down", "<Control>Tab"]),
-            ("win.previous-tab", ["<Control>Page_Up", "<Control><Shift>Tab"]),
-        ):
+        for action, keys in ACCELERATORS:
             app.set_accels_for_action(action, keys)
 
         for level in range(1, 7):
@@ -769,6 +895,9 @@ class MainWindow(Adw.ApplicationWindow):
             self._rebuild_recent_menu()
             self._update_title()
             self._update_modified()
+            # Its title, its aliases and its links, into the index now rather
+            # than at the next start-up, so a link to it resolves at once.
+            self.index_note(path, text)
             if not silent:
                 widgets.toast(self, f"Saved {os.path.basename(path)}")
             if then:
@@ -866,6 +995,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._update_title()
         self._update_status()
         self._update_outline()
+        self._update_backlinks()
+        if self.assistant is not None:
+            self.assistant.update_about()
         self.active.editor.view.grab_focus()
 
     def _tab_closing(self, tabs, page):
@@ -949,6 +1081,7 @@ class MainWindow(Adw.ApplicationWindow):
         if document is self.active:
             self._update_status()
             self._update_outline()
+            self._update_backlinks(ask=False)
 
     def document_cursor_moved(self, document):
         if document is not self.active:
@@ -973,6 +1106,13 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.status_words.set_text(f"{len(document.text()):,} characters")
             self.status_reading.set_text("")
+
+        cards = len(parsed.cards) if parsed is not None and document.is_markdown else 0
+        self.status_cards.set_text(f"{cards} {'card' if cards == 1 else 'cards'}")
+        self.status_cards.set_visible(bool(cards))
+        study = self.lookup_action("study")
+        if study is not None:
+            study.set_enabled(bool(cards and document.path))
 
         self._update_modified()
         self.status_kind.set_text("Markdown" if document.is_markdown else "Plain text")
@@ -1007,6 +1147,9 @@ class MainWindow(Adw.ApplicationWindow):
         """A link clicked in the preview. Local Markdown opens in a tab."""
         if url.startswith("#"):
             return False
+        if url.startswith(render.WIKI):
+            self.follow_link(document, *render.parse_wiki_href(url))
+            return True
         if "://" not in url and not url.startswith("mailto:"):
             target = url if os.path.isabs(url) else os.path.join(document.folder, url)
             target = os.path.normpath(target.split("#")[0])
@@ -1019,6 +1162,335 @@ class MainWindow(Adw.ApplicationWindow):
         launcher = Gtk.UriLauncher.new(url)
         launcher.launch(self, None, None)
         return True
+
+    # ---------------------------------------------------- the second brain --
+    #
+    # The Order (SYSTEM.md) from inside the editor: links that lead somewhere,
+    # the notes that link back, every note by name, today's page, the inbox,
+    # Mnemosyne and Claude. What is not about widgets is in order.py.
+
+    def resolve_link(self, target: str, near: str | None = None) -> str:
+        """The file `[[target]]` leads to from the note at `near`; "" for none yet.
+
+        Remembered until the index next changes: a page asks again on every
+        keystroke, and the answer only moves when a note does.
+        """
+        asked = (brain.key(target), os.path.dirname(near) if near else "")
+        if asked not in self._resolved:
+            self._resolved[asked] = order.resolve(self._index(), target, near)
+        return self._resolved[asked]
+
+    def _index(self):
+        """The index, once it is there to be read; None until then."""
+        return self.notes if self._index_ready else None
+
+    def resolve_links(self, parsed, near: str | None):
+        """Fill in where every `[[link]]` in a parsed page leads."""
+        for node in markdown.wiki_links(parsed):
+            node.url = self.resolve_link(node.text, near)
+
+    def notes_changed(self):
+        """The index has moved on: forget where links led, and look again."""
+        self._index_ready = True          # whatever moved it has built it
+        self._resolved.clear()
+        self._backlinks_for = (None, [])
+        for document in self.documents:
+            document.links_changed()
+        self._update_backlinks()
+
+    def index_note(self, path: str, text: str | None = None):
+        """One note into the index, off the main loop, and then what shows it.
+
+        Off the loop because the start-up refresh may be holding the index
+        for a while, and a save is no reason for the window to wait for it.
+        Only notes: a shell script saved from here is not one.
+        """
+        if not path.lower().endswith(brain.NOTE_SUFFIXES):
+            return
+        jobs.run(lambda: self.notes.update(Path(path), text),
+                 lambda _done: self.notes_changed(), lambda _exc: None)
+
+    def link_suggestions(self, query: str, near: str | None):
+        """(title, where, what to type) for the list `[[` opens."""
+        if query.strip():
+            try:
+                found = [(note.title, str(note.path))
+                         for note in self.notes.find(query, limit=12)] \
+                    if self._index_ready else []
+            except sqlite3.Error:
+                found = []
+        else:
+            found = [(title, path) for title, _where, path in self.recent_notes()]
+        return [(title, order.folder_of(path),
+                 order.link_text(title, path, near, self.resolve_link))
+                for title, path in found if not order.same_file(path, near)][:8]
+
+    def recent_notes(self, leave_out: str | None = None):
+        """The notes opened last, newest first, as (title, where, path)."""
+        return [(order.title_for(path), order.folder_of(path), path)
+                for path in self.config["recent_files"]
+                if path.lower().endswith(MARKDOWN_EXTENSIONS) and os.path.isfile(path)
+                and not order.same_file(path, leave_out)]
+
+    def _notes_called(self, query: str):
+        if not self._index_ready:
+            return []
+        try:
+            found = self.notes.find(query, limit=40)
+        except sqlite3.Error:
+            return []
+        return [(note.title, order.folder_of(str(note.path)), str(note.path))
+                for note in found if note.path.is_file()]
+
+    def show_switcher(self):
+        """Ctrl+P: any note in the Order, by name."""
+        dialog = Switcher(find=self._notes_called,
+                          recent=lambda: self.recent_notes(self.path),
+                          on_open=self.open_path)
+        # Presented from inside the window's content, not from the window:
+        # a host that embeds the content has a window of its own.
+        dialog.present(self.toasts)
+        return dialog
+
+    def follow_link(self, document, target: str, heading: str = ""):
+        """A `[[link]]` clicked: the note it leads to, or the offer to write it."""
+        near = document.path if document is not None else None
+        path = self.resolve_link(target, near)
+        if not path or not os.path.isfile(path):
+            self.offer_new_note(document, target)
+            return
+        opened = self.open_path(path)
+        if opened is not None and heading and not opened.reveal_heading(heading):
+            widgets.toast(self, f"{opened.name} has no heading “{heading}”")
+
+    def offer_new_note(self, document, target: str):
+        """Ask before starting the note a link names — beside the note it is in."""
+        if document is None:
+            return
+        if document.folder:
+            where = order.new_note_path(document.folder, target)
+            body = (f"No note is called “{target}” yet. Notedown can start one beside "
+                    f"{document.name}, as {os.path.relpath(where, document.folder)}.")
+        elif brain.places().exists():
+            where = None
+            body = (f"No note is called “{target}” yet. This one is not saved "
+                    f"anywhere, so the new note would start in the inbox.")
+        else:
+            widgets.toast(self, "Save this note first — a new note is made beside it")
+            return
+        widgets.confirm(self.toasts, f"Create “{target}”?", body, "Create",
+                        lambda: self.make_note(target, where), destructive=False)
+
+    def make_note(self, target: str, where: str | None):
+        """Start the note `[[target]]` names, at `where` (or in the inbox), and open it."""
+        title = target.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].strip() or "Untitled"
+
+        def work():
+            if where is None:
+                path = str(brain.capture_text(f"# {title}\n", title=title,
+                                              origin="notedown"))
+            else:
+                path = where
+                if not os.path.exists(path):
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "x", encoding="utf-8", newline="\n") as fh:
+                        fh.write(f"# {title}\n\n")
+            self.notes.update(Path(path))
+            return path
+
+        def done(path):
+            self.notes_changed()
+            self.open_path(path)
+
+        jobs.run(work, done, lambda exc: widgets.error_toast(self, exc))
+
+    def open_at_line(self, path: str, line: int):
+        """A backlink clicked: that note, with the cursor on the line that links."""
+        document = self.open_path(path)
+        if document is not None:
+            document.editor.goto_line(line)
+            GLib.idle_add(lambda: (document.sync_preview_to_cursor(),
+                                   GLib.SOURCE_REMOVE)[1])
+
+    def _update_backlinks(self, ask=True):
+        """The drawer, for the note in front — asked of the index only while open.
+
+        `ask=False` is for the render tick, when the note's own links may
+        have changed but what links to it cannot have.
+        """
+        if not self.backlinks.get_reveal_child() or self.active is None:
+            return
+        document = self.active
+        known, links = self._backlinks_for
+        if ask or known != document.path:
+            links = []
+            if document.path and self._index_ready:
+                try:
+                    links = self.notes.backlinks(document.path)
+                except sqlite3.Error:
+                    links = []
+            self._backlinks_for = (document.path, links)
+        self.backlinks.show(links, order.unwritten(document.parsed),
+                            saved=bool(document.path))
+
+    def _apply_backlinks(self):
+        self.backlinks.set_reveal_child(bool(self.config["backlinks_visible"]))
+        self._update_backlinks()
+
+    def open_daily_note(self):
+        """Ctrl+Shift+D: today's page in the journal, begun with its date if new."""
+        if not brain.places().exists():
+            widgets.toast(self, "There is no second brain on this machine to keep a "
+                                "journal in")
+            return
+        try:
+            path = str(brain.daily_note())
+        except OSError as exc:
+            widgets.error_toast(self, exc)
+            return
+        document = self.open_path(path)
+        if document is not None:
+            document.editor.goto_offset(document.editor.buffer.get_char_count())
+            document.editor.view.grab_focus()
+            self.index_note(path)
+
+    def send_to_inbox(self):
+        """Ctrl+Shift+I: the selection — or a note not filed anywhere yet — to the inbox.
+
+        A saved note with nothing selected already has its place, so it is
+        not sent; a new one, sent whole, leaves its tab empty for the next
+        thought, because the thought is in the inbox now and a copy is a bug.
+        """
+        document = self.active
+        selected = document.editor.selected_text()
+        whole = not selected.strip()
+        if whole and document.path:
+            widgets.toast(self, f"Select what to send — {document.name} already has a place")
+            return
+        text = document.text() if whole else selected
+        if not text.strip():
+            widgets.toast(self, "There is nothing to send to the inbox")
+            return
+        if not brain.places().exists():
+            widgets.toast(self, "There is no second brain on this machine to send it to")
+            return
+
+        def work():
+            path = brain.capture_text(text, origin="notedown")
+            return str(path), path.read_text(encoding="utf-8")
+
+        def done(result):
+            path, written = result
+            if whole and document in self.documents and document.text() == text:
+                document.set_text("")
+            self.index_note(path)
+            self._toast_with_undo(
+                f"Sent to the inbox as {os.path.basename(path)}",
+                lambda: self._take_back(path, written, document, text if whole else None))
+
+        jobs.run(work, done, lambda exc: widgets.error_toast(self, exc))
+
+    def _take_back(self, path, written, document, text):
+        """Undo a capture: the inbox note goes again, if nobody has touched it since.
+
+        Pressing Undo is the human act that SYSTEM.md asks deleting to be;
+        nothing here removes a file the person has not just asked to remove.
+        """
+        try:
+            with open(path, encoding="utf-8") as fh:
+                untouched = fh.read() == written
+        except OSError:
+            return
+        if not untouched:
+            widgets.toast(self, "It has been edited since, so it stays in the inbox")
+            return
+        try:
+            os.remove(path)
+        except OSError as exc:
+            widgets.error_toast(self, exc)
+            return
+        jobs.run(self.notes.refresh, lambda _n: self.notes_changed(), lambda _e: None)
+        if text is not None and document in self.documents and not document.text():
+            document.set_text(text)
+            document.editor.buffer.set_modified(True)
+            self._update_title()
+            self._update_modified()
+        widgets.toast(self, "Taken back out of the inbox")
+
+    def _toast_with_undo(self, title, undo):
+        toast = Adw.Toast(title=title, button_label="Undo", timeout=8, use_markup=False)
+        toast.connect("button-clicked", lambda _toast: undo())
+        self.toasts.add_toast(toast)
+        return toast
+
+    def _offer_study(self):
+        """"Study This Note" exists while Mnemosyne is installed beside Notedown."""
+        script = order.mnemosyne()
+        present = self.lookup_action("study") is not None
+        if script and not present:
+            action = Gio.SimpleAction.new("study", None)
+            action.connect("activate", lambda *_: self._guarded(self.study_note))
+            action.set_enabled(False)          # until a saved note has cards
+            self.add_action(action)
+        elif not script and present:
+            self.remove_action("study")
+        return script
+
+    def study_note(self):
+        """`mnemosyne --study <this note>`, saved first so it studies what is on screen."""
+        document = self.active
+        script = order.mnemosyne()
+        if document is None or not document.path or script is None:
+            return
+
+        def launch():
+            argv = order.study_command(document.path, script, sys.executable)
+            try:
+                self._spawn(argv, os.path.dirname(script))
+            except OSError as exc:
+                widgets.error_toast(self, exc)
+                return
+            widgets.toast(self, f"Studying {document.name} in Mnemosyne")
+
+        if document.modified:
+            self.save_document(document, silent=True, then=launch)
+        else:
+            launch()
+
+    def _spawn(self, argv, cwd):
+        subprocess.Popen(argv, cwd=cwd, creationflags=winenv.NO_WINDOW,
+                         start_new_session=not winenv.WINDOWS)
+
+    def _offer_claude(self):
+        """Claude's three actions — only when Claude Code is on this machine."""
+        if not claude.available():
+            return
+        for name, handler in (("ask-claude", lambda: self.show_claude()),
+                              ("claude-cards", self._claude_cards),
+                              ("claude-desk", self._claude_desk)):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda _a, _p, fn=handler: self._guarded(fn))
+            self.add_action(action)
+
+    def show_claude(self, show: bool | None = None):
+        """Ctrl+Shift+A: Claude at the side, with the cursor in the request."""
+        if self.assistant is None:
+            return
+        if show is None:
+            show = not self.claude_split.get_show_sidebar()
+        self.claude_split.set_show_sidebar(show)
+        if show:
+            self.assistant.focus_request()
+        elif self.active is not None:
+            self.active.editor.view.grab_focus()
+
+    def _claude_cards(self):
+        self.show_claude(True)
+        self.assistant.make_cards()
+
+    def _claude_desk(self):
+        if self.assistant is not None:
+            self.assistant.continue_in_desk()
 
     # -------------------------------------------------------------- views --
 
@@ -1409,41 +1881,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.config.save()
 
     def show_shortcuts(self):
-        groups = [
-            ("Files", [
-                ("Ctrl+N / Ctrl+T", "New document"), ("Ctrl+O", "Open"),
-                ("Ctrl+S", "Save"), ("Ctrl+Shift+S", "Save as"),
-                ("Ctrl+W", "Close tab"), ("Ctrl+Shift+E", "Export as HTML"),
-            ]),
-            ("Writing", [
-                ("Ctrl+B", "Bold"), ("Ctrl+I", "Italic"),
-                ("Ctrl+E", "Inline code"), ("Ctrl+K", "Link"),
-                ("Ctrl+Shift+X", "Strikethrough"), ("Ctrl+Shift+H", "Highlight"),
-                ("Ctrl+1…6", "Heading level"), ("Ctrl+7", "No heading"),
-                ("Ctrl+Shift+L", "Bulleted list"), ("Ctrl+Shift+O", "Numbered list"),
-                ("Ctrl+Shift+T", "Task list"), ("Ctrl+D", "Tick or untick"),
-                ("Ctrl+Shift+Q", "Block quote"), ("Ctrl+/", "Comment out"),
-            ]),
-            ("Moving about", [
-                ("Ctrl+F", "Find"), ("Ctrl+H", "Replace"),
-                ("Ctrl+G", "Next match"), ("F9", "Outline"),
-                ("Ctrl+Tab", "Next tab"), ("Alt+1/2/3", "Text, split, page"),
-            ]),
-            ("The view", [
-                ("Ctrl++ / Ctrl+-", "Text size"), ("Ctrl+0", "Reset text size"),
-                ("Ctrl+Shift+F", "Focus mode"), ("Ctrl+Shift+C", "Statistics"),
-            ]),
-            ("In the text", [
-                ("Enter", "Continue the list or quote"),
-                ("Enter twice", "Leave the list"),
-                ("Tab", "Indent the item, or next table cell"),
-                ("Backspace", "Remove the list marker"),
-                ("Paste a URL", "Wraps the selection in a link"),
-                ("Double-click the page", "Jump to that line in the text"),
-            ]),
-        ]
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        for name, rows in groups:
+        for name, rows in SHORTCUTS:
             heading = Gtk.Label(label=name, xalign=0, css_classes=["shortcut-group"])
             box.append(heading)
             grid = Gtk.Grid(column_spacing=14, row_spacing=3)

@@ -30,6 +30,20 @@ os.environ["XDG_DATA_HOME"] = os.path.join(scratch, "data")
 os.environ["XDG_CACHE_HOME"] = os.path.join(scratch, "cache")
 # An app built by a test must not go to the network for an update.
 os.environ["APPS_NO_UPDATE"] = "1"
+# The Order, in miniature: a home of its own with a brain in it, and the
+# shared note index in the scratch folder too — on Windows that index lives
+# under %LOCALAPPDATA%, where every real app keeps the real one.
+HOME = os.path.join(scratch, "home")
+os.environ["ORDER_HOME"] = HOME
+os.environ.pop("ANAM_HOME", None)
+os.environ["LOCALAPPDATA"] = os.path.join(scratch, "local")
+os.environ["ORDER_MACHINE"] = "test-machine"
+# "Claude Code is installed" — as this interpreter, which no test ever asks
+# anything: every request the suite makes goes to a stand-in script instead.
+os.environ["ORDER_CLAUDE"] = sys.executable
+for folder in ("SecondBrain/vault/nodes/idea", "SecondBrain/inbox", "SecondBrain/journal",
+               "SecondBrain/learning", "Projects/Studies/Biology"):
+    os.makedirs(os.path.join(HOME, *folder.split("/")), exist_ok=True)
 
 import gi  # noqa: E402
 
@@ -474,6 +488,219 @@ def test_the_new_window_flag_never_reaches_the_paths():
     assert not wants and rest == ["a.md"]
 
 
+# ---------------------------------------------------------- the Order -------
+#
+# Links and cards are not this parser's to define: a link is what brain.py
+# indexes and a card is what cards.py schedules. These hold the page to them.
+
+LINKED = ("See [[Library of Wisdom]], [[Fémek#Áram|the current]], [[Plain#Head]] "
+          "and ![[photo.png]].\n\n`[[in code]]` and\n\n```\n[[in a fence]]\n```\n")
+
+
+def test_a_wiki_link_is_a_link_to_its_target_heading_and_label():
+    links = list(markdown.wiki_links(markdown.parse(LINKED)))
+    assert [(n.text, n.title) for n in links] == [
+        ("Library of Wisdom", ""), ("Fémek", "Áram"), ("Plain", "Head")], links
+    assert [markdown.node_text(n) for n in links] == [
+        "Library of Wisdom", "the current", "Plain › Head"]
+    # Unresolved until the document that owns the tree says otherwise.
+    assert all(n.url == "" for n in links)
+
+
+def test_the_page_underlines_what_the_index_counts_as_a_link():
+    from notedown import brain
+
+    page = {(n.text, n.title) for n in markdown.wiki_links(markdown.parse(LINKED))}
+    index = {(link.target, link.heading or "") for link in brain.wikilinks(LINKED)
+             if not link.target.endswith(".png")}
+    assert page == index, (page, index)
+
+
+def test_the_editor_highlights_what_the_index_counts_as_a_link():
+    from notedown import brain
+    from notedown.editor import _INLINE
+
+    for sample in ("[[A]]", "[[A#B]]", "[[A|b]]", "[[A#B|c d]]", "![[A]]", "[[a]b]]",
+                   "[[]]", "[[x|y|z]]", "[[A^b]]", "[[ #x]]"):
+        editor = [m.group(0) for m in _INLINE.finditer(sample) if m.lastgroup == "wikilink"]
+        index = [sample[link.start:link.end] for link in brain.wikilinks(sample)]
+        assert editor == index, (sample, editor, index)
+
+
+def test_an_embedded_picture_is_a_picture_and_code_is_code():
+    doc = markdown.parse(LINKED)
+    images = [n for n in doc.blocks[0].spans if n.kind == "image"]
+    assert images and images[0].url == "photo.png"
+    assert [n.kind for n in doc.blocks[1].spans][0] == "code"
+    assert doc.blocks[2].kind == "code" and "[[in a fence]]" in doc.blocks[2].text
+
+
+CARDED = """---
+title: A gyökér
+---
+
+# Biology
+
+- Wilson-tétel :: (p−1)! ≡ −1 (mod p)
+- il gesso ::: kréta
+Code `std::vector :: nope` stays prose.
+
+Q: Miért kevés a gyökérnyomás
+önmagában?
+A: Mert csak néhány méterre
+emeli a vizet.
+
+A {{mitokondrium}} termeli az {{ATP|energia}}-t.
+
+| a | b |
+|---|---|
+| The {{xylem}} | carries water |
+
+```
+not :: a card
+```
+"""
+
+
+def test_a_card_is_a_block_of_its_own_in_each_of_its_forms():
+    from notedown import cards
+
+    doc = markdown.parse(CARDED)
+    found = []
+
+    def walk(blocks):
+        for block in blocks:
+            if block.kind == "card":
+                found.append(block)
+            if block.kind == "list":
+                for item in block.items:
+                    walk(item.children)
+            if block.kind == "quote":
+                walk(block.children)
+
+    walk(doc.blocks)
+    assert [b.form for b in found] == ["line", "both", "qa", "cloze"], [b.form for b in found]
+    line, both, qa, cloze = found
+    assert text_of(line) == "Wilson-tétel" and markdown.spans_text(line.back).startswith("(p")
+    assert text_of(both) == "il gesso" and markdown.spans_text(both.back) == "kréta"
+    assert markdown.spans_text(qa.spans, "\n") == "Miért kevés a gyökérnyomás\nönmagában?"
+    assert markdown.spans_text(qa.back, "\n") == "Mert csak néhány méterre\nemeli a vizet."
+    gaps = [n for n in cloze.spans if n.kind == "cloze"]
+    assert [(markdown.node_text(n), n.title) for n in gaps] == [
+        ("mitokondrium", ""), ("ATP", "energia")]
+    table = next(b for b in doc.blocks if b.kind == "table")
+    assert [n.kind for n in table.rows[0][0]] == ["text", "cloze"]
+    # The count is the scheduler's own, both directions and every gap.
+    assert len(doc.cards) == len(cards.parse_text(CARDED, "x.md")) == 7
+
+
+def test_a_note_with_cards_off_has_no_cards_and_its_braces_are_text():
+    doc = markdown.parse("---\ncards: false\n---\nA :: B\n\nThe {{x}} is here.\n")
+    assert doc.cards == []
+    assert [b.kind for b in doc.blocks] == ["frontmatter", "para", "para"]
+    assert text_of(doc.blocks[2]) == "The {{x}} is here."
+
+
+def test_cards_are_counted_as_words_and_exported_as_cards():
+    doc = markdown.parse("A :: B\n\nC ::: D\n\nThe {{gap|hint}} here.\n")
+    assert markdown.statistics_of(doc)["words"] == 7
+    out = export.to_html(doc, standalone=False)
+    assert '<div class="card line"><p class="front">A</p><p class="back">B</p></div>' in out
+    assert '<span class="cloze" title="hint">gap</span>' in out
+    text = export.to_text(doc)
+    assert "A → B" in text and "C ↔ D" in text and "The gap here." in text
+
+
+def test_an_exported_link_goes_to_its_note_and_an_unwritten_one_is_words():
+    doc = markdown.parse("[[Here#A Head|here]] and [[Nowhere]]\n")
+    here, nowhere = markdown.wiki_links(doc)
+    here.url = os.path.join(scratch, "notes", "Here.md")
+    out = export.to_html(doc, standalone=False, base_dir=scratch)
+    assert '<a href="notes/Here.md#a-head">here</a>' in out, out
+    assert "Nowhere" in out and 'href="wiki' not in out
+    assert "here and Nowhere" in export.to_text(doc)
+
+
+def test_a_wiki_href_carries_its_target_and_heading_through_the_page():
+    from notedown import render
+
+    href = render.wiki_href("Fémek & co/Áram", "A # B")
+    assert render.parse_wiki_href(href) == ("Fémek & co/Áram", "A # B")
+    assert render.parse_wiki_href(render.wiki_href("X")) == ("X", "")
+
+
+def test_a_note_made_from_a_link_is_made_beside_the_one_that_links():
+    from notedown import order
+
+    folder = os.path.join(scratch, "made")
+    assert order.new_note_path(folder, "Ide: kettő?") == os.path.join(folder, "Ide kettő.md")
+    assert order.new_note_path(folder, "Sub/Deeper") == os.path.join(folder, "Sub", "Deeper.md")
+    # A way out of the folder is not followed.
+    assert order.new_note_path(folder, "../../x") == os.path.join(folder, "x.md")
+
+
+def test_a_completed_link_is_the_title_unless_another_note_answers_to_it():
+    from notedown import order
+
+    here = os.path.join(scratch, "a", "Here.md")
+    mine = os.path.join(scratch, "b", "Day.md")
+    other = os.path.join(scratch, "a", "Day.md")
+    assert order.link_text("Day", mine, here, lambda _n, _near: mine) == "Day"
+    assert order.link_text("Day", mine, here, lambda _n, _near: other) == "../b/Day|Day"
+    # A title that cannot be a target is not typed as one.
+    assert order.link_text("A|B", mine, None, lambda *_: "") == "Day"
+
+
+def test_only_the_cards_in_an_answer_are_kept_and_never_twice():
+    from notedown import order
+
+    reply = ("Here are some cards for you:\n\n"
+             "- Wilson-tétel :: (p−1)! ≡ −1 (mod p)\n"
+             "- Fermat :: a^p ≡ a\n"
+             "The {{xylem}} carries water.\n"
+             "Q: Why?\nA: Because.\n\n"
+             "Hope these help!\n")
+    text, count = order.proposed_cards(reply, existing="- Wilson-tétel :: whatever\n")
+    assert "Wilson" not in text and "Here are" not in text and "Hope" not in text, text
+    assert "- Fermat :: a^p ≡ a" in text and "{{xylem}}" in text and "Q: Why?\nA: Because." in text
+    assert count == 3, (count, text)
+    # Fenced replies are read inside the fence.
+    fenced, n = order.proposed_cards("Sure:\n```markdown\nA :: B\n```\n")
+    assert (fenced, n) == ("A :: B", 1)
+    assert order.proposed_cards("No cards here, sorry.") == ("", 0)
+
+
+def test_the_index_is_not_read_until_it_is_built_and_a_sibling_needs_none():
+    from pathlib import Path
+
+    from notedown import brain, order
+
+    notes = brain.Notes(db_path=Path(scratch) / "fresh-index.db", roots=[])
+    assert not order.index_ready(notes)
+    notes.refresh()
+    assert order.index_ready(notes)
+
+    folder = os.path.join(scratch, "unindexed")
+    os.makedirs(folder, exist_ok=True)
+    near, sibling = os.path.join(folder, "here.md"), os.path.join(folder, "Sibling.md")
+    open(sibling, "w").close()
+    assert same(order.resolve(None, "Sibling", near), sibling)
+    assert order.resolve(None, "Nobody", near) == ""
+
+
+def test_mnemosyne_is_found_only_beside_notedown():
+    from notedown import order
+
+    beside = os.path.join(scratch, "checkout")
+    assert order.mnemosyne(beside) is None
+    os.makedirs(os.path.join(beside, "Mnemosyne"), exist_ok=True)
+    script = os.path.join(beside, "Mnemosyne", "mnemosyne.py")
+    open(script, "w").close()
+    assert order.mnemosyne(beside) == script
+    argv = order.study_command("note.md", script, "python")
+    assert argv == ["python", script, "--study", os.path.abspath("note.md")]
+
+
 # ------------------------------------------------------- the editing tests --
 #
 # These need a display. Everything below runs inside a real application.
@@ -630,6 +857,83 @@ def test_the_editor_draws_in_the_font_it_is_given(editor):
     editor.set_font(DEFAULTS["editor_font_family"], DEFAULTS["editor_font_size"])
 
 
+def tagged(editor, name):
+    """The stretches of the buffer that carry tag `name`, as text."""
+    buf = editor.buffer
+    tag = buf.get_tag_table().lookup(name)
+    found, it = [], buf.get_start_iter()
+    while True:
+        if it.starts_tag(tag):
+            end = it.copy()
+            end.forward_to_tag_toggle(tag)
+            found.append(buf.get_text(it, end, True))
+        if not it.forward_to_tag_toggle(tag):
+            return found
+
+
+def test_a_wiki_link_is_highlighted_like_a_link(editor):
+    editor.set_text("See [[Fémek#Áram|the current]] and `[[code]]`.")
+    editor._highlight_now()
+    assert tagged(editor, "link") == ["[[Fémek#Áram|the current]]"], tagged(editor, "link")
+    # What is shown stands out; the target behind the label steps back.
+    assert "[[Fémek#Áram|" in tagged(editor, "marker")
+
+
+def test_card_syntax_is_coloured_where_cards_py_finds_cards(editor):
+    editor.set_text("- A :: B\nC ::: D\n`x :: y` is code\n\nQ: Why?\nA: So.\n\n"
+                    "The {{gap|hint}} here.\n\n```\nE :: F\n```\n")
+    editor._highlight_now()
+    assert tagged(editor, "cardmark") == ["::", ":::", "Q:", "A:"], tagged(editor, "cardmark")
+    assert tagged(editor, "cloze") == ["gap"], tagged(editor, "cloze")
+    editor.set_text("---\ncards: false\n---\nA :: B\n")
+    editor._highlight_now()
+    assert tagged(editor, "cardmark") == []
+
+
+def test_two_brackets_offer_notes_and_enter_closes_the_link(editor):
+    from gi.repository import Gdk
+
+    from notedown.editor import Editor
+
+    asked = []
+
+    def source(query):
+        asked.append(query)
+        return [(title, "~/notes", title) for title in ("Fémek", "Fermat")]
+
+    linking = Editor(complete=source)
+    linking.set_text("Read [[fe")
+    place(linking, 1, 9)
+    linking.completion.update()
+    assert linking.completion.active and asked[-1] == "fe"
+    assert [item[0] for item in linking.completion.items] == ["Fémek", "Fermat"]
+    linking.completion.key(Gdk.KEY_Down, 0)
+    assert linking.completion.key(Gdk.KEY_Return, 0) is True
+    assert linking.get_text() == "Read [[Fermat]]", repr(linking.get_text())
+    assert not linking.completion.active
+
+    # Already closed: the name goes in, and the cursor goes past the ]].
+    linking.set_text("Read [[fe]] on")
+    place(linking, 1, 9)
+    linking.completion.update()
+    linking.completion.accept()
+    assert linking.get_text() == "Read [[Fémek]] on", repr(linking.get_text())
+    assert linking.cursor_position() == (1, 15)
+
+    # Escape closes it for this link, and in code there is none to close.
+    linking.set_text("[[fe")
+    place(linking, 1, 4)
+    linking.completion.update()
+    linking.completion.key(Gdk.KEY_Escape, 0)
+    linking.completion.update()
+    assert not linking.completion.active
+    linking.set_text("`[[fe")
+    place(linking, 1, 5)
+    linking.completion.update()
+    assert not linking.completion.active
+    linking.close()
+
+
 def test_highlighting_survives_every_shape_of_document(editor):
     editor.set_text(open(os.path.join(ROOT, "notedown", "markdown.py"),
                          encoding="utf-8").read()[:6000])
@@ -693,6 +997,35 @@ def test_a_remote_image_is_not_fetched_unless_it_is_allowed(preview):
     text = " ".join(w.get_text() for w in descendants(preview.column)
                     if isinstance(w, Gtk.Label))
     assert "not fetched" in text, text
+
+
+def test_a_link_that_leads_somewhere_is_a_link_and_one_that_does_not_is_quieter(preview):
+    doc = markdown.parse("[[Here]] and [[Nowhere]]\n")
+    here, _nowhere = markdown.wiki_links(doc)
+    here.url = os.path.join(scratch, "Here.md")
+    preview.render(doc, scratch)
+    label = next(w for w in descendants(preview.column) if isinstance(w, Gtk.Label))
+    markup = label.get_label()
+    assert 'href="wiki:Here"' in markup and 'href="wiki:Nowhere"' in markup, markup
+    assert markup.count("alpha=") == 1 and '<span alpha="55%">Nowhere</span>' in markup, markup
+    # Once the index knows the second one, the widget is rebuilt for it.
+    doc = markdown.parse("[[Here]] and [[Nowhere]]\n")
+    for node in markdown.wiki_links(doc):
+        node.url = os.path.join(scratch, node.text + ".md")
+    preview.render(doc, scratch)
+    label = next(w for w in descendants(preview.column) if isinstance(w, Gtk.Label))
+    assert "alpha=" not in label.get_label()
+
+
+def test_a_card_is_drawn_as_a_card(preview):
+    preview.render(markdown.parse("Front :: Back\n\n- In a list ::: both ways\n"), "")
+    boxes = [w for w in descendants(preview.column) if w.has_css_class("md-card")]
+    assert len(boxes) == 2, boxes
+    texts = [w.get_text() for w in descendants(boxes[0]) if isinstance(w, Gtk.Label)]
+    assert texts == ["Front", "Back"], texts
+    assert boxes[1].has_css_class("md-card-both")
+    assert any(w.has_css_class("md-card-ways") for w in descendants(boxes[1]))
+    assert boxes[0]._line == 0
 
 
 def test_the_preview_never_raises_on_a_document_it_cannot_make_sense_of(preview):
@@ -981,6 +1314,345 @@ def test_the_session_is_what_was_open_when_the_window_closed(window):
     assert any(p.endswith("s2.md") for p in remembered), remembered
 
 
+# ------------------------------------------------------ the Order, windowed --
+
+def brain_note(rel, text):
+    """A note in the scratch home, at its home-relative path."""
+    path = os.path.join(HOME, *rel.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    return path
+
+
+def reindex(window):
+    window.notes.refresh()
+    window.notes_changed()
+
+
+def same(a, b):
+    return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
+
+
+def test_a_link_leads_to_its_note_and_to_the_heading_it_names(window):
+    from notedown import render
+
+    target = brain_note("SecondBrain/vault/nodes/idea/femek--1a2b3c4d.md",
+                        "---\ntitle: Fémek\n---\n# Fémek\n\nintro\n\n## Áram\n\nflows\n")
+    source = brain_note("Projects/Studies/Biology/2026-10-27.md",
+                        "# Óra\n\nSee [[femek#aram|the current]].\n")
+    reindex(window)
+    document = window.open_path(source)
+    link = next(markdown.wiki_links(document.parsed))
+    assert same(link.url, target), link.url
+
+    # The [[ list finds it by its title, accents aside, and types the title.
+    suggestions = window.link_suggestions("fem", source)
+    assert ("Fémek", "SecondBrain/vault/nodes/idea", "Fémek") in suggestions, suggestions
+
+    window.open_url(document, render.wiki_href(link.text, link.title))
+    pump(200)
+    assert window.active.is_at(target)
+    assert window.active.editor.cursor_position()[0] == 8, window.active.editor.cursor_position()
+
+
+def test_a_link_to_a_note_not_written_offers_it_and_makes_it_beside_this_one(window):
+    from notedown import order, render
+
+    source = brain_note("Projects/Studies/Biology/Növények.md", "# Növények\n\n[[Gyökér]] next.\n")
+    reindex(window)
+    document = window.open_path(source)
+    assert next(markdown.wiki_links(document.parsed)).url == ""
+
+    offered = []
+    window.offer_new_note = lambda doc, target: offered.append((doc, target))
+    try:
+        window.open_url(document, render.wiki_href("Gyökér"))
+    finally:
+        del window.offer_new_note
+    assert offered == [(document, "Gyökér")], offered
+
+    where = order.new_note_path(document.folder, "Gyökér")
+    window.make_note("Gyökér", where)
+    settle(lambda: window.active is not None and window.active.is_at(where))
+    with open(where, encoding="utf-8") as fh:
+        assert fh.read() == "# Gyökér\n\n"
+    settle(lambda: next(markdown.wiki_links(document.parsed)).url != "")
+    assert same(next(markdown.wiki_links(document.parsed)).url, where)
+
+
+def test_the_backlinks_drawer_lists_the_notes_that_link_here(window):
+    target = brain_note("SecondBrain/vault/nodes/idea/Library of Wisdom.md",
+                        "# Library of Wisdom\n\n[[Not written]]\n")
+    brain_note("SecondBrain/journal/2026/2026-10-26.md",
+               "# 26\n\nRead in the [[Library of Wisdom]] today.\n")
+    reindex(window)
+    window.config["backlinks_visible"] = False
+    window.lookup_action("toggle-backlinks").activate(None)
+    try:
+        assert window.backlinks.get_reveal_child()
+        window.open_path(target)
+        pump(200)
+        links = window.backlinks.links
+        assert [(os.path.basename(str(link.path)), link.line) for link in links] == \
+            [("2026-10-26.md", 3)], links
+        assert window.backlinks.heading.get_text() == "Linked from 1 note"
+        assert window.backlinks.unwritten == ["Not written"]
+        assert window.backlinks.count.get_text() == "1 link leads nowhere yet"
+
+        window.backlinks.list.emit("row-activated", window.backlinks.list.get_row_at_index(0))
+        pump(200)
+        assert window.active.is_at(str(links[0].path))
+        assert window.active.editor.cursor_position()[0] == 3
+    finally:
+        window.lookup_action("toggle-backlinks").activate(None)
+
+
+def test_the_switcher_finds_notes_by_name_and_starts_from_the_recent_ones(window):
+    brain_note("SecondBrain/vault/nodes/idea/kreta--0badf00d.md",
+               "---\ntitle: Kréta\naliases: [chalk]\n---\nbody\n")
+    reindex(window)
+    recent = brain_note("Projects/Studies/Biology/recent.md", "# Most recent\n")
+    window.open_path(recent)
+    window.new_document()
+    dialog = window.show_switcher()
+    try:
+        assert dialog.caption.get_visible()
+        assert dialog.rows[0][0] == "Most recent" and same(dialog.rows[0][2], recent)
+        dialog.entry.set_text("CHALK")
+        dialog.fill()
+        assert [row[0] for row in dialog.rows] == ["Kréta"], dialog.rows
+        opened = []
+        dialog.on_open = opened.append
+        dialog.open_selected()
+        assert opened and opened[0].endswith("kreta--0badf00d.md"), opened
+        # Opening a note is also closing the switcher.
+        assert dialog.get_root() is None
+    finally:
+        if dialog.get_root() is not None:
+            dialog.close()
+
+
+def test_the_selection_goes_to_the_inbox_and_undo_takes_it_back(window):
+    inbox = os.path.join(HOME, "SecondBrain", "inbox")
+    path = brain_note("Projects/Studies/Biology/capture.md",
+                      "first line\na thought worth keeping\n")
+    document = window.open_path(path)
+    buf = document.editor.buffer
+    start = buf.get_iter_at_line(1)[1]
+    end = start.copy()
+    end.forward_to_line_end()
+    buf.select_range(start, end)
+
+    toasts = []
+    window._toast_with_undo = lambda title, undo: toasts.append((title, undo))
+    before = set(os.listdir(inbox))
+    try:
+        window.send_to_inbox()
+        settle(lambda: bool(toasts))
+    finally:
+        del window._toast_with_undo
+    made = (set(os.listdir(inbox)) - before).pop()
+    assert made.endswith(" a thought worth keeping.md"), made
+    with open(os.path.join(inbox, made), encoding="utf-8") as fh:
+        body = fh.read()
+    assert "origin: notedown" in body and body.rstrip().endswith("a thought worth keeping")
+    assert made in toasts[0][0]
+    # Sent, not moved: the note it came from is as it was.
+    assert document.text() == "first line\na thought worth keeping\n"
+
+    toasts[0][1]()
+    assert made not in os.listdir(inbox)
+
+    # A saved note with nothing selected already has a place, and is not sent.
+    buf.place_cursor(buf.get_start_iter())
+    window.send_to_inbox()
+    pump(200)
+    assert set(os.listdir(inbox)) == before
+
+
+def test_a_new_note_sent_whole_leaves_its_tab_empty_until_undone(window):
+    document = window.new_document()
+    document.editor.buffer.insert_at_cursor("# An idea\n\nto file later\n")
+    toasts = []
+    window._toast_with_undo = lambda title, undo: toasts.append((title, undo))
+    try:
+        window.send_to_inbox()
+        settle(lambda: bool(toasts))
+    finally:
+        del window._toast_with_undo
+    assert document.text() == "" and not document.modified
+    assert "An idea.md" in toasts[0][0], toasts
+    toasts[0][1]()
+    assert document.text() == "# An idea\n\nto file later\n" and document.modified
+    document.set_text("")
+
+
+def test_saving_puts_the_note_in_the_index_at_once(window):
+    path = brain_note("SecondBrain/vault/nodes/idea/renamed.md", "# Old name\n")
+    reindex(window)
+    document = window.open_path(path)
+    document.editor.buffer.set_text("# Brand new name\n")
+    window.save_document(document, silent=True)
+    settle(lambda: window.resolve_link("Brand new name") != "")
+    assert same(window.resolve_link("Brand new name"), path)
+
+
+def test_todays_note_is_opened_from_the_journal(window):
+    from datetime import date
+
+    today = date.today()
+    window.open_daily_note()
+    expected = os.path.join(HOME, "SecondBrain", "journal", f"{today:%Y}", f"{today:%Y-%m-%d}.md")
+    assert window.active.is_at(expected), window.active.path
+    assert window.active.text().startswith(f"# {today:%Y-%m-%d}")
+
+
+def test_the_status_bar_counts_the_cards_the_scheduler_will_find(window):
+    path = brain_note("Projects/Studies/Biology/counted.md", "A :: B\n\nC ::: D\n")
+    window.open_path(path)
+    pump(300)
+    assert window.status_cards.get_visible()
+    assert window.status_cards.get_text() == "3 cards", window.status_cards.get_text()
+    window.new_document()
+    pump(300)
+    assert not window.status_cards.get_visible()
+
+
+def test_study_is_offered_only_beside_mnemosyne(window):
+    from notedown import order
+
+    shipped = order.CHECKOUT
+    beside = os.path.join(scratch, "apps")
+    script = os.path.join(beside, "Mnemosyne", "mnemosyne.py")
+    os.makedirs(os.path.dirname(script), exist_ok=True)
+    open(script, "w").close()
+    spawned = []
+    try:
+        order.CHECKOUT = os.path.join(scratch, "no-apps-here")
+        window._offer_study()
+        assert window.lookup_action("study") is None
+        order.CHECKOUT = beside
+        window._offer_study()
+        action = window.lookup_action("study")
+        assert action is not None
+
+        path = brain_note("Projects/Studies/Biology/to-study.md", "A :: B\n")
+        window.open_path(path)
+        pump(300)
+        assert action.get_enabled()
+        window._spawn = lambda argv, cwd: spawned.append(argv)
+        window.study_note()
+        assert spawned and spawned[0][1:] == [script, "--study", os.path.abspath(path)], spawned
+    finally:
+        order.CHECKOUT = shipped
+        window.__dict__.pop("_spawn", None)
+        window._offer_study()
+
+
+def test_no_key_does_two_things_and_every_new_one_is_written_down(window):
+    from notedown.window import ACCELERATORS, SHORTCUTS
+
+    app = window.get_application()
+    actions = {action for action, _keys in ACCELERATORS}
+    actions |= {f"win.heading{level}" for level in range(7)}
+    actions |= {f"win.view-{mode}" for mode in ("editor", "split", "preview")}
+    seen = {}
+    bound = [(action, accel) for action in sorted(actions)
+             for accel in app.get_accels_for_action(action)]
+    # The app's own two, which NotedownApp installs and this test app does not.
+    bound += [("app.quit", "<Control>q"), ("app.new-window", "<Control><Shift>n")]
+    for action, accel in bound:
+        _ok, key, mods = Gtk.accelerator_parse(accel)
+        pressed = (Gdk.keyval_to_lower(key), int(mods))
+        assert pressed not in seen, f"{accel} is both {seen[pressed]} and {action}"
+        seen[pressed] = action
+
+    for action, _keys in ACCELERATORS:
+        name = action.split(".", 1)[1]
+        assert window.lookup_action(name) is not None, f"{action} is bound but does not exist"
+
+    sheet = " ".join(keys for _group, rows in SHORTCUTS for keys, _what in rows)
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+        readme = fh.read()
+    for keys in ("Ctrl+P", "Ctrl+Shift+B", "Ctrl+Shift+D", "Ctrl+Shift+I", "Ctrl+Shift+A"):
+        assert keys in sheet, f"{keys} is not in the shortcuts sheet"
+        assert f"| {keys} |" in readme, f"{keys} is not in the README's table"
+
+
+STANDIN = """
+import json, os, sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "reply.txt"), encoding="utf-8") as fh:
+    reply = fh.read()
+with open(os.path.join(here, "prompt.txt"), "w", encoding="utf-8") as fh:
+    fh.write(sys.argv[sys.argv.index("-p") + 1])
+for event in ({"type": "system", "session_id": "s-1"},
+              {"type": "assistant", "session_id": "s-1",
+               "message": {"content": [{"type": "text", "text": reply}]}},
+              {"type": "result", "result": reply, "is_error": False, "session_id": "s-1"}):
+    print(json.dumps(event), flush=True)
+"""
+
+
+def standin(reply):
+    """Claude Code, played by a script: it answers `reply`, and keeps the prompt."""
+    folder = os.path.join(scratch, "claude")
+    os.makedirs(folder, exist_ok=True)
+    script = os.path.join(folder, "claude_standin.py")
+    with open(script, "w", encoding="utf-8") as fh:
+        fh.write(STANDIN)
+    with open(os.path.join(folder, "reply.txt"), "w", encoding="utf-8") as fh:
+        fh.write(reply)
+    return [sys.executable, script]
+
+
+def test_claude_answers_beside_the_note_on_the_page(window):
+    from pathlib import Path
+
+    assert window.assistant is not None, "ORDER_CLAUDE should make Claude Code available"
+    window.assistant.command = standin("It is about **roots**. See [[Fémek]].")
+    path = brain_note("Projects/Studies/Biology/roots.md", "# Roots\n\ntext\n")
+    window.open_path(path)
+    window.show_claude(True)
+    try:
+        assert window.claude_split.get_show_sidebar()
+        window.assistant.ask("What is this about?")
+        settle(lambda: not window.assistant.running, 15000)
+        assert window.assistant.text == "It is about **roots**. See [[Fémek]].", \
+            window.assistant.status.get_text()
+        with open(os.path.join(scratch, "claude", "prompt.txt"), encoding="utf-8") as fh:
+            prompt = fh.read()
+        assert prompt.startswith("What is this about?") and Path(path).as_posix() in prompt
+        shown = " ".join(w.get_text() for w in descendants(window.assistant.page.column)
+                         if isinstance(w, Gtk.Label))
+        assert "It is about roots. See Fémek." in shown, shown
+        assert window.assistant.session == "s-1" and window.assistant.desk_button.get_visible()
+    finally:
+        window.show_claude(False)
+
+
+def test_cards_from_claude_are_shown_first_and_added_only_when_asked(window):
+    window.assistant.command = standin(
+        "Some cards:\n\n- Xylem :: carries water\n- Phloem :: carries sugar\n")
+    original = "# Vessels\n\n- Xylem :: carries water\n"
+    path = brain_note("Projects/Studies/Biology/vessels.md", original)
+    document = window.open_path(path)
+    window.assistant.make_cards()
+    settle(lambda: not window.assistant.running, 15000)
+    assert window.assistant.proposal == "- Phloem :: carries sugar", window.assistant.proposal
+    assert window.assistant.add_button.get_visible()
+    assert window.assistant.add_button.get_label() == "Add 1 card"
+    assert any(w.has_css_class("md-card") for w in descendants(window.assistant.page.column))
+    assert document.text() == original, "cards were written before they were approved"
+
+    window.assistant.add_cards()
+    assert document.text() == original + "\n- Phloem :: carries sugar\n", repr(document.text())
+    document.editor.buffer.undo()
+    assert document.text() == original
+
+
 # ------------------------------------------------------------------ helpers --
 
 def children(box):
@@ -1062,8 +1734,9 @@ def main():
         check(name, fn)
 
     print("\nwith a display")
-    from gi.repository import Adw, Gio, GLib as _GLib, Gtk as _Gtk  # noqa: F811
+    from gi.repository import Adw, Gdk as _Gdk, Gio, GLib as _GLib, Gtk as _Gtk  # noqa: F811
 
+    globals()["Gdk"] = _Gdk
     globals()["GLib"] = _GLib
     globals()["Gtk"] = _Gtk
 

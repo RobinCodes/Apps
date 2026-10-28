@@ -23,12 +23,21 @@ This is CommonMark's shape with GitHub's additions (tables, task lists,
 strikethrough, footnotes, bare URLs), plus the three conventions that are not
 in either specification but are in everyone's notes: `$…$` maths, `==marked==`
 text, and YAML front matter.
+
+And the Order's two (SYSTEM.md): `[[wiki links]]` between notes, and cards
+written in the note itself (§7). Neither is decided here. A link is whatever
+`brain.py` indexes as one and a card is whatever `cards.py` schedules as one,
+so the page cannot show a link the backlinks do not know about, or draw a
+card Mnemosyne will never ask.
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
+
+from . import cards as cardnotes
+from .brain import _WIKILINK
 
 # --------------------------------------------------------------- the tree --
 
@@ -37,7 +46,12 @@ class Node:
     """An inline span: text, or something wrapping more spans.
 
     kind is one of text, code, math, link, image, footref, break, emph,
-    strong, strike, mark, sub, sup, kbd, raw.
+    strong, strike, mark, sub, sup, kbd, raw, wikilink, cloze.
+
+    A wikilink keeps its target in `text` and its `#heading` in `title`. Its
+    `url` is empty until the document it is in says where the target is (see
+    `wiki_links`), and stays empty for a note not written yet. A cloze is the
+    answer of a gap, with its hint, if it has one, in `title`.
     """
 
     __slots__ = ("kind", "text", "url", "title", "children")
@@ -71,11 +85,15 @@ class Block:
       frontmatter text
       footnote   label, children
       image      url, title, spans (the alt text)
+      card       form, spans (the front), back (None for a cloze)
+
+    A card's form is the one `cards.py` gives it: line, both, qa or cloze.
     """
 
     __slots__ = ("kind", "line", "end_line", "level", "spans", "text", "language",
                  "children", "ordered", "start", "tight", "items", "aligns",
-                 "header", "rows", "anchor", "label", "url", "title")
+                 "header", "rows", "anchor", "label", "url", "title", "form",
+                 "back")
 
     def __init__(self, kind, line, **fields):
         self.kind = kind
@@ -113,14 +131,17 @@ class ListItem:
 class Document:
     """Everything a parse produced: the blocks, plus what they refer to."""
 
-    __slots__ = ("blocks", "refs", "footnotes", "frontmatter", "source_lines")
+    __slots__ = ("blocks", "refs", "footnotes", "frontmatter", "source_lines",
+                 "cards")
 
-    def __init__(self, blocks, refs, footnotes, frontmatter, source_lines):
+    def __init__(self, blocks, refs, footnotes, frontmatter, source_lines,
+                 cards=()):
         self.blocks = blocks
         self.refs = refs                # label (folded) -> (url, title)
         self.footnotes = footnotes      # label -> Block of kind "footnote"
         self.frontmatter = frontmatter  # raw YAML text, or ""
         self.source_lines = source_lines
+        self.cards = list(cards)        # cards.Card, as Mnemosyne will see them
 
 
 # ------------------------------------------------------------- block rules --
@@ -228,16 +249,34 @@ def _parse(text: str, breaks: bool = True) -> Document:
 
     refs: dict[str, tuple[str, str]] = {}
     footnotes: dict[str, Block] = {}
+    found, card_lines = _cards_of(raw)
     blocks = _blocks(lines, start, len(lines), refs, footnotes,
-                     base=start, breaks=breaks)
+                     base=start, breaks=breaks, cards=card_lines)
 
     if frontmatter:
         blocks.insert(0, Block("frontmatter", 0, text=frontmatter, end_line=start - 1))
-    return Document(blocks, refs, footnotes, frontmatter, lines)
+    return Document(blocks, refs, footnotes, frontmatter, lines, found)
+
+
+def _cards_of(text):
+    """Every card in the note, and the first one on each line one starts on.
+
+    Asked of `cards.py` rather than worked out here: the page draws as a card
+    exactly what the scheduler will ask, `cards: false` and all. The two
+    directions of a `:::` share a line, and the first is the one kept.
+    """
+    try:
+        found = cardnotes.parse_text(text, "note.md")
+    except Exception:  # noqa: BLE001 - a card is a nicety; the page is not
+        return [], {}
+    by_line = {}
+    for card in found:
+        by_line.setdefault(card.line - 1, card)
+    return found, by_line
 
 
 def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None,
-            breaks=True):
+            breaks=True, cards=None):
     """Parse lines[start:stop] into blocks.
 
     `offsets` maps an index in `lines` to where that line really came from, as
@@ -247,6 +286,9 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None,
     without the *column*, a task nested two levels down would say its checkbox
     is at column 2 of a line where it is at column 6, and ticking it in the
     preview would edit the wrong two characters.
+
+    `cards` is `_cards_of`'s second answer: the card each source line starts,
+    which is how a line becomes a card here rather than a paragraph.
     """
     def source_line(index):
         return offsets[index][0] if offsets is not None else index
@@ -254,10 +296,12 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None,
     def source_column(index):
         return offsets[index][1] if offsets is not None else 0
 
+    cards = cards or {}
     out: list[Block] = []
     index = start
     para: list[str] = []
     para_line = 0
+    para_cloze = False
 
     def flush_para():
         nonlocal para
@@ -267,7 +311,11 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None,
         # A paragraph can be nothing but link definitions, in which case it is
         # not a paragraph at all.
         joined = _take_ref_defs(joined, refs)
-        if joined.strip():
+        if joined.strip() and para_cloze:
+            out.append(Block("card", para_line, form="cloze",
+                             spans=inline(joined, refs, breaks, clozes=True),
+                             end_line=para_line + joined.count("\n")))
+        elif joined.strip():
             out.append(Block("para", para_line,
                              spans=inline(joined, refs, breaks),
                              end_line=para_line + joined.count("\n")))
@@ -367,7 +415,7 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None,
             inner, inner_offsets, index = _gather_quote(
                 lines, index, stop, source_line, source_column)
             children = _blocks(inner, 0, len(inner), refs, footnotes,
-                               offsets=inner_offsets, breaks=breaks)
+                               offsets=inner_offsets, breaks=breaks, cards=cards)
             out.append(Block("quote",
                              inner_offsets[0][0] if inner_offsets else source_line(index),
                              children=children,
@@ -380,7 +428,8 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None,
             aligns = _alignments(lines[index + 1])
             if len(header) == len(aligns):
                 flush_para()
-                table, index = _table(lines, index, stop, aligns, header, refs, source_line)
+                table, index = _table(lines, index, stop, aligns, header, refs,
+                                      source_line, cards)
                 out.append(table)
                 continue
 
@@ -406,7 +455,7 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None,
             block = Block("footnote", body_offsets[0][0], label=label,
                           children=_blocks(body, 0, len(body), refs, footnotes,
                                            offsets=body_offsets,
-                                           breaks=breaks))
+                                           breaks=breaks, cards=cards))
             footnotes[label] = block
             continue
 
@@ -414,7 +463,7 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None,
         if _BULLET.match(line) or _ORDERED.match(line):
             flush_para()
             block, index = _list(lines, index, stop, refs, footnotes,
-                                 source_line, source_column, breaks)
+                                 source_line, source_column, breaks, cards)
             out.append(block)
             continue
 
@@ -453,9 +502,36 @@ def _blocks(lines, start, stop, refs, footnotes, base=0, offsets=None,
                              end_line=source_line(index - 1)))
             continue
 
+        # -- cards ---------------------------------------------------------
+        # Only a line nothing above has claimed can be one, which is also the
+        # order cards.py asks its own questions in: a heading or a table row
+        # with `::` in it is still a heading or a table row.
+        card = cards.get(source_line(index))
+        if card is not None and card.form in ("line", "both"):
+            flush_para()
+            out.append(Block("card", source_line(index), form=card.form,
+                             spans=inline(card.front, refs, breaks),
+                             back=inline(card.back, refs, breaks)))
+            index += 1
+            continue
+        if card is not None and card.form == "qa":
+            flush_para()
+            # The question and its answer: as many lines as cards.py read.
+            taken = card.front.count("\n") + card.back.count("\n") + 2
+            last = min(stop, index + taken) - 1
+            out.append(Block("card", source_line(index), form="qa",
+                             spans=inline(card.front, refs, breaks),
+                             back=inline(card.back, refs, breaks),
+                             end_line=source_line(last)))
+            index = last + 1
+            continue
+
         # -- paragraph -----------------------------------------------------
         if not para:
             para_line = source_line(index)
+            para_cloze = False
+        if card is not None and card.form == "cloze":
+            para_cloze = True
         para.append(line)
         index += 1
 
@@ -556,19 +632,23 @@ def _alignments(line: str) -> list[str]:
     return out
 
 
-def _table(lines, index, stop, aligns, header, refs, source_line):
+def _table(lines, index, stop, aligns, header, refs, source_line, cards=None):
     first = index
     index += 2
     rows = []
     while index < stop and lines[index].strip() and "|" in lines[index]:
         if _starts_block(lines[index]) and not _BULLET.match(lines[index]):
             break
-        rows.append(_cells(lines[index]))
+        # A row with a gap in it is a card of its own, asked with the rest of
+        # that row — so its gaps are drawn in that row and in no other.
+        card = (cards or {}).get(source_line(index))
+        rows.append((_cells(lines[index]), card is not None and card.form == "cloze"))
         index += 1
 
     width = len(aligns)
     header = [inline(cell, refs) for cell in _fit(header, width)]
-    body = [[inline(cell, refs) for cell in _fit(row, width)] for row in rows]
+    body = [[inline(cell, refs, clozes=cloze) for cell in _fit(row, width)]
+            for row, cloze in rows]
     return Block("table", source_line(first), aligns=aligns, header=header,
                  rows=body, end_line=source_line(index - 1)), index
 
@@ -579,7 +659,7 @@ def _fit(cells, width):
 
 
 def _list(lines, index, stop, refs, footnotes, source_line, source_column,
-          breaks=True):
+          breaks=True, cards=None):
     """A whole list: its items, and whether it is tight or loose.
 
     An item's content is everything indented past its marker, plus lazily
@@ -660,7 +740,7 @@ def _list(lines, index, stop, refs, footnotes, source_line, source_column,
             item_lines[0] = check.group(3) or ""
 
         children = _blocks(item_lines, 0, len(item_lines), refs, footnotes,
-                           offsets=item_offsets, breaks=breaks)
+                           offsets=item_offsets, breaks=breaks, cards=cards)
         items.append(ListItem(children, task=task, task_line=task_line,
                               task_column=task_column, line=item_offsets[0][0]))
 
@@ -705,18 +785,46 @@ _LONE_TOKEN = re.compile(r"[A-Za-z]\w{0,2}|\d+(?:\.\d+)?")
 
 
 def inline(text: str, refs: dict | None = None,
-           breaks: bool = True) -> list[Node]:
+           breaks: bool = True, clozes: bool = False) -> list[Node]:
     """Inline Markdown to a list of Nodes. Never raises.
 
-    `breaks` is described on `parse`.
+    `breaks` is described on `parse`. `clozes` reads `{{answer|hint}}` as a
+    gap, which only a paragraph `cards.py` calls a cloze card asks for: in a
+    note with `cards: false`, or about a template language, braces are text.
     """
     try:
-        return _inline(text or "", refs or {}, breaks=breaks)
+        return _inline(text or "", refs or {}, breaks=breaks, clozes=clozes)
     except Exception:  # noqa: BLE001 - see the module docstring
         return [Node("text", text or "")]
 
 
-def _inline(text, refs, depth=0, breaks=True):
+# What an `![[embed]]` names when it means a picture rather than a note.
+_PICTURES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif")
+
+
+def _wikilink(text, index):
+    """`[[Target#Heading|label]]` at index, read with the index's own pattern.
+
+    The backlinks are counted with `brain._WIKILINK`, so it is the one used
+    here too: anything the page underlines, the index has counted. An
+    `![[embed]]` of a picture is that picture; of anything else, a link to it.
+    """
+    match = _WIKILINK.match(text, index)
+    if not match:
+        return None, index
+    target = match.group(2).strip()
+    heading = (match.group(3) or "")[1:].strip()
+    label = (match.group(4) or "").strip()
+    if not target:
+        return None, index
+    if match.group(1) and target.lower().endswith(_PICTURES):
+        return Node("image", text=label, url=target), match.end()
+    shown = label or (f"{target} › {heading}" if heading else target)
+    return (Node("wikilink", text=target, title=heading,
+                 children=[Node("text", shown)]), match.end())
+
+
+def _inline(text, refs, depth=0, breaks=True, clozes=False):
     if depth > 12:            # pathological nesting; stop pretending
         return [Node("text", text)]
 
@@ -794,10 +902,33 @@ def _inline(text, refs, depth=0, breaks=True):
                     index = end + 1
                     continue
 
+        # -- wiki links ----------------------------------------------------
+        if (char == "[" and text.startswith("[[", index)) or \
+                (char == "!" and text.startswith("![[", index)):
+            node, after = _wikilink(text, index)
+            if node is not None:
+                flush()
+                out.append(node)
+                index = after
+                continue
+
+        # -- gaps ----------------------------------------------------------
+        if clozes and char == "{" and text.startswith("{{", index):
+            close = text.find("}}", index + 2)
+            inner = text[index + 2:close] if close != -1 else ""
+            if inner.strip() and "\n" not in inner:
+                answer, _, hint = inner.partition("|")
+                flush()
+                out.append(Node("cloze", title=hint.strip(),
+                                children=_inline(answer.strip(), refs, depth + 1,
+                                                 breaks)))
+                index = close + 2
+                continue
+
         # -- images and links ----------------------------------------------
         if char == "!" and index + 1 < size and text[index + 1] == "[":
             node, after = _link(text, index + 1, refs, depth, image=True,
-                                breaks=breaks)
+                                breaks=breaks, clozes=clozes)
             if node is not None:
                 flush()
                 out.append(node)
@@ -812,7 +943,7 @@ def _inline(text, refs, depth=0, breaks=True):
                 index += footnote.end()
                 continue
             node, after = _link(text, index, refs, depth, image=False,
-                                breaks=breaks)
+                                breaks=breaks, clozes=clozes)
             if node is not None:
                 flush()
                 out.append(node)
@@ -855,13 +986,13 @@ def _inline(text, refs, depth=0, breaks=True):
                             out.append(Node("code", inner))
                         else:
                             out.append(Node(kind, children=_inline(inner, refs, depth + 1,
-                                                   breaks)))
+                                                   breaks, clozes)))
                         index = text.index(">", close) + 1
                         continue
 
         # -- emphasis ------------------------------------------------------
         if char in "*_~=":
-            node, after = _emphasis(text, index, refs, depth, breaks)
+            node, after = _emphasis(text, index, refs, depth, breaks, clozes)
             if node is not None:
                 flush()
                 out.append(node)
@@ -970,7 +1101,7 @@ def is_math(body: str) -> bool:
     return bool(_LONE_TOKEN.fullmatch(stripped))
 
 
-def _emphasis(text, index, refs, depth, breaks=True):
+def _emphasis(text, index, refs, depth, breaks=True, clozes=False):
     """A run of `*`, `_`, `~` or `=` that opens a span, and its contents."""
     char = text[index]
     run = _run_length(text, index, char)
@@ -996,7 +1127,7 @@ def _emphasis(text, index, refs, depth, breaks=True):
     inner = text[index + run:close]
     if not inner.strip():
         return None, index
-    children = _inline(inner, refs, depth + 1, breaks)
+    children = _inline(inner, refs, depth + 1, breaks, clozes)
 
     if char == "~":
         return Node("strike", children=children), close + run
@@ -1036,7 +1167,7 @@ def _find_close(text, start, char, run):
     return -1
 
 
-def _link(text, index, refs, depth, image, breaks=True):
+def _link(text, index, refs, depth, image, breaks=True, clozes=False):
     """A link or image starting at `[`. Returns (node, index after) or (None, _)."""
     close = _matching_bracket(text, index)
     if close == -1:
@@ -1070,7 +1201,7 @@ def _link(text, index, refs, depth, image, breaks=True):
         return Node("image", text=label, url=url, title=title,
                     children=_inline(label, refs, depth + 1, breaks)), after
     return Node("link", url=url, title=title,
-                children=_inline(label, refs, depth + 1, breaks)), after
+                children=_inline(label, refs, depth + 1, breaks, clozes)), after
 
 
 def _matching_bracket(text, start):
@@ -1173,6 +1304,49 @@ def spans_text(spans, break_text: str = " ") -> str:
     return "".join(node_text(node, break_text) for node in spans or [])
 
 
+def spans_of(document: Document):
+    """Every run of inline spans in the document, wherever its block is."""
+
+    def walk(blocks):
+        for block in blocks or []:
+            if block.spans:
+                yield block.spans
+            if block.back:
+                yield block.back
+            if block.kind == "table":
+                yield from block.header
+                for row in block.rows:
+                    yield from row
+            if block.kind in ("quote", "footnote"):
+                yield from walk(block.children)
+            if block.kind == "list":
+                for item in block.items:
+                    yield from walk(item.children)
+
+    yield from walk(document.blocks)
+    for footnote in document.footnotes.values():
+        yield from walk(footnote.children)
+
+
+def wiki_links(document: Document):
+    """Every `[[link]]` node in the document, for whoever knows where they lead.
+
+    The parser cannot say whether a link resolves — that is a question about
+    the disk — so the document that owns the tree fills in each node's `url`
+    before the page and the exporter read it.
+    """
+
+    def walk(spans):
+        for node in spans:
+            if node.kind == "wikilink":
+                yield node
+            elif node.children:
+                yield from walk(node.children)
+
+    for spans in spans_of(document):
+        yield from walk(spans)
+
+
 def outline(document: Document) -> list[tuple[int, str, int, str]]:
     """(level, title, line, anchor) for every heading, in document order."""
     found = []
@@ -1215,6 +1389,10 @@ def statistics_of(document: Document, text: str = "") -> dict:
         for block in blocks:
             if block.kind in ("heading", "para"):
                 plain.append(spans_text(block.spans))
+            elif block.kind == "card":
+                plain.append(spans_text(block.spans))
+                if block.back:
+                    plain.append(spans_text(block.back))
             elif block.kind == "quote":
                 walk(block.children)
             elif block.kind == "list":

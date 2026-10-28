@@ -26,6 +26,7 @@ import os
 from gi.repository import GLib, Gtk
 
 from . import markdown
+from .brain import key
 from .editor import Editor
 from .render import Preview, set_page_font
 
@@ -62,6 +63,7 @@ class Document:
             on_changed=self._edited,
             on_cursor=lambda: window.document_cursor_moved(self),
             on_scrolled=self._editor_scrolled,
+            complete=lambda query: window.link_suggestions(query, self.path),
         )
         self.editor.set_wrap(bool(self.config["wrap"]))
         self.editor.set_gutter_visible(bool(self.config["show_gutter"]))
@@ -203,6 +205,10 @@ class Document:
         if self.is_markdown:
             self.parsed = markdown.parse(
                 text, breaks=bool(self.config["line_breaks"]))
+            # Where each [[link]] leads is a question about the disk, which
+            # the parser does not ask; the page and the exporter both read
+            # the answer from the tree.
+            self.window.resolve_links(self.parsed, self.path)
         else:
             # Not Markdown: show it as what it is rather than inventing
             # emphasis out of a shell script's asterisks.
@@ -222,6 +228,40 @@ class Document:
         """Render if something changed while the preview was hidden."""
         if self._dirty:
             self.render_now()
+
+    # ------------------------------------------------------------- links --
+
+    def links_changed(self):
+        """The index has changed: a link here may lead somewhere it did not.
+
+        Rendered again only when one actually does — the index changes on
+        every save, and rebuilding every open page each time would be a
+        flicker for nothing.
+        """
+        if self.parsed is None or not self.is_markdown:
+            return
+        if any(node.url != self.window.resolve_link(node.text, self.path)
+               for node in markdown.wiki_links(self.parsed)):
+            self.render_now()
+
+    def reveal_heading(self, heading: str) -> bool:
+        """Put the cursor, and the page, at the heading a `[[Note#Heading]]` names.
+
+        Matched the way the index matches a name — accents and case aside —
+        as well as by anchor, because a heading in a link is typed from memory.
+        """
+        if self.parsed is None:
+            return False
+        wanted, anchor = key(heading), markdown.slug(heading)
+        for _level, title, line, slug in markdown.outline(self.parsed):
+            if slug == anchor or key(title) == wanted:
+                self.editor.goto_line(line + 1)
+                # The page has to have been laid out before a widget in it
+                # has a place to scroll to, and a note just opened has not.
+                GLib.timeout_add(80, lambda: (self.preview.scroll_to_anchor(slug),
+                                              GLib.SOURCE_REMOVE)[1])
+                return True
+        return False
 
     # ------------------------------------------------------------ scrolling --
 
@@ -303,6 +343,7 @@ class Document:
             if handle:
                 GLib.source_remove(handle)
                 setattr(self, timer, 0)
+        self.editor.close()
 
 
 def _language_for(path: str | None) -> str:

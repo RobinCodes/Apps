@@ -29,6 +29,10 @@ def toast(widget, message, timeout=3):
     node = widget
     while node is not None and not isinstance(node, Adw.ToastOverlay):
         node = node.get_parent()
+    if node is None:
+        # A window is above its own overlay, not inside it, so walking up
+        # from one finds nothing; it says where its overlay is instead.
+        node = getattr(widget, "toasts", None)
     if node is not None:
         node.add_toast(Adw.Toast(title=message, timeout=timeout))
         return True
@@ -402,6 +406,28 @@ CSS = r"""
   font-size: 1.05em;
 }
 
+/* A card (SYSTEM.md §7): quiet, because a note written for learning is
+   mostly cards, and a page of loud boxes reads worse than the lines did. */
+.md-card {
+  background: alpha(currentColor, 0.03);
+  border: 1px solid alpha(currentColor, 0.09);
+  border-radius: 8px;
+  padding: 7px 12px;
+  margin: 2px 0 12px 0;
+}
+.md-item .md-card { margin: 1px 0 3px 0; }
+.md-card-front, .md-card-back { line-height: 1.45; }
+.md-card-back { opacity: 0.8; }
+.md-card-rule {
+  min-height: 1px;
+  margin: 5px 0;
+  background: alpha(currentColor, 0.09);
+}
+.md-card-ways {
+  opacity: 0.45;
+  font-size: 0.9em;
+}
+
 /* -------------------------------------------------------------- chrome -- */
 
 .status-strip {
@@ -442,6 +468,46 @@ CSS = r"""
   padding: 4px 6px 4px 12px;
   border-bottom: 1px solid alpha(currentColor, 0.10);
 }
+
+.backlinks-pane {
+  border-top: 1px solid alpha(currentColor, 0.12);
+  background: alpha(currentColor, 0.025);
+}
+.backlinks-header { padding: 4px 10px 2px 12px; }
+.backlinks-count { font-size: 0.84em; opacity: 0.6; }
+.backlinks-empty { padding: 10px 12px; opacity: 0.55; font-size: 0.9em; }
+.backlink-row { padding: 3px 6px; border-radius: 6px; }
+.backlink-title { font-weight: 650; font-size: 0.92em; }
+.backlink-line, .backlink-context { font-size: 0.84em; opacity: 0.62; }
+.backlink-unwritten label { font-size: 0.9em; opacity: 0.6; font-style: italic; }
+
+.link-completion contents { padding: 3px; }
+.link-completion row { padding: 3px 8px; border-radius: 6px; }
+.link-completion-title { font-weight: 600; }
+.link-completion-detail { font-size: 0.82em; opacity: 0.6; }
+
+.switcher-caption {
+  padding: 8px 14px 2px 14px;
+  font-size: 0.8em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.55;
+}
+.switcher-title { font-weight: 600; }
+.switcher-detail { font-size: 0.84em; opacity: 0.6; }
+.switcher-empty { padding: 24px 16px; opacity: 0.55; }
+
+.assistant { border-left: 1px solid alpha(currentColor, 0.10); }
+.assistant-header { padding: 4px 4px 4px 12px; }
+.assistant-ask { padding: 2px 10px 8px 10px; }
+.assistant-about { font-size: 0.82em; opacity: 0.6; }
+.assistant-page .md-page { padding: 8px 14px 32px 14px; }
+.assistant-footer {
+  padding: 6px 10px 8px 10px;
+  border-top: 1px solid alpha(currentColor, 0.10);
+}
+.assistant-status { font-size: 0.88em; opacity: 0.75; }
 
 .find-bar {
   padding: 5px 8px;

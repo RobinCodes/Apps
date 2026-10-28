@@ -11,7 +11,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio  # noqa: E402
 
-from . import updater, widgets, winenv  # noqa: E402
+from . import brain, jobs, updater, widgets, winenv  # noqa: E402
 from .window import MainWindow  # noqa: E402
 
 APP_ID = "com.robin.Notedown"
@@ -59,6 +59,10 @@ class NotedownApp(Adw.Application):
         winenv.use_icon(self, "notedown.ico")
         updater.watch(self, "Notedown", "notedown.py")
         widgets.install_css()
+        # The Order's index, brought up to date once, off the main loop. Until
+        # it has been, links resolve against what the last run left behind;
+        # when it finishes, every window looks again.
+        jobs.run(brain.Notes.shared().refresh, self._notes_refreshed, lambda _exc: None)
 
         quit_action = Gio.SimpleAction.new("quit", None)
         quit_action.connect("activate", lambda *_: self._quit())
@@ -71,6 +75,11 @@ class NotedownApp(Adw.Application):
         # Ctrl+N is a new document, which is the far commoner thing to want;
         # a whole window is the shifted version of it.
         self.set_accels_for_action("app.new-window", ["<Control><Shift>n"])
+
+    def _notes_refreshed(self, _changed):
+        for window in self.get_windows():
+            if isinstance(window, MainWindow):
+                window.notes_changed()
 
     def new_window(self):
         """Another window, with its own tabs and its own preview.

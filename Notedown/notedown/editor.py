@@ -35,7 +35,8 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 
-from . import widgets  # noqa: E402
+from . import cards as cardnotes, widgets  # noqa: E402
+from .completion import LinkCompletion  # noqa: E402
 from .config import DEFAULTS  # noqa: E402
 
 HIGHLIGHT_DEBOUNCE_MS = 80
@@ -69,6 +70,9 @@ _HTML = re.compile(r"^\s{0,3}</?[a-zA-Z!][^>]*>")
 
 _INLINE = re.compile(
     r"(?P<code>(?<!`)(`+)(?!`)(?:[^`]|(?!\2)`)+?\2(?!`))"
+    # The wiki link is brain.py's `_WIKILINK` without its groups, which is
+    # the one the backlinks are counted with; the suite holds the two together.
+    r"|(?P<wikilink>!?\[\[[^\[\]\n|#^]+(?:#[^\[\]\n|]*)?(?:\|[^\[\]\n]*)?\]\])"
     r"|(?P<image>!\[[^\]]*\]\((?:[^()\s]|\([^)]*\))*\))"
     r"|(?P<link>\[[^\]]*\]\((?:[^()\s]|\([^)]*\))*\))"
     r"|(?P<reflink>\[[^\]]*\]\[[^\]]*\])"
@@ -120,6 +124,12 @@ STYLES = {
                   "light_bg": "#00000008", "dark_bg": "#ffffff0a"},
     "escape":    {"light": "#9aa0a6", "dark": "#6f7680"},
     "refdef":    {"light": "#8250df", "dark": "#d2a8ff"},
+    # Cards (SYSTEM.md §7). The `::` and the Q:/A: are what make a line a
+    # question, so they carry the colour, the way a list marker does; a gap
+    # is tinted like a highlight, in the cards' own amber, because the words
+    # in it are the ones the card will hide.
+    "cardmark":  {"weight": 800, "light": "#a34f00", "dark": "#ffb86b"},
+    "cloze":     {"light_bg": "#ffe2bf", "dark_bg": "#ff9f4033"},
 }
 
 HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
@@ -138,7 +148,8 @@ def _head_width(match) -> int:
 class Editor(Gtk.Box):
     """Gutter + text view, with Markdown highlighting and the courtesies."""
 
-    def __init__(self, on_changed=None, on_cursor=None, on_scrolled=None):
+    def __init__(self, on_changed=None, on_cursor=None, on_scrolled=None,
+                 complete=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
         self.on_changed = on_changed
         self.on_cursor = on_cursor
@@ -197,6 +208,13 @@ class Editor(Gtk.Box):
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key)
         self.view.add_controller(keys)
+
+        # `[[` offers the notes there are to link to; `complete(query)` is
+        # where they come from, which the editor neither knows nor needs to.
+        self.completion = LinkCompletion(self, complete) if complete else None
+        focus = Gtk.EventControllerFocus()
+        focus.connect("leave", lambda *_: self.completion and self.completion.close())
+        self.view.add_controller(focus)
 
         scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
         scroll.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
@@ -710,6 +728,11 @@ class Editor(Gtk.Box):
         ctrl = state & Gdk.ModifierType.CONTROL_MASK
         shift = state & Gdk.ModifierType.SHIFT_MASK
 
+        # While the link list is open, the keys that move through a list
+        # move through it, and the rest are typing.
+        if self.completion is not None and self.completion.key(keyval, state):
+            return True
+
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not ctrl and not shift:
             return self._on_enter()
 
@@ -957,13 +980,29 @@ class Editor(Gtk.Box):
             GLib.source_remove(self._highlight_source)
         self._highlight_source = GLib.timeout_add(HIGHLIGHT_DEBOUNCE_MS, self._highlight_now)
         self.gutter.queue_draw()
+        if self.completion is not None:
+            self.completion.schedule()
         if self.on_changed:
             self.on_changed()
 
     def _on_scrolled(self, *_):
         self.gutter.queue_draw()
+        if self.completion is not None and self.completion.active:
+            self.completion.schedule()       # it points at a place that moved
         if self.on_scrolled:
             self.on_scrolled()
+
+    def in_code_block(self, it) -> bool:
+        """Whether `it` is in a fence or the front matter, as last highlighted."""
+        table = self.buffer.get_tag_table()
+        line = self.buffer.get_iter_at_line(it.get_line())[1]
+        return any(line.has_tag(table.lookup(name))
+                   for name in ("fence", "fenceline", "front"))
+
+    def close(self):
+        """Let go of what is attached to the view. The tab is going away."""
+        if self.completion is not None:
+            self.completion.destroy()
 
     def _on_cursor_moved(self, *_):
         buf = self.buffer
@@ -985,6 +1024,8 @@ class Editor(Gtk.Box):
                 self._apply_focus()
             if self._typewriter:
                 self._centre_cursor()
+        if self.completion is not None:
+            self.completion.schedule()
         if self.on_cursor:
             self.on_cursor()
 
@@ -1084,7 +1125,61 @@ class Editor(Gtk.Box):
                 continue
             self._highlight_line(number, line, tag, lines)
 
+        self._highlight_cards(text, lines, tag, first_line, last_line)
         return GLib.SOURCE_REMOVE
+
+    def _highlight_cards(self, text, lines, tag, first, last):
+        """The card syntax, on the lines cards.py makes cards of and no others.
+
+        Which lines those are is the scheduler's answer, not a guess made
+        here: `::` in a fence, in a code span or in a note with `cards: false`
+        is not a card, and so it is not coloured as one. Where on the line the
+        `::` or the gap is, is read with cards.py's own helpers for the same
+        reason.
+        """
+        try:
+            found = cardnotes.parse_text(text, "note.md")
+        except Exception:  # noqa: BLE001 - colour is not worth an exception
+            return
+        starts = {card.line - 1 for card in found}
+        done = set()
+        for card in found:
+            number = card.line - 1
+            if number in done or not first <= number <= last or number >= len(lines):
+                continue
+            done.add(number)
+            line = lines[number]
+            if card.form in ("line", "both", "both-r"):
+                split = cardnotes._separator(line)
+                if split:
+                    colons = line.index(":", split[0])
+                    tag("cardmark", number, colons, colons + (2 if card.form == "line" else 3))
+            elif card.form == "qa":
+                cue = line.find("Q:")
+                tag("cardmark", number, cue, cue + 2)
+                answer = number + card.front.count("\n") + 1
+                if answer < len(lines) and lines[answer].lstrip().startswith("A:"):
+                    cue = lines[answer].find("A:")
+                    tag("cardmark", answer, cue, cue + 2)
+            else:
+                # A sentence with gaps runs to the blank line, or to the next
+                # line that starts a card of its own.
+                while True:
+                    self._highlight_gaps(number, lines[number], tag)
+                    number += 1
+                    if number >= len(lines) or not lines[number].strip() or number in starts:
+                        break
+
+    def _highlight_gaps(self, number, line, tag):
+        masked = cardnotes._mask(line)
+        for gap in cardnotes._CLOZE.finditer(masked):
+            begin, stop = gap.start(), gap.end()
+            inner = line[begin + 2:stop - 2]
+            bar = inner.find("|")
+            answer_end = begin + 2 + (bar if bar >= 0 else len(inner))
+            tag("marker", number, begin, begin + 2)
+            tag("cloze", number, begin + 2, answer_end)
+            tag("marker", number, answer_end, stop)      # the hint, and the }}
 
     def _highlight_line(self, number, line, tag, lines):
         offset = 0
@@ -1143,7 +1238,8 @@ class Editor(Gtk.Box):
             kind = match.lastgroup
             begin, stop = match.start(), match.end()
             name = {
-                "code": "code", "image": "link", "link": "link", "reflink": "link",
+                "code": "code", "wikilink": "link",
+                "image": "link", "link": "link", "reflink": "link",
                 "footref": "link", "autolink": "url", "url": "url",
                 "strongem": "strong", "strong": "strong", "emphasis": "emphasis",
                 "strike": "strike", "mark": "mark", "math": "math",
@@ -1164,6 +1260,14 @@ class Editor(Gtk.Box):
             if width:
                 tag("marker", number, offset + begin, offset + begin + width)
                 tag("marker", number, offset + stop - width, offset + stop)
+            elif kind == "wikilink":
+                # As with [text](url): what is shown is what stands out, so
+                # with a |label the target before it steps back with the
+                # brackets.
+                text = line[begin:stop]
+                lead = text.find("|") + 1 if "|" in text else text.find("[[") + 2
+                tag("marker", number, offset + begin, offset + begin + lead)
+                tag("marker", number, offset + stop - 2, offset + stop)
             elif kind in ("link", "image", "reflink"):
                 bracket = line.find("]", begin)
                 if bracket != -1:
