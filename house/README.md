@@ -7,6 +7,9 @@ The look every app in this repository is drawn in, in one place.
 | `theme.py` | The ten palettes, and the glass each one is made of. No GTK import, so a settings file can read it before a toolkit exists. |
 | `housestyle.py` | libadwaita's named palette restated in a theme's colours, the shared idiom on top of that, the widgets CSS cannot draw, the preference rows, `aurora_texture` (the light, baked once) and `Geometry` (remembering a window's size). |
 | `sync.py` | Copies both into every app, and `--check` says whether a copy has drifted. |
+| `frontmatter.py` | Front matter edited key by key, so a comment or a quote nobody touched stays as it was. |
+| `threads.py` | Questions and logical threads (SYSTEM.md §10), written back as they were found. |
+| `timelines.py` | Timeline boards (SYSTEM.md §11): dates as precise as written, BC included, as day numbers. |
 | `test_house.py` | Measures the palettes, parses the sheet, and runs `sync.py --check`. |
 
 ## Why it is copied rather than imported

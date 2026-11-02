@@ -51,10 +51,13 @@ PACKAGES = {
     "The Eye": "theeye",
 }
 
-# The second brain: where things are, the cards and the scheduler. Only the
-# apps that read or write the brain get these — a disk scanner has no use for
-# a spaced-repetition scheduler, and an unused copy is still a copy to drift.
-BRAIN_FILES = ("brain.py", "cards.py", "fsrs.py", "claude.py")
+# The second brain: where things are, the cards and the scheduler, the
+# questions, threads and timelines, and the front matter they are all written
+# in. Only the apps that read or write the brain get these — a disk scanner has
+# no use for a spaced-repetition scheduler, and an unused copy is still a copy
+# to drift.
+BRAIN_FILES = ("brain.py", "cards.py", "fsrs.py", "claude.py",
+               "frontmatter.py", "threads.py", "timelines.py")
 BRAIN_APPS = ("Hermione", "Mnemosyne", "Notedown", "The Eye")
 
 # The C app, which takes the palettes as a generated header instead.

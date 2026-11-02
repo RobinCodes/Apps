@@ -111,6 +111,8 @@ def suites():
         # about before any of their own failures.
         ("House style", os.path.join("house", "test_house.py")),
         ("Brain", os.path.join("house", "test_brain.py")),
+        ("Threads", os.path.join("house", "test_threads.py")),
+        ("Timelines", os.path.join("house", "test_timelines.py")),
         ("Order", os.path.join("Order", "tests", "test_order.py")),
         ("Claude Desk", os.path.join("Claude Program", "tests", "test_claudedesk.py")),
         ("Git Manager", os.path.join("Git Manager", "tests", "test_gitmanager.py")),
@@ -126,7 +128,8 @@ def suites():
         if os.path.exists(path):
             # The house suite's own folder is its working directory; every
             # app's is the folder above its tests.
-            cwd = (os.path.dirname(path) if app in ("House style", "Brain")
+            cwd = (os.path.dirname(path)
+                   if app in ("House style", "Brain", "Threads", "Timelines")
                    else os.path.dirname(os.path.dirname(path)))
             found.append(Suite(app, "python", [sys.executable, path], cwd=cwd,
                                wants=("vte",) if app == "Prism" else ()))
