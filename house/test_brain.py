@@ -338,6 +338,43 @@ def test_a_deleted_note_leaves_the_index():
     assert notes.find("gone") == [] and notes.unresolved() == []
 
 
+def test_the_most_recently_changed_notes_come_first():
+    where = make_home("recent")
+    old = write(where.studies / "Biology" / "old.md", "# Old\n")
+    new = write(where.journal / "2026" / "2026-10-28.md", "# Today\n")
+    os.utime(old, (1_700_000_000, 1_700_000_000))
+    os.utime(new, (1_800_000_000, 1_800_000_000))
+    notes = brain.Notes(where, db_path=SCRATCH / "recent.db")
+    notes.refresh()
+    assert [n.title for n in notes.recent()] == ["Today", "Old"]
+    assert [n.path for n in notes.recent(1)] == [new]
+
+
+def test_a_refresh_interrupted_half_way_keeps_what_it_read():
+    where = make_home("interrupted")
+    for number in range(502):
+        write(where.studies / "Many" / f"note{number:03}.md", f"# Note {number}\n")
+    notes = brain.Notes(where, db_path=SCRATCH / "interrupted.db")
+    con = notes._db()
+    stored, original = [], notes._store
+
+    def store(*args):
+        original(*args)
+        stored.append(args[1])
+        if len(stored) == 501:
+            raise KeyboardInterrupt
+
+    notes._store = store
+    try:
+        notes.refresh()
+    except KeyboardInterrupt:
+        con.rollback()
+    notes._store = original
+    kept = con.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+    assert kept == 500, f"{kept} notes survived the interruption"
+    assert notes.refresh() == 2, "the rest of the notes should be all that is left to read"
+
+
 def test_wikilink_parts():
     [link] = brain.wikilinks("see ![[Gráf#Fák|the trees]] here")
     assert (link.target, link.heading, link.label, link.embed) == ("Gráf", "Fák", "the trees", True)

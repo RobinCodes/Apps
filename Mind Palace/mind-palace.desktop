@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Mind Palace
+GenericName=Every app in one window
+Comment=Every app here in one window, each a room
+Exec=/home/robin/.local/bin/mind-palace %F
+Icon=mind-palace
+Terminal=false
+Categories=Utility;Office;
+Keywords=rooms;brain;notes;cards;search;unified;
+StartupNotify=true
+StartupWMClass=com.robin.MindPalace

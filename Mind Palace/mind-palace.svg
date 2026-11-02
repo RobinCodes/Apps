@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Mind Palace. A temple front: a pediment, four columns, and a lit doorway
+       between the middle two, because a room you can walk into is the idea.
+       Pure shapes, no text, and still a building at 16px because the pediment
+       and the door are the two largest things in it. -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2f3a"/>
+      <stop offset="1" stop-color="#191c24"/>
+    </linearGradient>
+    <linearGradient id="stone" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6efe2"/>
+      <stop offset="1" stop-color="#cfc3ad"/>
+    </linearGradient>
+    <linearGradient id="light" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd28a"/>
+      <stop offset="1" stop-color="#e8903f"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="6" y="9" width="116" height="112" rx="18" fill="#0b0d12" opacity="0.22"
+        transform="translate(0,3)"/>
+  <rect x="6" y="9" width="116" height="112" rx="18" fill="url(#ground)"/>
+
+  <!-- the doorway, lit from inside -->
+  <rect x="53" y="58" width="22" height="46" rx="1.5" fill="url(#light)"/>
+
+  <!-- the pediment and the beam under it -->
+  <path d="M64 21 L108 47 L20 47 Z" fill="url(#stone)"/>
+  <rect x="22" y="49" width="84" height="6" rx="1.5" fill="url(#stone)"/>
+
+  <!-- four columns -->
+  <rect x="26" y="58" width="9" height="46" rx="1.5" fill="url(#stone)"/>
+  <rect x="41" y="58" width="9" height="46" rx="1.5" fill="url(#stone)"/>
+  <rect x="78" y="58" width="9" height="46" rx="1.5" fill="url(#stone)"/>
+  <rect x="93" y="58" width="9" height="46" rx="1.5" fill="url(#stone)"/>
+
+  <!-- the steps -->
+  <rect x="20" y="105" width="88" height="5" rx="1.5" fill="url(#stone)"/>
+</svg>

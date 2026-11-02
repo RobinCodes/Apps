@@ -1,0 +1,57 @@
+@echo off
+rem  Mind Palace - Windows launcher
+rem
+rem  The app is GTK4, and the GTK4 that exists for Windows is the one MSYS2
+rem  ships, so it runs on MSYS2's Python rather than a python.org one.
+rem
+rem  It is started directly rather than through "bash -lc". A login shell
+rem  replaces PATH with a minimal one, and the GTK runtime then has to be
+rem  found all over again; started this way the real Windows PATH is
+rem  inherited and only the MSYS2 bin directory has to be added to it.
+rem
+rem  pythonw.exe rather than python.exe: no console window behind the app.
+
+setlocal EnableExtensions
+
+set "APPENTRY=%~dp0mind-palace.py"
+
+if not defined MSYS2_ROOT call :find_msys2
+if not defined MSYS2_ROOT goto :no_msys2
+
+if not defined MSYS2_ENV call :find_env
+set "PATH=%MSYS2_ROOT%\%MSYS2_ENV%\bin;%PATH%"
+start "" "%MSYS2_ROOT%\%MSYS2_ENV%\bin\pythonw.exe" "%APPENTRY%" %*
+exit /b 0
+
+:find_msys2
+for %%R in ("C:\msys64" "%LOCALAPPDATA%\msys64" "%USERPROFILE%\msys64" "C:\tools\msys64") do (
+    if exist "%%~R\ucrt64\bin\pythonw.exe" (
+        set "MSYS2_ROOT=%%~R"
+        exit /b 0
+    )
+    if exist "%%~R\mingw64\bin\pythonw.exe" (
+        set "MSYS2_ROOT=%%~R"
+        exit /b 0
+    )
+)
+exit /b 1
+
+:find_env
+rem UCRT64 is where MSYS2 keeps GTK4 now; MINGW64 is what older installs have.
+set "MSYS2_ENV=mingw64"
+if exist "%MSYS2_ROOT%\ucrt64\bin\pythonw.exe" set "MSYS2_ENV=ucrt64"
+exit /b 0
+
+:no_msys2
+echo.
+echo   Mind Palace needs the GTK4 runtime, which on Windows comes from MSYS2.
+echo.
+echo   Install MSYS2 from https://www.msys2.org/ then run this in a
+echo   "MSYS2 UCRT64" shell:
+echo.
+echo       pacman -S mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita mingw-w64-ucrt-x86_64-python-gobject
+echo.
+echo   Already installed somewhere else? Set MSYS2_ROOT to that folder.
+echo.
+pause
+exit /b 1

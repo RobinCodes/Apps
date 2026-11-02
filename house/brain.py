@@ -290,6 +290,10 @@ class Notes:
                 continue
             self._store(con, rel, file, text, st.st_mtime, st.st_size)
             changed += 1
+            # As it goes, not only at the end: a brain can be tens of thousands
+            # of notes, and a refresh killed with the app must not start over.
+            if changed % 500 == 0:
+                con.commit()
         gone = set(known) - present
         for rel in gone:
             for table, column in (("notes", "rel"), ("names", "rel"), ("links", "src")):
@@ -352,6 +356,14 @@ class Notes:
         return [Note(self.places.home / rel, title, rel, node_id, kind)
                 for rel, title, node_id, kind
                 in con.execute("SELECT rel, title, node_id, kind FROM notes ORDER BY title")]
+
+    def recent(self, limit: int = 10) -> list[Note]:
+        """The notes changed most recently, newest first — as of the last refresh."""
+        con = self._db()
+        return [Note(self.places.home / rel, title, rel, node_id, kind)
+                for rel, title, node_id, kind
+                in con.execute("SELECT rel, title, node_id, kind FROM notes "
+                               "ORDER BY mtime DESC, title LIMIT ?", (limit,))]
 
     def find(self, text: str, limit: int = 50) -> list[Note]:
         """Notes whose title or name contains every word typed — for a switcher."""

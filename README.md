@@ -1,6 +1,6 @@
 # Apps
 
-Ten desktop applications, written for Linux; nine of them also run on
+Eleven desktop applications, written for Linux; ten of them also run on
 Windows.
 
 | | What it is | Windows |
@@ -12,6 +12,7 @@ Windows.
 | [Hermione](Hermione/) | A file manager: two panes, tabs, a command palette, and a window made of glass | GTK4 via MSYS2 |
 | [LaRenderer](LaRenderer/) | A LaTeX editor with the compiled pages beside the text | GTK4 via MSYS2 |
 | [Lyndon Browser](Lyndon%20Browser/) | A small, fast, private browser | Win32 + WebView2 |
+| [Mind Palace](Mind%20Palace/) | Every app here in one window, each a room; Home says what today holds, Ctrl+K searches all of it | GTK4 via MSYS2 |
 | [Mnemosyne](Mnemosyne/) | The cards in your notes, scheduled by FSRS and reviewed on paper or on screen; memory palaces and drills | GTK4 via MSYS2 |
 | [Notedown](Notedown/) | A Markdown editor with the rendered page beside the text | GTK4 via MSYS2 |
 | [Order](Order/) | Every machine laid out the same: bootstrap, sync, doctor, drive plans | Both |
@@ -306,6 +307,7 @@ What each suite covers:
 | Claude Desk | The protocol — slash commands, question parsing, the answer frame — the session state machine, and the widgets in a real window. `CLAUDE_DESK_LIVE=1` also drives a real child, which spends tokens. |
 | Git Manager | The porcelain parsers against throwaway repositories built for the purpose: status, renames, conflicts, log, branches, stashes, diffs. Then paths, settings and the ignore rules. No network. |
 | LaRenderer | The engine-log parser against captured text, which needs nothing installed, and a real compile where there is an engine to do it. |
+| Mind Palace | What it finds in a checkout built for the purpose and in the real one, where a file is routed, and Home's numbers against a scratch home. Then the real window driven through a fake room that walks the whole of the room contract, and the real rooms built in it. Nothing is launched. |
 | Mnemosyne | The day's queue — paper, siblings, test dates, decks switched off — sheets and their PDFs, the trainers' arithmetic, the week, the FSRS fitter and the command line, against a scratch home; then the real window driven by its keys, and its content hosted in another window. |
 | Threads, Timelines | The second brain's files read to the letter of its contract, and written back byte for byte when nobody changed them, line for line when somebody did: thoughts, arrows, revisits, events, spans, dates before the common era. |
 | Ariadne | A thought's marks as styled runs, the arrangement of a thread with no layout, what is read out of Claude's answer; then the real view, against a scratch home: keeping and editing questions, drawing and taking away thoughts with an Undo, a file changed elsewhere, ghosts accepted and discarded, and the room hosted in another window. |

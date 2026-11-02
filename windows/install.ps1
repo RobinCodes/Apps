@@ -109,6 +109,11 @@ $Apps = @(
        Icon = 'ariadne.ico'; Svg = 'Ariadneriadne.svg'
        AppId = 'com.robin.Ariadne'
        Comment = 'Keep the questions worth keeping, and think them through as threads' }
+    @{ Name = 'Mind Palace'; Folder = 'Mind Palace'; Entry = 'mind-palace.py'
+       Launcher = 'mind-palace.bat'
+       Icon = 'mind-palace.ico'; Svg = 'Mind Palace\mind-palace.svg'
+       AppId = 'com.robin.MindPalace'
+       Comment = 'Every app here in one window, each a room' }
     @{ Name = 'Mnemosyne'; Folder = 'Mnemosyne'; Entry = 'mnemosyne.py'
        Launcher = 'mnemosyne.bat'
        Icon = 'mnemosyne.ico'; Svg = 'Mnemosyne\mnemosyne.svg'
