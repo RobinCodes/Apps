@@ -396,6 +396,9 @@ class Pane(Gtk.Box):
         if self.host.picks_files:
             self.host.pick(entry.path)
             return
+        # A host with somewhere better for it — the Mind Palace's own rooms.
+        if self.host.open_elsewhere is not None and self.host.open_elsewhere(entry.path):
+            return
         # Markdown that nothing on the desktop claims goes to Notedown, from
         # the same checkout as this. A desktop that has an answer keeps it.
         if order.wants_notedown(entry.path):

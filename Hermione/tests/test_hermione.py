@@ -1906,6 +1906,135 @@ def test_markdown_goes_to_notedown_when_nothing_else_claims_it(app):
     window.destroy()
 
 
+# ------------------------------------------------------------ as a room ---
+
+def test_the_stylesheet_can_be_kept_to_one_room():
+    from gi.repository import Gtk
+
+    css = style.scoped("/* a comment */ label { color: red; }\n"
+                       "window.hermione, window.hermione > contents { background: none; }\n"
+                       "window.maximized .slab, .slab.squared { border-radius: 0; }\n"
+                       "windowcontrols button { margin: 0; }\n"
+                       "listview > row:hover, entry > text { padding: 0; }", "hermione-room")
+    assert ".hermione-room label {" in css, css
+    assert ".hermione-room, .hermione-room > contents {" in css, css
+    assert ".hermione-room .slab.squared {" in css and "maximized" not in css, css
+    assert "windowcontrols" not in css and "comment" not in css, css
+    assert ".hermione-room listview > row:hover, .hermione-room entry > text {" in css, css
+    settings = configmod.Config(os.path.join(scratch, "room-style.json"))
+    for dark in (True, False):
+        full = style.room_css(settings, dark)
+        assert "@define-color" not in full, "a room defined colours for the whole palace"
+        assert "@house_glass" not in full, "the room needs the palace to define its glass"
+        selectors = [rule.split("{")[0] for rule in full.split("}") if "{" in rule]
+        assert all(all(part.strip().startswith(".hermione-room") for part in sel.split(","))
+                   for sel in selectors), "a rule escapes the room"
+        errors = []
+        provider = Gtk.CssProvider()
+        provider.connect("parsing-error", lambda _p, _s, error: errors.append(error.message))
+        provider.load_from_string(full)
+        assert not errors, errors[:3]
+
+
+class _Host:
+    """What the Mind Palace gives a room, as little of it as a room uses."""
+
+    def __init__(self, app, parent, takes=()):
+        self.app = app
+        self.parent = parent
+        self.takes = tuple(takes)
+        self.opened = []
+        self.said = []
+
+    def open(self, path) -> bool:
+        self.opened.append(path)
+        return path.endswith(self.takes)
+
+    def toast(self, text, undo=None):
+        self.said.append(text)
+
+    def show(self, title):
+        pass
+
+    def ask_claude(self, prompt, files=()):
+        pass
+
+
+def test_hermione_is_a_room_of_the_palace(app):
+    """Built the way the palace builds it: the content in someone else's window."""
+    from gi.repository import Adw, Gtk
+
+    from hermione import room as rooms
+
+    assert os.path.isfile(os.path.join(ROOT, rooms.ICON + ".svg")), rooms.ICON
+    assert rooms.TITLE == "Hermione" and isinstance(rooms.ORDER, int)
+    styles = Adw.StyleManager.get_default()
+    before = styles.get_color_scheme()
+    folder = tree("notes.md", "picture.png", "sub/")
+
+    palace = Gtk.ApplicationWindow(application=app)
+    host = _Host(app, palace, takes=(".md",))
+    room = rooms.build(host)
+    try:
+        palace.set_child(room.widget)
+        room.widget.insert_action_group("room", room.actions)
+        assert styles.get_color_scheme() == before, "the room forced light or dark on the palace"
+        assert room.widget.get_root() is palace, "the room is not in the palace's window"
+        assert room.window not in app.get_windows(), "the room's window is in the palace's list"
+        assert ("room.send-to-inbox", ["<Control><Shift>i"]) in room.accels
+        assert all(name.startswith("room.") for name, _keys in room.accels)
+        assert room.widget.get_child().has_css_class(style.ROOM_SCOPE)
+
+        def find(widget, kind):
+            found = [widget] if isinstance(widget, kind) else []
+            child = widget.get_first_child()
+            while child is not None:
+                found += find(child, kind)
+                child = child.get_next_sibling()
+            return found
+
+        assert not find(room.widget, Gtk.WindowControls), "the room would close the palace"
+        # Only its own toolbar: libadwaita's tab bar holds a handle of its own.
+        assert room.window.header.get_ancestor(Gtk.WindowHandle) is None, \
+            "the toolbar would drag the palace"
+        assert room.window._dialog_parent().get_root() is palace, \
+            "a dialog would open on a window nobody sees"
+
+        assert room.open(folder) and not room.open(os.path.join(folder, "nowhere"))
+        _pump(0.6)
+        pane = room.window.current_pane()
+        assert pane.path == folder, pane.path
+
+        # A file goes to the palace first; what no room takes, to the desktop.
+        activated = []
+        pane.connect("activated", lambda _p, path: activated.append(path))
+        model = pane.model.selection
+        found = {model.get_item(i).name: model.get_item(i) for i in range(model.get_n_items())}
+        pane._on_activated(None, found["notes.md"])
+        pane._on_activated(None, found["picture.png"])
+        assert host.opened == [os.path.join(folder, "notes.md"),
+                               os.path.join(folder, "picture.png")], host.opened
+        assert activated == [os.path.join(folder, "picture.png")], activated
+
+        # The toolbar follows the palace's focus from one half of a split to the other.
+        room.window.toggle_split()
+        second = room.window.current_tab_holder()._panes[1]
+        palace.set_focus(second.view.widget)
+        assert room.window.current_pane() is second, "the room ignores the palace's focus"
+
+        assert room.can_close()
+        room.window.jobs.append(object())
+        assert not room.can_close(), "the room would close in the middle of a copy"
+        room.window.jobs.clear()
+        room.save_state()
+        saved = configmod.Config(room.config.path)
+        assert saved["last_folder"], "the room forgot where it was"
+        assert "New window" not in [i.label for i in room.window._palette_items()]
+    finally:
+        room.shutdown()
+        palace.destroy()
+
+
 def _pump_until(condition, seconds: float = 20.0) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -2092,6 +2221,8 @@ def main():
           test_markdown_opens_in_notedown_only_when_nothing_claims_it)
     check("a note is known by its title and its links",
           test_a_note_is_known_by_its_title_and_its_links)
+    check("the stylesheet can be kept to one room",
+          test_the_stylesheet_can_be_kept_to_one_room)
 
     print("the window")
     from gi.repository import Adw, Gio, GLib
@@ -2142,6 +2273,7 @@ def main():
             ("a question mark asks the brain", test_a_question_mark_asks_the_brain),
             ("Markdown goes to Notedown when nothing else claims it",
              test_markdown_goes_to_notedown_when_nothing_else_claims_it),
+            ("Hermione is a room of the palace", test_hermione_is_a_room_of_the_palace),
         ):
             check(name, fn, app)
         app.release()

@@ -70,9 +70,20 @@ class MainWindow(Adw.ApplicationWindow):
     # this on; `Pane.launch` is what asks.
     picks_files = False
 
-    def __init__(self, app, path: str = "", restore: bool = False):
+    # Set by a host that has somewhere better to open a file — the Mind
+    # Palace sends a note to its Notedown room (room.py). Returns True when it
+    # took the file; `Pane.launch` falls back to the desktop otherwise.
+    open_elsewhere = None
+
+    def __init__(self, app, path: str = "", restore: bool = False, *,
+                 config=None, hosted: bool = False):
         super().__init__(application=app)
-        self.config = app.config
+        # Hosted: built to have its content lifted into another app's window
+        # and never presented itself (room.py). Only what being a window meant
+        # changes: no window buttons or drag handle, no remembered size, keys
+        # and dialogs on the content, and a stylesheet kept inside it.
+        self.hosted = hosted
+        self.config = config if config is not None else app.config
         self.undo_stack = ops.UndoStack()
         self.jobs: list = []
         self._trash_count = -1
@@ -88,13 +99,16 @@ class MainWindow(Adw.ApplicationWindow):
         # The remembered size and maximise, applied before the first map —
         # see housestyle.Geometry for why the two are treated differently
         # under a tiling compositor.
-        self.geometry = housestyle.Geometry(self, self.config,
-                                            minimum=(360, 320))
-        self.geometry.restore()
+        self.geometry = None
+        if not hosted:
+            self.geometry = housestyle.Geometry(self, self.config,
+                                                minimum=(360, 320))
+            self.geometry.restore()
 
         self._build()
         self._install_actions()
-        self._watch_toplevel()
+        if not hosted:
+            self._watch_toplevel()
 
         if restore and self.config["restore_session"] and self.config["tabs"]:
             self._restore_session()
@@ -161,7 +175,9 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.slab.append(self.toasts)
         self.set_content(self.slab)
-        self._add_breakpoint()
+        if not self.hosted:
+            # A hosted room measures itself, so its breakpoint is its own.
+            self.add_breakpoint(self.make_breakpoint())
 
     def _build_content(self) -> Gtk.Widget:
         view = Adw.ToolbarView()
@@ -219,8 +235,8 @@ class MainWindow(Adw.ApplicationWindow):
         header.add_css_class("chrome")
         header.add_css_class("module")
 
-        start_controls = Gtk.WindowControls(side=Gtk.PackType.START)
-        header.append(start_controls)
+        if not self.hosted:
+            header.append(Gtk.WindowControls(side=Gtk.PackType.START))
 
         self.sidebar_button = Gtk.ToggleButton()
         self.sidebar_button.set_icon_name("sidebar-show-symbolic")
@@ -313,11 +329,18 @@ class MainWindow(Adw.ApplicationWindow):
         menu_button.set_tooltip_text("Menu  (F10)")
         header.append(menu_button)
 
+        self.header = header
+        if self.hosted:
+            # In someone else's window the close button would close it, and a
+            # handle would drag it; the window is the host's.
+            bar = Gtk.Box()
+            bar.add_css_class("room-bar")
+            header.set_hexpand(True)
+            bar.append(header)
+            return bar
         header.append(Gtk.WindowControls(side=Gtk.PackType.END))
-
         handle = Gtk.WindowHandle()
         handle.set_child(header)
-        self.header = header
         return handle
 
     # -- what the one toolbar acts on ------------------------------------
@@ -474,11 +497,12 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append_section(None, last)
         return menu
 
-    def _add_breakpoint(self) -> None:
+    def make_breakpoint(self) -> Adw.Breakpoint:
         """Narrow enough for a tiling column: fold the chrome away.
 
         Only what is also reachable from a menu is hidden, so nothing becomes
-        unavailable — it becomes one click further away.
+        unavailable — it becomes one click further away. Made here and added
+        by whoever measures the width: the window, or a room's own bin.
         """
         condition = Adw.BreakpointCondition.new_length(
             Adw.BreakpointConditionLengthType.MAX_WIDTH, NARROW,
@@ -489,7 +513,7 @@ class MainWindow(Adw.ApplicationWindow):
         point.add_setter(self.new_tab_button, "visible", False)
         point.connect("apply", lambda _p: self._set_narrow(True))
         point.connect("unapply", lambda _p: self._set_narrow(False))
-        self.add_breakpoint(point)
+        return point
 
     def _set_narrow(self, narrow: bool) -> None:
         """Tell every pane to tuck itself in, and the sidebar how it floats."""
@@ -759,6 +783,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_tab_torn_off(self, _view):
         """A tab dragged out of the window becomes a window of its own."""
+        if self.hosted:
+            return None                  # a room has no windows to give
         window = MainWindow(self.get_application())
         # The new window starts with a tab of its own, which the dragged page
         # is about to replace; closing it first keeps the count honest.
@@ -778,12 +804,17 @@ class MainWindow(Adw.ApplicationWindow):
         panes = getattr(holder, "_panes", [])
         if not panes:
             return None
-        focused = self.get_focus()
+        focused = self.focus_widget()
         while focused is not None:
             if focused in panes:
                 return focused
             focused = focused.get_parent()
         return panes[0]
+
+    def focus_widget(self):
+        """What has the keyboard: in this window, or in the one hosting it."""
+        root = self.slab.get_root() if self.hosted else self
+        return root.get_focus() if root is not None else None
 
     def all_panes(self) -> list[Pane]:
         found = []
@@ -901,7 +932,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self.toast(result.errors[0] if len(result.errors) == 1
                            else f"{len(result.errors)} problems",
                            "Details",
-                           lambda: dialogs.tell(self, description,
+                           lambda: dialogs.tell(self._dialog_parent(), description,
                                                 "\n".join(result.errors[:20])))
             if on_finished is not None:
                 on_finished(result)
@@ -1034,7 +1065,7 @@ class MainWindow(Adw.ApplicationWindow):
             dialog.close()
             self.toast(f"{done} put back" if done else "Nothing was put back")
             if failures:
-                dialogs.tell(self, "Some could not be put back",
+                dialogs.tell(self._dialog_parent(), "Some could not be put back",
                              "\n".join(failures[:10]))
             self._trash_count = -1
             self._count_trash()
@@ -1051,7 +1082,7 @@ class MainWindow(Adw.ApplicationWindow):
         close = dialogs._button("Close")
         close.connect("clicked", lambda _b: dialog.close())
         body.append(dialogs._buttons(close, empty, restore))
-        dialog.present(self)
+        dialog.present(self._dialog_parent())
 
     def empty_trash(self) -> None:
         count, total = trashmod.size_of_trash()
@@ -1063,13 +1094,13 @@ class MainWindow(Adw.ApplicationWindow):
             gone, errors = trashmod.empty()
             self.toast(f"{gone} deleted for good")
             if errors:
-                dialogs.tell(self, "Some could not be deleted",
+                dialogs.tell(self._dialog_parent(), "Some could not be deleted",
                              "\n".join(errors[:10]))
             self._trash_count = -1
             self._count_trash()
 
         dialogs.confirm(
-            self, "Empty the trash?",
+            self._dialog_parent(), "Empty the trash?",
             f"{count} items, {units.human_size(total)}. This cannot be undone.",
             "Empty it", go)
 
@@ -1194,8 +1225,9 @@ class MainWindow(Adw.ApplicationWindow):
 
         add("New tab", "", "tab-new-symbolic", "Ctrl+T",
             lambda: self.new_tab(focus=True))
-        add("New window", "", "window-new-symbolic", "Ctrl+N",
-            lambda: self.get_application().new_window().present())
+        if not self.hosted:
+            add("New window", "", "window-new-symbolic", "Ctrl+N",
+                lambda: self.get_application().new_window().present())
         add("New folder", "", "folder-new-symbolic", "Ctrl+Shift+N",
             lambda: pane and pane.new_folder())
         add("Two panes", "", "view-dual-symbolic", "F3", self.toggle_split)
@@ -1277,7 +1309,7 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------ the rest ---
 
     def show_tool(self, mode: str, folder: str) -> None:
-        tools.show(self, mode, folder, self.config,
+        tools.show(self._dialog_parent(), mode, folder, self.config,
                    on_reveal=lambda path: self._reveal(path),
                    on_changed=self._refresh_panes)
 
@@ -1299,7 +1331,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.refresh_sidebar()
 
     def show_settings(self) -> None:
-        prefs.show(self, self.config, self._setting_changed)
+        prefs.show(self._dialog_parent(), self.config, self._setting_changed)
 
     def _relight(self) -> None:
         """Hand the slab the current theme's light.
@@ -1316,7 +1348,7 @@ class MainWindow(Adw.ApplicationWindow):
         if key in ("theme", "follow_system", "dark_theme", "light_theme",
                    "glass", "glass_blur", "translucency", "rounding",
                    "colour_icons", "row_height"):
-            style.update(self.config, _is_dark())
+            style.update(self.config, _is_dark(), hosted=self.hosted)
             self._relight()
             self.sheen.set_strength(0.05 if self.config["glass"] else 0.0)
         if key in ("columns", "icon_size", "show_preview", "show_status",
@@ -1364,7 +1396,7 @@ class MainWindow(Adw.ApplicationWindow):
         close = dialogs._button("Close", "suggested-action")
         close.connect("clicked", lambda _b: dialog.close())
         body.append(dialogs._buttons(close))
-        dialog.present(self)
+        dialog.present(self._dialog_parent())
 
     def show_about(self) -> None:
         from . import __version__
@@ -1377,7 +1409,7 @@ class MainWindow(Adw.ApplicationWindow):
             "A file manager: two panes, tabs, a command palette, and a "
             "window made of glass.")
         about.set_license_type(Gtk.License.MIT_X11)
-        about.present(self)
+        about.present(self._dialog_parent())
 
     # --------------------------------------------------------- the actions ---
 
@@ -1460,7 +1492,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key)
-        self.add_controller(keys)
+        # On the content when hosted: the window itself never sees a key then.
+        (self.slab if self.hosted else self).add_controller(keys)
 
     def _on_key(self, _controller, keyval, _code, state) -> bool:
         """The keys that cannot be accelerators.
@@ -1470,8 +1503,9 @@ class MainWindow(Adw.ApplicationWindow):
         stealing them from every entry in the window.
         """
         pane = self.current_pane()
-        focus = self.get_focus()
-        typing = isinstance(focus, (Gtk.Entry, Gtk.SearchEntry, Gtk.TextView))
+        focus = self.focus_widget()
+        typing = isinstance(focus, (Gtk.Entry, Gtk.SearchEntry, Gtk.TextView,
+                                    Gtk.Text))
 
         if keyval == Gdk.KEY_Escape:
             if self.palette.get_visible():
@@ -1561,7 +1595,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.ask_panel.stop()
         self._stop_watching_inbox()
         self._save_session()
-        self.geometry.save()
+        if self.geometry is not None:
+            self.geometry.save()
         self.config["show_sidebar"] = self.split.get_show_sidebar()
         pane = self.current_pane()
         if pane is not None:

@@ -250,6 +250,17 @@ All of it comes from `brain.py` and `claude.py`, vendored from
 [`house/`](../house/README.md) like the style, and from `order.py` here,
 which is the part of each feature that is not a widget.
 
+## In the Mind Palace
+
+`hermione/room.py` makes this a room of the Mind Palace, the one window with
+every app in it. The standalone app is untouched; the room is the same window,
+built without being shown, with its content lifted out. What changes is only
+what being a window meant: the stylesheet stays inside the room instead of
+restyling the whole display, the toolbar loses the close button and stops
+dragging the window, dialogs land in the palace, and a file you open goes to
+the palace's rooms first, so a note lands in Notedown's and a picture in The
+Eye's, with what no room takes going to the desktop as ever.
+
 ## Not losing your files
 
 Most of the work in a file manager is refusing to do damage.
@@ -405,7 +416,7 @@ run and quietly leaves out what it cannot do.
 python3 tests/test_hermione.py
 ```
 
-Eighty-three of them, and they do real work: real copies with real conflicts, a
+Eighty-five of them, and they do real work: real copies with real conflicts, a
 real cancelled copy checked for the half-file it must not leave, real
 archives extracted both ways round, a real git repository, a real trip through
 the trash and back.

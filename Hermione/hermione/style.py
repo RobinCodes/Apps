@@ -50,6 +50,8 @@ with the text.
 
 from __future__ import annotations
 
+import re
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -199,7 +201,8 @@ overlay-split-view > widget.content-pane {
 }
 
 headerbar.chrome,
-windowhandle > box.chrome {
+windowhandle > box.chrome,
+.room-bar > box.chrome {
   min-height: 42px;
   padding: 0 8px;
 }
@@ -1124,5 +1127,80 @@ def install(config, dark: bool = True) -> Gtk.CssProvider | None:
     return _provider
 
 
-def update(config, dark: bool = True) -> None:
-    install(config, dark)
+def update(config, dark: bool = True, hosted: bool = False) -> None:
+    if hosted:
+        install_room(config, dark)
+    else:
+        install(config, dark)
+
+
+# ------------------------------------------------------------ as a room ---
+#
+# In the Mind Palace (room.py) the window's content lives in another app's
+# window, beside other apps' rooms, in one process with one display. A sheet
+# installed for the whole display would restyle every room's buttons and
+# lists, and `force_scheme` would turn the whole palace light or dark. So a
+# room gets the same rules kept inside its own content, and nothing else.
+
+ROOM_SCOPE = "hermione-room"
+_room_provider: Gtk.CssProvider | None = None
+
+
+def scoped(css: str, scope: str) -> str:
+    """A stylesheet whose every rule applies only inside `.scope`.
+
+    `window.hermione` becomes the scope itself, since the content is what is
+    hosted; a rule about the window's own state (maximised, fullscreen) has no
+    window to be about and goes; every other selector becomes a descendant of
+    the scope. Comments and anything that is not a plain rule are left out.
+    """
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    rules = []
+    for block in css.split("}"):
+        if "{" not in block:
+            continue
+        selectors, body = block.split("{", 1)
+        selectors = selectors.strip()
+        if not selectors or selectors.startswith("@"):
+            continue
+        parts = []
+        for selector in (s.strip() for s in selectors.split(",")):
+            if selector.startswith("window.hermione"):
+                parts.append(f".{scope}{selector[len('window.hermione'):]}")
+            elif selector.startswith(("window.", "windowcontrols")):
+                continue
+            else:
+                parts.append(f".{scope} {selector}")
+        if parts:
+            rules.append(", ".join(parts) + " {" + body.rstrip() + "\n}")
+    return "\n".join(rules) + "\n"
+
+
+def room_css(config, dark: bool = True) -> str:
+    """The app's own rules, without the palette, kept inside the room.
+
+    The palace defines the house palette; the one colour of it these rules
+    use by name, the glass, is written in as a value instead, so the room
+    looks the same whoever defined what.
+    """
+    scheme = scheme_for(config, dark)
+    rules = (TEMPLATE % _numbers(config, dark)
+             + _category_rules(bool(config["colour_icons"]), scheme.dark)
+             + _vcs_rules())
+    return scoped(rules.replace("@house_glass", scheme.glass), ROOM_SCOPE)
+
+
+def install_room(config, dark: bool = True) -> Gtk.CssProvider | None:
+    global _room_provider
+    display = Gdk.Display.get_default()
+    if display is None:
+        return None
+    text = room_css(config, dark)
+    if _room_provider is None:
+        _room_provider = Gtk.CssProvider()
+        _room_provider.load_from_string(text)
+        Gtk.StyleContext.add_provider_for_display(
+            display, _room_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    else:
+        _room_provider.load_from_string(text)
+    return _room_provider
