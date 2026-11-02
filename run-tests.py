@@ -118,6 +118,7 @@ def suites():
         ("Git Manager", os.path.join("Git Manager", "tests", "test_gitmanager.py")),
         ("LaRenderer", os.path.join("LaRenderer", "tests", "test_larenderer.py")),
         ("Mnemosyne", os.path.join("Mnemosyne", "tests", "test_mnemosyne.py")),
+        ("Ariadne", os.path.join("Ariadne", "tests", "test_ariadne.py")),
         ("Fathom", os.path.join("Fathom", "tests", "test_fathom.py")),
         ("Hermione", os.path.join("Hermione", "tests", "test_hermione.py")),
         ("Notedown", os.path.join("Notedown", "tests", "test_notedown.py")),

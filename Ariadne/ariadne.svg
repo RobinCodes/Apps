@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Ariadne. The thread out of the labyrinth: three thoughts on a dark
+       tile, two leading to a third, and the red thread running through them
+       and out at the corner. A question mark would have needed a font; the
+       thread is pure paths and circles, and it is the brightest mark in it,
+       so at 16px it still reads as a line through dots. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2f45"/>
+      <stop offset="1" stop-color="#171a29"/>
+    </linearGradient>
+    <linearGradient id="thread" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff7a59"/>
+      <stop offset="1" stop-color="#d1342f"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="10" y="12" width="108" height="108" rx="24" fill="#0d1729" opacity="0.18"/>
+  <rect x="10" y="8" width="108" height="108" rx="24" fill="url(#tile)"/>
+
+  <!-- the arrows between the thoughts -->
+  <path d="M40 40 L84 62 M40 86 L84 62" stroke="#c9cee6" stroke-width="4"
+        stroke-linecap="round" opacity="0.55"/>
+
+  <!-- the thread, through all three and out -->
+  <path d="M18 26 C30 30 34 36 40 40 C52 50 34 74 40 86 C48 100 70 76 84 62 C94 52 100 40 112 30"
+        fill="none" stroke="url(#thread)" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- the thoughts -->
+  <circle cx="40" cy="40" r="11" fill="#eef0fa"/>
+  <circle cx="40" cy="86" r="11" fill="#eef0fa"/>
+  <circle cx="84" cy="62" r="13" fill="#ffffff"/>
+  <circle cx="84" cy="62" r="5" fill="#d1342f"/>
+</svg>

@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Ariadne
+GenericName=Questions and logical threads
+Comment=Keep the questions worth keeping, and think them through as threads
+Exec=/home/robin/.local/bin/ariadne %F
+Icon=ariadne
+Terminal=false
+Categories=Office;Education;
+Keywords=question;questions;thread;argument;graph;thinking;philosophy;notes;
+StartupNotify=true
+StartupWMClass=com.robin.Ariadne
+Actions=ask;
+
+[Desktop Action ask]
+Name=Keep a Question
+Exec=/home/robin/.local/bin/ariadne --ask

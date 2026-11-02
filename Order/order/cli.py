@@ -309,6 +309,7 @@ def cmd_timer(args) -> int:
 
 LINUX_APPS = {
     # folder: (launcher inside it, command name, desktop file)
+    "Ariadne": ("ariadne.py", "ariadne", "ariadne.desktop"),
     "Claude Program": ("claude-desk", "claude-desk", "claude-desk.desktop"),
     "Fathom": ("fathom.py", "fathom", "fathom.desktop"),
     "Git Manager": ("git-manager", "git-manager", "git-manager.desktop"),
