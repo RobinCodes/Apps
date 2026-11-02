@@ -79,9 +79,15 @@ def test_front_matter_keeps_every_line_nobody_set():
     assert body.startswith("\nThe question")
     before = list(front.lines)
     front.set("status", "living")
-    assert front.lines[3] == "status: living"
-    assert [a for a, b in zip(front.lines, before) if a != b] == ["status: living"]
+    # The comment on the line it changed stays too, at its column.
+    changed = "status: living          # open · living · answered · let-go"
+    assert front.lines[3] == changed, front.lines[3]
+    assert [a for a, b in zip(front.lines, before) if a != b] == [changed]
     assert "revisit: 2027-01-27     # optional: when it should be asked again" in front.lines
+    front.set("status", "a status far longer than the column its comment had")
+    assert front.lines[3].endswith(" # open · living · answered · let-go"), front.lines[3]
+    front.set("status", None)
+    assert "status" not in front
 
 
 def test_front_matter_reads_what_the_order_writes():

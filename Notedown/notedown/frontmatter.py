@@ -82,7 +82,8 @@ class FrontMatter:
         A scalar or a flow collection is one line, `key: value`; a dict that
         should be a block (`colours:` with a line per colour) is passed as
         `Block(dict)`. Setting a key to what it already says changes nothing,
-        so a file is not rewritten for an edit that was undone.
+        so a file is not rewritten for an edit that was undone. A comment on
+        the key's line stays, at its column: it belongs to whoever wrote it.
         """
         if value is not None and self.get(key) == _plain(value):
             return
@@ -93,6 +94,8 @@ class FrontMatter:
                 return
             self.lines.extend(new)
         else:
+            if new:
+                new[0] = _keep_comment(self.lines[span[0]], new[0])
             self.lines[span[0]:span[1]] = new
         self.dirty = True
 
@@ -102,6 +105,14 @@ class FrontMatter:
 
 class Block(dict):
     """A dict to be written one key to a line, under its own key."""
+
+
+def _keep_comment(old: str, new: str) -> str:
+    """`new`, with the comment `old` ended in, the `#` where it was if there is room."""
+    comment = old[len(strip_comment(old)):].lstrip()
+    if not comment:
+        return new
+    return new + " " * max(1, len(old) - len(comment) - len(new)) + comment
 
 
 def _continues(line: str) -> bool:
