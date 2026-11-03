@@ -121,7 +121,7 @@ bar and the list of boards has its own button.
 A board is drawn in one cairo pass, not built from widgets, and only what is on
 screen is laid out, so a board of hundreds of events is cheap on the 3 GB laptop. The
 content goes down to 360 pixels wide, so it fits a 455-pixel tiling column. Below
-640 the list of boards folds away.
+820 the list of boards folds away, and the bar gives back what is also in its menu.
 
 ## Tests
 

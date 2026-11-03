@@ -474,6 +474,31 @@ def test_the_window_fits_in_a_tiling_column(window):
     assert minimum <= 455, f"the content cannot be made narrower than {minimum}px"
 
 
+def test_nothing_is_cut_off_where_it_has_room(view_app):
+    # What matters is what is inside: a breakpoint bin reports the size it was asked
+    # for whatever its child needs, and clips the child to it.
+    from gi.repository import Adw
+
+    from ariadne.view import AriadneView
+
+    clear_brain()
+    path = write("questions/Free will.md", QUESTION)
+    for width in (455, 700, 781, 1100):
+        view = AriadneView()
+        shell = Adw.ApplicationWindow(application=view_app, default_width=width,
+                                      default_height=520)
+        shell.set_content(view)
+        shell.present()
+        pump(200)
+        view.reload()
+        view.open(path)
+        pump(120)
+        needed = view.toasts.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+        assert needed <= width, f"{needed}px of content in a {width}px window"
+        shell.destroy()
+        pump(30)
+
+
 def test_no_key_does_two_things(window):
     from ariadne.view import ACCELERATORS, SHORTCUTS
 

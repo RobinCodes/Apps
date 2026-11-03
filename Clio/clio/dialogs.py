@@ -137,14 +137,26 @@ class ItemDialog(Adw.Dialog):
             entry.connect("activate", lambda _e: self.save())
         self.categories_entry.connect("activate", lambda _e: self.save())
         self._kind_changed()
+        self._caret_stays(self.title_entry)
+        self._caret_stays(self.start_entry)
         self.set_focus(self.title_entry if item is not None else self.start_entry)
-        # The first key typed must add to a title, not replace it.
-        GLib.idle_add(self._unselect)
 
-    def _unselect(self):
-        for entry in (self.title_entry, self.start_entry):
-            entry.select_region(-1, -1)
-        return GLib.SOURCE_REMOVE
+    def _caret_stays(self, entry):
+        """An entry selects all of itself on taking the focus, and it does so late.
+
+        The first key typed must add to a title, not replace it, so the selection is
+        undone when the focus arrives, however long after opening that turns out to be.
+        """
+        focus = Gtk.EventControllerFocus()
+        arrived = []
+
+        def entered(_controller):
+            if not arrived:
+                arrived.append(True)
+                GLib.idle_add(lambda: (entry.select_region(-1, -1), GLib.SOURCE_REMOVE)[1])
+
+        focus.connect("enter", entered)
+        entry.add_controller(focus)
 
     def _links(self, item):
         if item is None or self.on_link is None:

@@ -71,6 +71,11 @@ SHORTCUTS = [
 
 DISK_SETTLE_MS = 400
 
+# Below this the list folds away. Measured, not guessed: the list and a question page
+# need about 770 pixels side by side, and a window narrower than what its content needs
+# just cuts the content off.
+NARROW = 780
+
 
 class AriadneView(Adw.BreakpointBin):
     """The whole of Ariadne. `host` is Mind Palace's, or None in the app's own window."""
@@ -106,7 +111,7 @@ class AriadneView(Adw.BreakpointBin):
         self.toasts = Adw.ToastOverlay(child=self.split)
         self.set_child(self.toasts)
 
-        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 640px"))
+        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(f"max-width: {NARROW}px"))
         narrow.add_setter(self.split, "collapsed", True)
         self.add_breakpoint(narrow)
 

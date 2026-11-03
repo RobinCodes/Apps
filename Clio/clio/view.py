@@ -75,6 +75,11 @@ SHORTCUTS = [
 
 DISK_SETTLE_MS = 400
 
+# Below this the list of boards folds away and the bar gives back what is also in
+# its menu. Measured, not guessed: the list and the bar need about 800 pixels side by
+# side, and a window narrower than what its content needs just cuts the content off.
+NARROW = 820
+
 
 class ClioView(Adw.BreakpointBin):
     """The whole of Clio. `host` is Mind Palace's, or None in the app's own window."""
@@ -113,9 +118,12 @@ class ClioView(Adw.BreakpointBin):
         self.toasts = Adw.ToastOverlay(child=self.split)
         self.set_child(self.toasts)
 
-        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 640px"))
+        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(f"max-width: {NARROW}px"))
         narrow.add_setter(self.split, "collapsed", True)
         narrow.add_setter(self.ask_button, "visible", False)
+        narrow.add_setter(self.jump_button, "visible", False)
+        # The header bar, or the palace's, is already saying which board this is.
+        narrow.add_setter(self.title_label, "visible", False)
         self.add_breakpoint(narrow)
 
         self._build_actions()
@@ -147,9 +155,11 @@ class ClioView(Adw.BreakpointBin):
                                       tooltip_text="The boards (F9)")
         self.list_button.connect("clicked", lambda _b: self.show_list(True))
         bar.append(self.list_button)
-        self.title_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END, margin_start=6,
-                                     width_chars=4, css_classes=["clio-board-title"])
+        self.title_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, margin_start=6,
+                                     hexpand=True, width_chars=4,
+                                     css_classes=["clio-board-title"])
         bar.append(self.title_label)
+        bar.append(Gtk.Box(hexpand=True))       # for when the title is folded away
 
         self.filter_popover = Gtk.Popover()
         self.filter_button = Gtk.MenuButton(label="Filter", css_classes=["flat"],
@@ -161,10 +171,13 @@ class ClioView(Adw.BreakpointBin):
         for icon, tip, action in (
                 ("zoom-out-symbolic", "Zoom out (Ctrl+−)", "room.zoom-out"),
                 ("zoom-in-symbolic", "Zoom in (Ctrl++)", "room.zoom-in"),
-                ("zoom-fit-best-symbolic", "Everything in view (Ctrl+0)", "room.zoom-fit"),
-                ("go-jump-symbolic", "Jump to a date (Ctrl+J)", "room.jump")):
+                ("zoom-fit-best-symbolic", "Everything in view (Ctrl+0)", "room.zoom-fit")):
             bar.append(Gtk.Button(icon_name=icon, tooltip_text=tip, css_classes=["flat"],
                                   action_name=action))
+        self.jump_button = Gtk.Button(icon_name="go-jump-symbolic", css_classes=["flat"],
+                                      tooltip_text="Jump to a date (Ctrl+J)",
+                                      action_name="room.jump")
+        bar.append(self.jump_button)
         self.mode_button = Gtk.ToggleButton(icon_name="view-list-symbolic", css_classes=["flat"],
                                             tooltip_text="As a list (Ctrl+L)")
         self.mode_button.connect("toggled", lambda _b: self._mode_changed())
@@ -229,6 +242,8 @@ class ClioView(Adw.BreakpointBin):
         making.append("New Board", "room.new-board")
         menu.append_section(None, making)
         board = Gio.Menu()
+        board.append("Jump to a Date", "room.jump")
+        board.append("Group into a Span", "room.group")
         board.append("This Board and Its Categories", "room.board-settings")
         item = Gio.MenuItem.new("Ask Claude…", "room.ask")
         item.set_attribute_value("hidden-when", GLib.Variant.new_string("action-missing"))

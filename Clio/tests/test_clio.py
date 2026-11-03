@@ -609,8 +609,8 @@ def test_editing_changes_only_that_line(view):
     item = next(i for i in board.events if i.title == "First message on Discord")
     view.edit_item(item)
     dialog = dialog_of(view)
-    assert dialog.title_entry.get_selection_bounds() in (False, (), None) or \
-        not dialog.title_entry.get_selection_bounds()
+    assert settle(lambda: not dialog.title_entry.get_selection_bounds(), 1000), \
+        "the next key would replace the title"
     dialog.title_entry.set_text("First words on Discord")
     dialog.save()
     pump(60)
@@ -1016,6 +1016,42 @@ def test_the_window_fits_in_a_tiling_column(window):
     assert not window.view.list_button.get_visible(), "the header bar has that"
     minimum = window.get_content().measure(Gtk.Orientation.HORIZONTAL, -1)[0]
     assert minimum <= 455, f"the content cannot be made narrower than {minimum}px"
+
+
+def test_nothing_is_cut_off_at_any_width(view_app):
+    # What matters is what is inside: a breakpoint bin reports the size it was asked
+    # for whatever its child needs, and clips the child to it. Hosted, because the
+    # room has the most in its bar.
+    from gi.repository import Adw
+
+    from clio.view import ClioView
+
+    class Host:
+        app = view_app
+
+        def set_subtitle(self, text=""):
+            pass
+
+    open_at = write("My life.md", LIFE)
+    for width in (360, 455, 683, 821, 1100):
+        view = ClioView(host=Host())
+        shell = Adw.ApplicationWindow(application=view_app, default_width=width,
+                                      default_height=520)
+        shell.set_content(view)
+        shell.present()
+        pump(250)
+        view.open(open_at)
+        view.show_list(False)
+        pump(150)
+        assert view.get_width() >= width - 2, (width, view.get_width())
+        needed = view.toasts.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+        assert needed <= width, f"{needed}px of content in a {width}px window"
+        assert view.split.get_collapsed() == (width <= 820), width
+        if width <= 820:
+            assert not view.ask_button.get_visible()
+        view.cancel_work()
+        shell.destroy()
+        pump(40)
 
 
 def test_no_key_does_two_things(window):
