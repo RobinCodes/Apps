@@ -6,6 +6,16 @@ cannot see the size of is not either.
 
 The map can be zoomed into a folder while the tree stays showing the whole
 scan, so the breadcrumb above the map is about the map alone.
+
+*It may not be the window.* In Mind Palace, Fathom is a room (room.py): this
+class is built with a `host` and never presented, and what the palace shows is
+`room_widget`, the same content under a bar of the room's own buttons instead
+of a header bar, with no glass of its own, its breakpoint on an
+`Adw.BreakpointBin`, and this window inserted as the content's "win" action
+group so every `win.*` name still resolves. It is not given the application in
+that case: an application keeps running while it has a window, hidden or not.
+So every toast and dialog starts from `self.toasts`, which is inside the content
+wherever the content is, and nothing asks this window to be on screen.
 """
 
 from __future__ import annotations
@@ -26,9 +36,52 @@ from .units import (human_count, human_duration, human_percent,  # noqa: E402
                     human_size)
 
 
+# Action, keys. On the application for the window, offered as room.* in a room.
+ACCELERATORS = (
+    ("win.open", ["<Control>o"]),
+    ("win.rescan", ["<Control>r", "F5"]),
+    ("win.export", ["<Control>e"]),
+    ("win.zoom-out", ["<Alt>Up", "BackSpace"]),
+    ("win.open-item", ["<Control>Return"]),
+    ("win.copy-path", ["<Control>c"]),
+    ("win.trash", ["Delete"]),
+    ("win.delete", ["<Shift>Delete"]),
+    ("win.shortcuts", ["<Control>question"]),
+)
+
+
+class RoomBar(Gtk.CenterBox):
+    """A header bar without a window to head: the room's own buttons, and no more.
+
+    Answers the three calls `_build_ui` makes of an `Adw.HeaderBar`, so that
+    method builds one bar or the other the same way.
+    """
+
+    def __init__(self):
+        super().__init__(css_classes=["toolbar"])
+        self._start = Gtk.Box(spacing=4)
+        self._end = Gtk.Box(spacing=4)
+        self.set_start_widget(self._start)
+        self.set_end_widget(self._end)
+
+    def pack_start(self, widget):
+        self._start.append(widget)
+
+    def pack_end(self, widget):
+        # As a header bar does it: the first packed is the outermost.
+        self._end.prepend(widget)
+
+    def set_title_widget(self, widget):
+        self.set_center_widget(widget)
+
+
 class MainWindow(Adw.ApplicationWindow):
-    def __init__(self, app):
-        super().__init__(application=app, title="Fathom")
+    def __init__(self, app, host=None):
+        self.host = host
+        if host is None:
+            super().__init__(application=app, title="Fathom")
+        else:
+            super().__init__(title="Fathom")
         self.config = Config()
         self.result: scan.Result | None = None
         self.scan: scan.Scan | None = None
@@ -43,7 +96,8 @@ class MainWindow(Adw.ApplicationWindow):
         # see housestyle.Geometry for why the two are treated differently
         # under a tiling compositor.
         self.geometry = housestyle.Geometry(self, self.config)
-        self.geometry.restore()
+        if host is None:
+            self.geometry.restore()
 
         self._build_actions()
         self._build_ui()
@@ -58,7 +112,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.toasts = Adw.ToastOverlay()
         outer = Adw.ToolbarView()
 
-        header = Adw.HeaderBar()
+        header = Adw.HeaderBar() if self.host is None else RoomBar()
         self.back_button = Gtk.Button(icon_name="go-previous-symbolic",
                                       tooltip_text="Back to the disk list")
         self.back_button.connect("clicked", lambda _b: self.show_start())
@@ -82,7 +136,8 @@ class MainWindow(Adw.ApplicationWindow):
         section = Gio.Menu()
         section.append("Scan a folder…", "win.open")
         section.append("Scan again", "win.rescan")
-        section.append("New Window", "app.new-window")
+        if self.host is None:
+            section.append("New Window", "app.new-window")
         menu.append_section(None, section)
         view = Gio.Menu()
         view.append("Size on disk", "win.basis::alloc")
@@ -119,7 +174,6 @@ class MainWindow(Adw.ApplicationWindow):
         clamp = Adw.Clamp(maximum_size=560, child=self.search_entry)
         self.search_bar.set_child(clamp)
         self.search_bar.connect_entry(self.search_entry)
-        self.search_bar.set_key_capture_widget(self)
         self.search_button.bind_property(
             "active", self.search_bar, "search-mode-enabled",
             GObject.BindingFlags.BIDIRECTIONAL)
@@ -143,14 +197,32 @@ class MainWindow(Adw.ApplicationWindow):
         outer.add_bottom_bar(self.status)
 
         self.toasts.set_child(outer)
-        # The house style: the window paints nothing and everything sits on
-        # one rounded, translucent slab of glass inside it. `wrap` builds
-        # that, and `self.glazing` is what the preferences call back into
-        # when a theme or a glass setting changes.
-        self.glazing = housestyle.Glazing(self, self.config,
-                                          extra=widgets.CSS,
-                                          app_class="fathom")
-        self.glazing.wrap(self.toasts)
+        if self.host is None:
+            # The house style: the window paints nothing and everything sits on
+            # one rounded, translucent slab of glass inside it. `wrap` builds
+            # that, and `self.glazing` is what the preferences call back into
+            # when a theme or a glass setting changes.
+            self.glazing = housestyle.Glazing(self, self.config,
+                                              extra=widgets.CSS,
+                                              app_class="fathom")
+            self.glazing.wrap(self.toasts)
+            self.room_widget = None
+            self.search_bar.set_key_capture_widget(self)
+        else:
+            # A room: the palace has the glass and the house sheet. This app's
+            # own rules go on a provider of their own, so that installing them
+            # does not replace whatever the palace installed.
+            self.glazing = None
+            self.room_widget = Adw.BreakpointBin(width_request=360, height_request=360,
+                                                 css_classes=["fathom"])
+            self.room_widget.set_child(self.toasts)
+            self.room_widget.insert_action_group("win", self)
+            self.search_bar.set_key_capture_widget(self.room_widget)
+            self._room_css = Gtk.CssProvider()
+            self._room_css.load_from_string(widgets.CSS)
+            Gtk.StyleContext.add_provider_for_display(
+                Gdk.Display.get_default(), self._room_css,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
         self._add_breakpoint()
 
     def _build_progress(self):
@@ -242,7 +314,7 @@ class MainWindow(Adw.ApplicationWindow):
         for key in ("size", "percent", "items", "files", "folders", "modified"):
             breakpoint_.add_setter(self.tree.columns[key], "visible", False)
         breakpoint_.add_setter(self.paned, "position", 420)
-        self.add_breakpoint(breakpoint_)
+        (self.room_widget or self).add_breakpoint(breakpoint_)
 
     # ------------------------------------------------------------ actions --
 
@@ -281,17 +353,7 @@ class MainWindow(Adw.ApplicationWindow):
         app = self.get_application()
         if app is None:
             return
-        for action, keys in (
-            ("win.open", ["<Control>o"]),
-            ("win.rescan", ["<Control>r", "F5"]),
-            ("win.export", ["<Control>e"]),
-            ("win.zoom-out", ["<Alt>Up", "BackSpace"]),
-            ("win.open-item", ["<Control>Return"]),
-            ("win.copy-path", ["<Control>c"]),
-            ("win.trash", ["Delete"]),
-            ("win.delete", ["<Shift>Delete"]),
-            ("win.shortcuts", ["<Control>question"]),
-        ):
+        for action, keys in ACCELERATORS:
             app.set_accels_for_action(action, keys)
 
     # ------------------------------------------------------------ startup --
@@ -338,7 +400,7 @@ class MainWindow(Adw.ApplicationWindow):
         elif os.path.exists(path):
             self.start_scan(os.path.dirname(os.path.abspath(path)))
         else:
-            widgets.toast(self, f"{path} is not there")
+            widgets.toast(self.toasts, f"{path} is not there")
 
     def choose_folder(self):
         dialog = Gtk.FileDialog(title="Choose a folder to scan")
@@ -354,14 +416,14 @@ class MainWindow(Adw.ApplicationWindow):
             if folder is not None and folder.get_path():
                 self.start_scan(folder.get_path())
 
-        dialog.select_folder(self, None, chosen)
+        dialog.select_folder(self._parent_window(), None, chosen)
 
     # ------------------------------------------------------------- the scan --
 
     def start_scan(self, path: str):
         path = os.path.abspath(os.path.expanduser(path))
         if not os.path.isdir(path):
-            widgets.toast(self, f"{path} is not a folder")
+            widgets.toast(self.toasts, f"{path} is not a folder")
             return
         self.cancel_scan()
 
@@ -396,7 +458,7 @@ class MainWindow(Adw.ApplicationWindow):
             # window that has stopped, which reads as a scan that never ends.
             self.status.set_text(f"Could not scan {path}")
             self.status.add_css_class("warning")
-            widgets.error_toast(self, exc)
+            widgets.error_toast(self.toasts, exc)
 
         jobs.run(work, done, failed)
 
@@ -452,7 +514,7 @@ class MainWindow(Adw.ApplicationWindow):
         # most of what a scan of / cannot reach.
         if result.root.unreadable and not result.root.subdirs \
                 and not result.root.fnames:
-            widgets.toast(self, f"Nothing in {_short(result.path)} could be "
+            widgets.toast(self.toasts, f"Nothing in {_short(result.path)} could be "
                                 f"read — it belongs to another user", timeout=7)
 
     def _is_mount_point(self, path: str) -> bool:
@@ -684,19 +746,19 @@ class MainWindow(Adw.ApplicationWindow):
             self.zoom_map(node)
             return
         launcher = Gtk.FileLauncher.new(Gio.File.new_for_path(node.path))
-        launcher.launch(self, None, None)
+        launcher.launch(self._parent_window(), None, None)
 
     def reveal_selected(self):
         node = self._target()
         if node is None:
             return
         opener = Gtk.FileLauncher.new(Gio.File.new_for_path(node.path))
-        opener.open_containing_folder(self, None, None)
+        opener.open_containing_folder(self._parent_window(), None, None)
 
     def copy_path(self):
         node = self._target()
         if node is not None:
-            widgets.copy_text(self, node.path, "Path copied")
+            widgets.copy_text(self.toasts, node.path, "Path copied")
 
     # ----------------------------------------------------------- deleting ---
 
@@ -706,7 +768,7 @@ class MainWindow(Adw.ApplicationWindow):
             return
         path = node.path
         if not path or path == self.result.path:
-            widgets.toast(self, "That is the folder being scanned")
+            widgets.toast(self.toasts, "That is the folder being scanned")
             return
 
         size = human_size(scan.value_of(node, self.config["size_basis"]))
@@ -714,7 +776,7 @@ class MainWindow(Adw.ApplicationWindow):
         if permanent:
             body = (f"{path}\n\n{size}. Deleting it permanently cannot be undone, "
                     f"and Fathom will not ask twice.")
-            widgets.confirm(self, f"Delete this {what} permanently?", body,
+            widgets.confirm(self.toasts, f"Delete this {what} permanently?", body,
                             "Delete", lambda: self._do_delete(node, True))
         else:
             self._do_delete(node, False)
@@ -737,11 +799,11 @@ class MainWindow(Adw.ApplicationWindow):
 
         def done(_result):
             self._forget(node)
-            widgets.toast(self, ("Moved to Trash: " if not permanent
+            widgets.toast(self.toasts, ("Moved to Trash: " if not permanent
                                  else "Deleted: ") + os.path.basename(path))
 
         def failed(exc):
-            widgets.error_toast(self, exc)
+            widgets.error_toast(self.toasts, exc)
 
         jobs.run(work, done, failed)
 
@@ -818,7 +880,9 @@ class MainWindow(Adw.ApplicationWindow):
         dialog = Adw.PreferencesDialog(title="Preferences")
         # The Look page is the house's, so the themes and the glass are the
         # same rows in the same order as in every other app here.
-        dialog.add(housestyle.look_page(self.config, self.glazing.restyle))
+        # In a room the look is the palace's, and so is its Look page.
+        if self.glazing is not None:
+            dialog.add(housestyle.look_page(self.config, self.glazing.restyle))
         page = Adw.PreferencesPage(title="Scanning",
                                    icon_name="drive-harddisk-symbolic")
 
@@ -864,7 +928,7 @@ class MainWindow(Adw.ApplicationWindow):
         page.add(columns)
 
         dialog.add(page)
-        dialog.present(self)
+        dialog.present(self.toasts)
 
     def _switch(self, title, key, subtitle):
         row = Adw.SwitchRow(title=title, subtitle=subtitle,
@@ -874,7 +938,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.config[key] = switch.get_active()
             self.config.save()
             if key in ("one_filesystem", "dedup_hardlinks"):
-                widgets.toast(self, "Takes effect on the next scan")
+                widgets.toast(self.toasts, "Takes effect on the next scan")
             else:
                 self._reapply()
 
@@ -917,7 +981,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def export_csv(self):
         if self.result is None:
-            widgets.toast(self, "Nothing has been scanned yet")
+            widgets.toast(self.toasts, "Nothing has been scanned yet")
             return
         name = self.views.get_visible_child_name()
         dialog = Gtk.FileDialog(title="Export as CSV")
@@ -933,7 +997,7 @@ class MainWindow(Adw.ApplicationWindow):
             if path:
                 self._write_csv(path, name)
 
-        dialog.save(self, None, chosen)
+        dialog.save(self._parent_window(), None, chosen)
 
     def _write_csv(self, path: str, which: str):
         root = self.result.root
@@ -966,8 +1030,8 @@ class MainWindow(Adw.ApplicationWindow):
             return path
 
         jobs.run(work,
-                 lambda written: widgets.toast(self, f"Written to {written}"),
-                 lambda exc: widgets.error_toast(self, exc))
+                 lambda written: widgets.toast(self.toasts, f"Written to {written}"),
+                 lambda exc: widgets.error_toast(self.toasts, exc))
 
     # -------------------------------------------------------------- about ---
 
@@ -998,7 +1062,7 @@ class MainWindow(Adw.ApplicationWindow):
         scroller = Gtk.ScrolledWindow(child=group, vexpand=True)
         view.set_content(scroller)
         dialog.set_child(view)
-        dialog.present(self)
+        dialog.present(self.toasts)
 
     def show_about(self):
         from . import __version__
@@ -1013,20 +1077,29 @@ class MainWindow(Adw.ApplicationWindow):
                       "map you can see."),
             license_type=Gtk.License.MIT_X11,
         )
-        about.present(self)
+        about.present(self.toasts)
 
     # ----------------------------------------------------------- geometry ---
 
     def _on_close(self, _window):
         self.cancel_scan()
         self.geometry.save()
+        self.save_state()
+        return False
+
+    def save_state(self):
+        """What closing keeps, apart from the size: a room's window has no size to keep."""
         # In the narrow layout the pane is vertical, and its position is a
         # height. Saving it would come back as a wrong width next time.
         if (self.stack_pages.get_visible_child_name() == "results"
                 and self.paned.get_orientation() == Gtk.Orientation.HORIZONTAL):
             self.config["split_position"] = self.paned.get_position()
         self.config.save()
-        return False
+
+    def _parent_window(self):
+        """A window to parent a file dialog on: ours, or whichever hosts the content."""
+        root = self.toasts.get_root()
+        return root if isinstance(root, Gtk.Window) else self
 
 
 def _is_under(node, ancestor) -> bool:

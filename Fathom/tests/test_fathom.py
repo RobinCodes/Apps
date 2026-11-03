@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -576,6 +577,105 @@ def test_the_new_window_action_is_there_with_its_accelerator():
     assert app.get_accels_for_action("app.new-window") == ["<Control>n"]
 
 
+class _Host:
+    """The host side of Mind Palace's room contract, as little of it as a room uses.
+
+    All a room's own suite needs: it can check the room without opening the palace.
+    """
+
+    def __init__(self, app, parent):
+        self.app = app
+        self.parent = parent
+        self.shown = []
+
+    def toast(self, text, undo=None):
+        pass
+
+    def open(self, path):
+        return False
+
+    def show(self, title):
+        return False
+
+    def set_subtitle(self, text=""):
+        self.shown.append(text)
+
+    def ask_claude(self, prompt="", files=()):
+        pass
+
+
+def test_fathom_is_a_room_of_the_palace(app):
+    """What Mind Palace does: build it, host the widget, act through "room"."""
+    from gi.repository import Adw, GLib, Gtk
+
+    from fathom import room as rooms
+
+    def pump(until, seconds=20):
+        context = GLib.MainContext.default()
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not until():
+            context.iteration(False)
+            time.sleep(0.002)
+        return until()
+
+    where = os.path.join(scratch, "room-scan")
+    make_tree(where)
+    assert os.path.isfile(os.path.join(ROOT, rooms.ICON + ".svg")), rooms.ICON
+    assert rooms.TITLE == "Fathom" and isinstance(rooms.ORDER, int)
+
+    palace = Adw.ApplicationWindow(application=app)
+    host = _Host(app, palace)
+    room = rooms.build(host)
+    assert room.window not in app.get_windows(), "a room must not keep the palace alive"
+    assert room.window.glazing is None, "the palace has the glass"
+    assert isinstance(room.widget, Adw.BreakpointBin)
+    assert not isinstance(room.window.back_button.get_ancestor(Adw.HeaderBar), Adw.HeaderBar), \
+        "no header bar of its own"
+    palace.set_content(room.widget)
+    room.widget.insert_action_group("room", room.actions)
+    palace.present()
+    try:
+        assert room.window._parent_window() is palace
+        assert room.context() == [], "nothing is showing yet"
+        assert all(action.startswith("room.") for action, _keys in room.accels)
+        assert ("room.rescan", ["<Control>r", "F5"]) in room.accels
+
+        assert not room.open(os.path.join(where, "top.bin")), "a file is not Fathom's to open"
+        assert room.open(where)
+        assert pump(lambda: room.window.result is not None), "the scan never finished"
+        assert room.context() == [room.window.result.path]
+        assert host.shown and host.shown[-1].endswith("room-scan"), host.shown
+        assert " — Fathom" not in host.shown[-1], "the room's name is already in the header"
+
+        # Both names resolve from inside: the code says win.*, the palace room.*.
+        room.widget.activate_action("room.rescan", None)
+        assert room.widget.activate_action("win.zoom-out", None)
+        assert pump(lambda: room.window.scan is None), "the rescan never finished"
+
+        # Dialogs land in the palace's window, and a toast on the room's overlay.
+        from fathom import widgets
+
+        assert widgets.toast(room.window.toasts, "hello") is room.window.toasts
+        room.widget.activate_action("room.preferences", None)
+        room.widget.activate_action("room.shortcuts", None)
+        room.widget.activate_action("room.about", None)
+        assert palace.get_visible_dialog() is not None, "the dialog went nowhere"
+        pump(lambda: False, 0.1)
+
+        width = room.window.config["window_width"]
+        room.window.config["window_width"] = width + 7
+        room.save_state()
+        assert Config()["window_width"] == width + 7, "the settings were not written"
+        room.window.config["window_width"] = width
+        room.window.config.save()
+        assert room.can_close()
+        room.shutdown()
+        assert room.window.scan is None
+    finally:
+        palace.close()
+        room.window.destroy()
+
+
 def test_a_junction_is_never_followed():
     """Windows' folder links are skipped, the way symlinks are everywhere.
 
@@ -681,6 +781,7 @@ def main():
              lambda _a: test_the_new_window_action_is_there_with_its_accelerator()),
             ("on Windows, a window wears the app's icon, not Python's",
              lambda _a: test_on_windows_a_window_wears_the_apps_icon_not_pythons()),
+            ("Fathom is a room of the palace", test_fathom_is_a_room_of_the_palace),
             ("the views build and take a scan", test_the_views_build_and_take_a_scan),
             ("deleting from the window updates the numbers",
              test_deleting_from_the_window_updates_the_numbers),
