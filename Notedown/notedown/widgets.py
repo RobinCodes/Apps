@@ -44,6 +44,12 @@ def error_toast(widget, exc):
     toast(widget, text[0] if text else "Something went wrong", timeout=6)
 
 
+def _inside(parent):
+    # The window hands itself in as the parent; in the palace that window is never
+    # shown, and a dialog goes on the content, which is shown wherever it is.
+    return getattr(parent, "toasts", parent)
+
+
 def confirm(parent, heading, body, action_label, callback, destructive=True):
     """Ask before anything that can't be undone. callback() runs only on yes."""
     dialog = Adw.AlertDialog(heading=heading, body=body)
@@ -60,7 +66,7 @@ def confirm(parent, heading, body, action_label, callback, destructive=True):
         if dlg.choose_finish(result) == "go":
             callback()
 
-    dialog.choose(parent, None, answered)
+    dialog.choose(_inside(parent), None, answered)
 
 
 def ask_text(parent, heading, body, initial, action_label, callback,
@@ -91,7 +97,7 @@ def ask_text(parent, heading, body, initial, action_label, callback,
 
     entry.connect("activate", activated)
     dialog.connect("response", answered)
-    dialog.present(parent)
+    dialog.present(_inside(parent))
 
     def focus():
         entry.grab_focus()

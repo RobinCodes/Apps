@@ -18,6 +18,14 @@ and makes the app unusable where it lives.
 by handing the window the whole output, which throws away the arrangement the
 user made. The size is still remembered — see `housestyle.Geometry`, which is
 where both halves of that rule now live.
+
+*It may not be the window.* Mind Palace shows every app in one window, a room
+each (`room.py`). For that this class is built with a `host` and never
+presented, and what the palace shows is `room_widget`: the same tabs and panes
+under a bar of the room's own buttons, without glass of its own, with this
+window standing behind them as their "win" action group. So everything that
+asks or tells is put on `self.toasts`, which is inside the content wherever the
+content is, and never on `self`. On its own, Notedown is what it always was.
 """
 
 from __future__ import annotations
@@ -161,9 +169,39 @@ def with_extension(path, extension):
         return path
     return path + extension
 
+class RoomBar(Gtk.CenterBox):
+    """A header bar without a window to head: the room's own buttons, and no more.
+
+    Answers the calls the window makes of an `Adw.HeaderBar`, so the rest of this
+    class builds one bar or the other the same way.
+    """
+
+    def __init__(self):
+        super().__init__(css_classes=["toolbar", "room-bar"])
+        self._start = Gtk.Box(spacing=4)
+        self._end = Gtk.Box(spacing=4)
+        self.set_start_widget(self._start)
+        self.set_end_widget(self._end)
+
+    def pack_start(self, widget):
+        self._start.append(widget)
+
+    def pack_end(self, widget):
+        # As a header bar does it: the first packed is the outermost.
+        self._end.prepend(widget)
+
+    def set_title_widget(self, widget):
+        # The palace says what the room is showing (`host.set_subtitle`).
+        pass
+
+
 class MainWindow(Adw.ApplicationWindow):
-    def __init__(self, app):
-        super().__init__(application=app, title="Notedown")
+    def __init__(self, app, host=None):
+        self.host = host
+        if host is None:
+            super().__init__(application=app, title="Notedown")
+        else:
+            super().__init__(title="Notedown")
         self.config = Config()
         self.active: Document | None = None
         self._by_page: dict = {}
@@ -183,16 +221,21 @@ class MainWindow(Adw.ApplicationWindow):
         # see housestyle.Geometry for why the two are treated differently
         # under a tiling compositor.
         self.geometry = housestyle.Geometry(self, self.config, minimum=(360, 320))
-        self.geometry.restore()
+        if host is None:
+            self.geometry.restore()
 
         self._build_actions()
         self._build_ui()
         self._install_accelerators()
 
-        self.connect("close-request", self._on_close)
         # Files change behind our back — a terminal, another editor — and the
         # document should notice when the window comes back.
-        self.connect("notify::is-active", self._on_active_changed)
+        if host is None:
+            self.connect("close-request", self._on_close)
+            self.connect("notify::is-active", self._on_active_changed)
+        else:
+            # A room is never the active window; coming into view is the moment.
+            self.room_widget.connect("map", self._on_active_changed)
 
         GLib.idle_add(self._start_up)
 
@@ -225,18 +268,34 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_ui(self):
         self.toasts = Adw.ToastOverlay()
-        # The house style: the window paints nothing and everything sits on
-        # one rounded, translucent slab of glass inside it. `self.glazing` is
-        # what the Look page calls back into when a setting changes.
-        self.glazing = housestyle.Glazing(self, self.config,
-                                          extra=widgets.CSS,
-                                          app_class="notedown")
-        self.glazing.wrap(self.toasts)
+        if self.host is None:
+            # The house style: the window paints nothing and everything sits on
+            # one rounded, translucent slab of glass inside it. `self.glazing` is
+            # what the Look page calls back into when a setting changes.
+            self.glazing = housestyle.Glazing(self, self.config,
+                                              extra=widgets.CSS,
+                                              app_class="notedown")
+            self.glazing.wrap(self.toasts)
+            self.room_widget = None
+        else:
+            # A room: the palace has the glass and the house sheet. This app's
+            # own rules go on a provider of their own, so that installing them
+            # does not replace whatever the palace installed.
+            self.glazing = None
+            self.room_widget = Adw.BreakpointBin(width_request=360, height_request=320,
+                                                 css_classes=["notedown"])
+            self.room_widget.set_child(self.toasts)
+            self.toasts.insert_action_group("win", self)
+            self._room_css = Gtk.CssProvider()
+            self._room_css.load_from_string(widgets.CSS)
+            Gtk.StyleContext.add_provider_for_display(
+                Gdk.Display.get_default(), self._room_css,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.toasts.set_child(outer)
 
-        self.header = Adw.HeaderBar()
+        self.header = Adw.HeaderBar() if self.host is None else RoomBar()
         self.title = Adw.WindowTitle(title="Notedown", subtitle="")
         self.header.set_title_widget(self.title)
         outer.append(self.header)
@@ -386,7 +445,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.narrow = Adw.Breakpoint.new(condition)
         self.narrow.connect("apply", lambda *_: self._set_narrow(True))
         self.narrow.connect("unapply", lambda *_: self._set_narrow(False))
-        self.add_breakpoint(self.narrow)
+        (self.room_widget or self).add_breakpoint(self.narrow)
         self._narrow = False
 
     def _set_narrow(self, narrow):
@@ -409,6 +468,11 @@ class MainWindow(Adw.ApplicationWindow):
             document.paned.set_orientation(
                 Gtk.Orientation.VERTICAL if narrow else Gtk.Orientation.HORIZONTAL)
 
+    def _parent_window(self):
+        """A window to parent a file dialog on: ours, or whichever hosts the content."""
+        root = self.toasts.get_root()
+        return root if isinstance(root, Gtk.Window) else self
+
     def _install_drop_target(self):
         drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
 
@@ -420,7 +484,7 @@ class MainWindow(Adw.ApplicationWindow):
             return True
 
         drop.connect("drop", dropped)
-        self.add_controller(drop)
+        (self.toasts if self.host is not None else self).add_controller(drop)
 
     # -------------------------------------------------------------- menus --
 
@@ -430,7 +494,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.recent_menu = Gio.Menu()
         files = Gio.Menu()
         files.append("New", "win.new")
-        files.append("New Window", "app.new-window")
+        if self.host is None:
+            files.append("New Window", "app.new-window")
         files.append("Open…", "win.open")
         files.append_submenu("Open Recent", self.recent_menu)
         menu.append_section(None, files)
@@ -498,7 +563,8 @@ class MainWindow(Adw.ApplicationWindow):
         about.append("Preferences", "win.preferences")
         about.append("Keyboard Shortcuts", "win.shortcuts")
         about.append("About Notedown", "win.about")
-        about.append("Quit", "app.quit")
+        if self.host is None:
+            about.append("Quit", "app.quit")
         menu.append_section(None, about)
         return menu
 
@@ -686,6 +752,17 @@ class MainWindow(Adw.ApplicationWindow):
         self.config.save()
 
     def _install_accelerators(self):
+        # The view modes take Alt, because Ctrl+1..6 are the headings.
+        for mode in ("editor", "split", "preview"):
+            action = Gio.SimpleAction.new(f"view-{mode}", None)
+            action.connect("activate", lambda _a, _p, m=mode: self.set_view_mode(m))
+            self.add_action(action)
+
+        escape = Gtk.EventControllerKey()
+        escape.connect("key-pressed", self._on_window_key)
+        (self.toasts if self.host is not None else self).add_controller(escape)
+
+        # In a room the palace applies the keys itself, while the room is on show.
         app = self.get_application()
         if app is None:
             return
@@ -696,16 +773,8 @@ class MainWindow(Adw.ApplicationWindow):
             app.set_accels_for_action(f"win.heading{level}", [f"<Control>{level}"])
         app.set_accels_for_action("win.heading0", ["<Control>7"])
 
-        # The view modes take Alt, because Ctrl+1..6 are the headings.
         for index, mode in enumerate(("editor", "split", "preview"), start=1):
-            action = Gio.SimpleAction.new(f"view-{mode}", None)
-            action.connect("activate", lambda _a, _p, m=mode: self.set_view_mode(m))
-            self.add_action(action)
             app.set_accels_for_action(f"win.view-{mode}", [f"<Alt>{index}"])
-
-        escape = Gtk.EventControllerKey()
-        escape.connect("key-pressed", self._on_window_key)
-        self.add_controller(escape)
 
     def _on_window_key(self, _controller, keyval, _keycode, _state):
         if keyval == Gdk.KEY_Escape and self.find.is_open():
@@ -796,7 +865,7 @@ class MainWindow(Adw.ApplicationWindow):
             if gfile and gfile.get_path():
                 self.open_path(gfile.get_path())
 
-        dialog.open(self, None, chosen)
+        dialog.open(self._parent_window(), None, chosen)
 
     def open_path(self, path: str, focus=True, remember=True):
         """Open a file, or bring its tab to the front if it is already open."""
@@ -946,7 +1015,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.config["last_folder"] = os.path.dirname(path)
             self.save_document(document, then=then)
 
-        dialog.save(self, None, chosen)
+        dialog.save(self._parent_window(), None, chosen)
 
     def reload_document(self):
         document = self.active
@@ -1037,7 +1106,7 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 tabs.close_page_finish(page, False)
 
-        dialog.choose(self, None, answered)
+        dialog.choose(self.toasts, None, answered)
         return True
 
     def _finish_close(self, page):
@@ -1052,9 +1121,13 @@ class MainWindow(Adw.ApplicationWindow):
             self.title.set_title("Notedown")
             self.title.set_subtitle("")
             self.set_title("Notedown")
+            if self.host is not None:
+                self.host.set_subtitle("")
             return
 
         mark = "• " if document.modified else ""
+        if self.host is not None:
+            self.host.set_subtitle(mark + document.name)
         self.title.set_title(mark + document.name)
         folder = document.folder
         if folder:
@@ -1160,7 +1233,7 @@ class MainWindow(Adw.ApplicationWindow):
             return True
 
         launcher = Gtk.UriLauncher.new(url)
-        launcher.launch(self, None, None)
+        launcher.launch(self._parent_window(), None, None)
         return True
 
     # ---------------------------------------------------- the second brain --
@@ -1447,13 +1520,19 @@ class MainWindow(Adw.ApplicationWindow):
         return script
 
     def study_note(self):
-        """`mnemosyne --study <this note>`, saved first so it studies what is on screen."""
+        """`mnemosyne --study <this note>`, saved first so it studies what is on screen.
+
+        In the palace Mnemosyne is a room too, and this is the palace's way of saying
+        the same thing: it opens there rather than as a window of its own.
+        """
         document = self.active
         script = order.mnemosyne()
         if document is None or not document.path or script is None:
             return
 
         def launch():
+            if self.host is not None and self.host.open(f"study:{document.path}"):
+                return
             argv = order.study_command(document.path, script, sys.executable)
             try:
                 self._spawn(argv, os.path.dirname(script))
@@ -1483,8 +1562,16 @@ class MainWindow(Adw.ApplicationWindow):
             self.add_action(action)
 
     def show_claude(self, show: bool | None = None):
-        """Ctrl+Shift+A: Claude at the side, with the cursor in the request."""
+        """Ctrl+Shift+A: Claude at the side, with the cursor in the request.
+
+        In the palace "Ask Claude" is the panel every room shares, which is where its
+        own Ctrl+Shift+A goes too. Making cards stays here: its answer is cards in
+        this note, and it is this panel that puts them there.
+        """
         if self.assistant is None:
+            return
+        if show is None and self.host is not None:
+            self.host.ask_claude("", [self.path] if self.path else [])
             return
         if show is None:
             show = not self.claude_split.get_show_sidebar()
@@ -1662,7 +1749,7 @@ class MainWindow(Adw.ApplicationWindow):
                 extension = os.path.splitext(suggested)[1]
                 self._confirm_extended(gfile.get_path(), extension, handler)
 
-        dialog.save(self, None, chosen)
+        dialog.save(self._parent_window(), None, chosen)
 
     def _confirm_extended(self, path, extension, then):
         """then(path), with `extension` added when the name was typed without one.
@@ -1784,7 +1871,7 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.set_extra_child(label)
         dialog.add_response("close", "Close")
         dialog.set_default_response("close")
-        dialog.present(self)
+        dialog.present(self.toasts)
 
     def show_preferences(self):
         """The theme and the glass — the house Look page.
@@ -1797,9 +1884,11 @@ class MainWindow(Adw.ApplicationWindow):
         easier to reach than a settings page.
         """
         dialog = Adw.PreferencesDialog(title="Preferences")
-        dialog.add(housestyle.look_page(self.config, self.glazing.restyle))
+        # In the palace the look is the palace's, for every room at once.
+        if self.glazing is not None:
+            dialog.add(housestyle.look_page(self.config, self.glazing.restyle))
         dialog.add(self._writing_page())
-        dialog.present(self)
+        dialog.present(self.toasts)
 
     def _writing_page(self):
         """The handful of settings that are about the text rather than the app."""
@@ -1846,7 +1935,7 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.add_response("close", "Done")
         dialog.set_default_response("close")
         dialog.connect("response", self._fonts_answered)
-        dialog.present(self)
+        dialog.present(self.toasts)
 
     def _font_button(self, label, family_key, size_key):
         description = Pango.FontDescription()
@@ -1910,7 +1999,7 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.set_extra_child(scroller)
         dialog.add_response("close", "Close")
         dialog.set_default_response("close")
-        dialog.present(self)
+        dialog.present(self.toasts)
 
     def show_about(self):
         about = Adw.AboutDialog(
@@ -1926,12 +2015,13 @@ class MainWindow(Adw.ApplicationWindow):
             license_type=Gtk.License.MIT_X11,
             website="https://github.com/RobinCodes",
         )
-        about.present(self)
+        about.present(self.toasts)
 
     # ------------------------------------------------------------ geometry --
 
     def _remember_geometry(self):
-        self.geometry.save()
+        if self.host is None:
+            self.geometry.save()
         if self.active is not None:
             fraction = self.active.split_fraction()
             if fraction is not None and not self._narrow:
@@ -1945,7 +2035,8 @@ class MainWindow(Adw.ApplicationWindow):
     # -------------------------------------------------------- files on disk --
 
     def _on_active_changed(self, *_):
-        if not self.props.is_active or self.active is None:
+        shown = self.host is not None or self.props.is_active
+        if not shown or self.active is None:
             return
         document = self.active
         if not document.path or not os.path.exists(document.path):
@@ -1988,6 +2079,30 @@ class MainWindow(Adw.ApplicationWindow):
             self._shut_down()
             return False
 
+        def close():
+            self._closing = True
+            self._shut_down()
+            self.close()
+
+        self._ask_to_save(unsaved, close)
+        return True
+
+    def can_leave(self) -> bool:
+        """For a room: whether the palace may close now. If not, this asks what to do."""
+        unsaved = [d for d in self.documents if d.modified]
+        if self._closing or not unsaved:
+            return True
+
+        def close_palace():
+            self._closing = True
+            root = self.toasts.get_root()
+            if root is not None:
+                root.close()
+
+        self._ask_to_save(unsaved, close_palace)
+        return False
+
+    def _ask_to_save(self, unsaved, close):
         names = ", ".join(d.name for d in unsaved[:3])
         if len(unsaved) > 3:
             names += f" and {len(unsaved) - 3} more"
@@ -2018,12 +2133,9 @@ class MainWindow(Adw.ApplicationWindow):
                         self._page_of(next(d for d in unsaved if not d.path)))
                     self.save_as()
                     return
-            self._closing = True
-            self._shut_down()
-            self.close()
+            close()
 
-        dialog.choose(self, None, answered)
-        return True
+        dialog.choose(self.toasts, None, answered)
 
     def _shut_down(self):
         self.config["open_files"] = [d.path for d in self.documents if d.path]

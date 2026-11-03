@@ -1553,6 +1553,263 @@ def test_study_is_offered_only_beside_mnemosyne(window):
         window._offer_study()
 
 
+class _Host:
+    """As much of Mind Palace as a room can see."""
+
+    def __init__(self, app):
+        self.app = app
+        self.opened = []
+        self.subtitles = []
+        self.asked = []
+        self.answer = True
+
+    def open(self, target):
+        self.opened.append(target)
+        return self.answer
+
+    def set_subtitle(self, text=""):
+        self.subtitles.append(text)
+
+    def ask_claude(self, prompt="", files=()):
+        self.asked.append((prompt, list(files)))
+
+
+def _hosted(window):
+    from gi.repository import Adw
+
+    from notedown import room
+
+    app = window.get_application()
+    host = _Host(app)
+    built = room.build(host)
+    shell = Adw.ApplicationWindow(application=app)
+    shell.set_default_size(900, 600)
+    shell.set_content(built.widget)
+    built.widget.insert_action_group("room", built.actions)
+    shell.present()
+    pump(400)
+    return host, built, shell
+
+
+def _dismiss(shell):
+    pump(120)
+    dialog = shell.get_visible_dialog()
+    assert dialog is not None, "the dialog should be in the window that is on screen"
+    dialog.force_close()
+    pump(60)
+
+
+def test_the_room_says_what_it_is_in_plain_literals():
+    import ast
+
+    source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "notedown", "room.py")
+    with open(source, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    names = {node.targets[0].id: ast.literal_eval(node.value) for node in tree.body
+             if isinstance(node, ast.Assign) and node.targets[0].id.isupper()}
+    assert names["TITLE"] == "Notedown" and names["ICON"] == "notedown"
+    assert names["ORDER"] == 10 and ".md" in names["OPENS"]
+
+
+def test_the_room_is_the_window_behind_a_widget(window):
+    from notedown.window import RoomBar
+
+    host, built, shell = _hosted(window)
+    try:
+        hidden = built.window
+        assert hidden.get_application() is None, "it must never count as an app window"
+        assert not hidden.get_visible() and not hidden.get_mapped()
+        assert hidden.glazing is None and isinstance(hidden.header, RoomBar)
+        assert built.widget.get_mapped()
+        minimum = built.widget.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+        assert minimum <= 455, f"the room cannot be made narrower than {minimum}px"
+
+        # Its buttons reach its actions, inside; the palace's keys reach them from outside.
+        pages = hidden.tabs.get_n_pages()
+        built.widget.activate_action("room.new", None)
+        pump(60)
+        assert hidden.tabs.get_n_pages() == pages + 1
+        assert hidden.toasts.activate_action("win.new", None)
+        pump(60)
+        assert hidden.tabs.get_n_pages() == pages + 2
+
+        # What it has no business asking for, and what it should.
+        accels = dict(built.accels)
+        taken = {key for keys in accels.values() for key in keys}
+        assert not taken & {"<Control>k", "<Control>comma", "<Control>question", "F9",
+                            "<Control><Shift>a"}, taken
+        assert all(action.startswith("room.") for action in accels)
+        assert accels["room.new"] == ["<Control>n", "<Control>t"]
+        assert accels["room.view-preview"] == ["<Alt>3"]
+        assert "room.link" not in accels and "room.toggle-sidebar" not in accels
+        for action in accels:
+            assert hidden.lookup_action(action.split(".", 1)[1]) is not None, action
+    finally:
+        for document in built.window.documents:
+            document.editor.mark_saved()
+        built.shutdown()
+        shell.destroy()
+        pump(60)
+
+
+def test_a_room_opens_notes_and_declines_the_rest(window):
+    host, built, shell = _hosted(window)
+    try:
+        path = brain_note("Projects/room-note.md", "# In a room\n\nHello.\n")
+        assert built.open(path)
+        pump(120)
+        assert built.context() == [os.path.abspath(path)]
+        assert host.subtitles[-1] == "room-note.md"
+        assert built.window.active.name == "room-note.md"
+        picture = os.path.join(scratch, "a.png")
+        open(picture, "wb").close()
+        assert not built.open(picture)
+        assert not built.open("study:" + path), "that is Mnemosyne's to answer"
+        assert not built.open(os.path.join(scratch, "not-there.md"))
+        # Coming into view reads a note that changed behind its back.
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("# Changed elsewhere\n")
+        os.utime(path, (2_000_000_000, 2_000_000_000))
+        built.shown()
+        pump(120)
+        assert built.window.active.text().startswith("# Changed elsewhere")
+    finally:
+        for document in built.window.documents:
+            document.editor.mark_saved()
+        built.shutdown()
+        shell.destroy()
+        pump(60)
+
+
+def test_a_rooms_dialogs_come_up_in_the_window_on_screen(window):
+    from notedown import widgets
+
+    host, built, shell = _hosted(window)
+    try:
+        hidden = built.window
+        assert hidden._parent_window() is shell, "a file chooser needs a window on screen"
+        hidden.show_shortcuts()
+        _dismiss(shell)
+        hidden.show_preferences()               # the look is the palace's: no Look page
+        _dismiss(shell)
+        hidden.show_about()
+        _dismiss(shell)
+        hidden.show_switcher()
+        _dismiss(shell)
+        widgets.confirm(hidden, "Heading", "Body", "Go", lambda: None)
+        _dismiss(shell)
+        widgets.ask_text(hidden, "Heading", "Body", "", "Go", lambda _t: None)
+        _dismiss(shell)
+        assert widgets.toast(hidden, "A toast"), "and a toast finds its overlay"
+    finally:
+        for document in built.window.documents:
+            document.editor.mark_saved()
+        built.shutdown()
+        shell.destroy()
+        pump(60)
+
+
+def test_study_goes_to_the_palace_and_only_outside_it_to_a_process(window):
+    from notedown import order
+
+    shipped = order.CHECKOUT
+    beside = os.path.join(scratch, "apps")
+    os.makedirs(os.path.join(beside, "Mnemosyne"), exist_ok=True)
+    open(os.path.join(beside, "Mnemosyne", "mnemosyne.py"), "w").close()
+    order.CHECKOUT = beside
+    host, built, shell = _hosted(window)
+    try:
+        hidden = built.window
+        spawned = []
+        hidden._spawn = lambda argv, cwd: spawned.append(argv)
+        hidden._offer_study()
+        path = brain_note("Projects/Studies/Biology/room-study.md", "A :: B\n")
+        assert built.open(path)
+        pump(200)
+        assert hidden.lookup_action("study") is not None
+        # Unsaved words are saved first, so it studies what is on screen.
+        hidden.active.editor.buffer.insert_at_cursor("C :: D\n")
+        pump(60)
+        hidden.study_note()
+        assert settle(lambda: host.opened, 3000)
+        assert host.opened == [f"study:{os.path.abspath(path)}"], host.opened
+        assert "C :: D" in open(path, encoding="utf-8").read()
+        assert not spawned, "no window of its own while the palace has a room for it"
+
+        # A palace with no such room: as it does on its own.
+        host.answer = False
+        hidden.study_note()
+        pump(60)
+        assert spawned and spawned[0][1:] == [
+            os.path.join(beside, "Mnemosyne", "mnemosyne.py"), "--study", os.path.abspath(path)]
+    finally:
+        order.CHECKOUT = shipped
+        for document in built.window.documents:
+            document.editor.mark_saved()
+        built.shutdown()
+        shell.destroy()
+        pump(60)
+
+
+def test_a_room_will_not_lose_unsaved_work_when_the_palace_closes(window):
+    host, built, shell = _hosted(window)
+    try:
+        path = brain_note("Projects/room-unsaved.md", "Words.\n")
+        assert built.open(path)
+        pump(120)
+        assert built.can_close()
+        built.window.active.editor.buffer.insert_at_cursor("More words.\n")
+        built.window.active.editor.buffer.insert_at_cursor("And more.\n")
+        pump(60)
+        assert not built.can_close()
+        _dismiss(shell)
+        assert host.subtitles[-1].startswith("• "), "and it says so"
+        built.window.active.editor.mark_saved()
+        pump(30)
+        assert built.can_close()
+    finally:
+        built.shutdown()
+        shell.destroy()
+        pump(60)
+
+
+def test_a_room_keeps_its_tabs_and_not_a_window_size(window):
+    host, built, shell = _hosted(window)
+    try:
+        path = brain_note("Projects/room-tabs.md", "Words.\n")
+        built.open(path)
+        pump(60)
+        width = built.window.config["window_width"]
+        built.save_state()
+        assert os.path.abspath(path) in built.window.config["open_files"]
+        assert built.window.config["window_width"] == width
+    finally:
+        built.shutdown()
+        shell.destroy()
+        pump(60)
+
+
+def test_asking_claude_in_a_room_is_the_palaces_panel_and_cards_stay_here(window):
+    host, built, shell = _hosted(window)
+    try:
+        path = brain_note("Projects/room-claude.md", "Words.\n")
+        built.open(path)
+        pump(60)
+        built.window.show_claude()
+        assert host.asked == [("", [os.path.abspath(path)])]
+        assert not built.window.claude_split.get_show_sidebar()
+        built.window.show_claude(True)
+        assert built.window.claude_split.get_show_sidebar()
+        built.window.show_claude(False)
+    finally:
+        for document in built.window.documents:
+            document.editor.mark_saved()
+        built.shutdown()
+        shell.destroy()
+        pump(60)
+
+
 def test_no_key_does_two_things_and_every_new_one_is_written_down(window):
     from notedown.window import ACCELERATORS, SHORTCUTS
 

@@ -330,6 +330,21 @@ the outline folds away, the header drops the buttons that are also in the
 menu, and the split turns vertical — so the whole window fits in a 455px
 column, which the test suite checks on every run.
 
+## In Mind Palace
+
+Notedown is the palace's room for Markdown (`notedown/room.py`): the same tabs,
+panes and menus, under a bar of its own buttons rather than a header bar, with
+the palace's glass rather than its own. A note opens in a tab there. **Study This
+Note** opens the note's cards in Mnemosyne's room rather than a window of their
+own, and **Ask Claude** is the panel every room shares; Make Cards keeps Notedown's
+own, because that is what puts the cards in the note. Closing the palace with
+unsaved tabs asks first, here, as closing the window does.
+
+The palace keeps a few keys for itself whatever has the focus: Ctrl+K, Ctrl+1 to
+Ctrl+9, Ctrl+`,`, Ctrl+?, F9 and Ctrl+Shift+A. So making a link, the headings and
+the outline are in the bar's menus there, and the view modes stay on Alt+1 to 3.
+Run on its own, Notedown has every key this page lists.
+
 ## Running it
 
 Needs GTK4, libadwaita and PyGObject. On Arch:
@@ -410,6 +425,7 @@ a file, so nothing it does reaches the real brain or a model.
 | `latex.py` | `$maths$` drawn with Unicode and Pango, no TeX needed |
 | `export.py` | HTML and plain text from the same tree; pandoc for the rest |
 | `search.py` | find and replace, matched over the text rather than the buffer |
+| `room.py` | the app as a room of Mind Palace: the same window, behind one widget |
 | `outline.py` | the headings sidebar |
 | `completion.py` | the list `[[` opens |
 | `backlinks.py` | the drawer of notes that link here |
