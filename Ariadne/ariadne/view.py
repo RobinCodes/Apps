@@ -205,8 +205,8 @@ class AriadneView(Adw.BreakpointBin):
         title = item.title if item is not None else "Ariadne"
         if callable(self.on_title):
             self.on_title(title)
-        if self.host is not None and hasattr(self.host, "show"):
-            self.host.show(title)
+        if self.host is not None and hasattr(self.host, "set_subtitle"):
+            self.host.set_subtitle(item.title if item is not None else "")
 
     def show_list(self, show: bool):
         self.split.set_show_sidebar(show)

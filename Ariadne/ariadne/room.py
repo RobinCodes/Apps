@@ -17,18 +17,27 @@ Ariadne's own window puts its header bar over; the palace gets:
 * `save_state()` — what was open, and whether the list was showing;
   `can_close()` — always: every edit is on disk a moment after it is made.
 
-Of the host it uses `show(title)`, to say what the room is showing, and
+Of the host it uses `set_subtitle`, to say what the room is showing, and
 `open(path)`, to send a `[[link]]` to a note on to whichever room opens notes.
 Toasts and dialogs stay inside the view, as they do in the window, and the
 stylesheet is Ariadne's own rules alone (`widgets.install_room_css`), so that
 hosting it restyles nothing of anyone else's.
+
+The palace keeps a few keys for itself whatever has the focus (ROOMS.md), and
+three of Ariadne's are among them. There they mean what they mean everywhere in
+the palace, so the room does not ask for them: Think with Claude is the button
+on the page, and the list has its own button when it is hidden.
 """
 
 from __future__ import annotations
 
 TITLE = "Ariadne"
 ICON = "ariadne"
-ORDER = 50
+ORDER = 20
+KINDS = ("question", "thread")
+
+# Caught by the palace before a room can see them (ROOMS.md).
+PALACE_KEYS = {"<Control><Shift>a", "F9", "<Control>question"}
 
 
 class Room:
@@ -43,7 +52,9 @@ class Room:
         refresh_notes_once()
         self.widget = self.view
         self.actions = self.view.actions
-        self.accels = [(action, list(keys)) for action, keys in ACCELERATORS]
+        self.accels = [(action, [k for k in keys if k not in PALACE_KEYS])
+                       for action, keys in ACCELERATORS
+                       if any(k not in PALACE_KEYS for k in keys)]
 
     def open(self, path) -> bool:
         return self.view.open(path)
@@ -55,6 +66,14 @@ class Room:
         self.view.question_page.flush()
         self.view.thread_page.flush()
         return True
+
+
+    def shown(self) -> None:
+        self.view.check_disk()
+
+    def context(self) -> list[str]:
+        current = self.view.current
+        return [str(current.path)] if current is not None and current.path else []
 
 
 def build(host) -> Room:

@@ -427,8 +427,8 @@ def test_the_room_works_hosted_in_another_window(view_app):
             self.shown = []
             self.opened = []
 
-        def show(self, title):
-            self.shown.append(title)
+        def set_subtitle(self, text=""):
+            self.shown.append(text)
 
         def open(self, path):
             self.opened.append(path)
@@ -438,6 +438,7 @@ def test_the_room_works_hosted_in_another_window(view_app):
     host = Host()
     built = room.build(host)
     assert (room.TITLE, room.ICON) == ("Ariadne", "ariadne") and isinstance(room.ORDER, int)
+    assert room.KINDS == ("question", "thread")
     window = Adw.ApplicationWindow(application=view_app)
     window.set_content(built.widget)
     built.widget.insert_action_group("room", built.actions)
@@ -447,7 +448,12 @@ def test_the_room_works_hosted_in_another_window(view_app):
     built.view.reload()
     assert built.open(path) and host.shown[-1] == "Compatibilism holds"
     assert not built.open(os.path.join(BRAIN, "inbox", "nothing.md"))
-    assert {action for action, _keys in built.accels} >= {"room.keep-question", "room.think"}
+    assert {action for action, _keys in built.accels} >= {"room.keep-question", "room.arrange"}
+    # The palace's own keys are not asked for (ROOMS.md).
+    taken = {key for _action, keys in built.accels for key in keys}
+    assert not taken & {"<Control><Shift>a", "F9", "<Control>question"}, taken
+    assert built.context() == [path]
+    built.shown()
     built.widget.activate_action("room.arrange", None)
     assert "layout:" in read(path)
     # A link to a note that is not Ariadne's goes to the palace.

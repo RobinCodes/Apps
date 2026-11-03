@@ -111,7 +111,9 @@ untouched.
 `ariadne/room.py` makes Ariadne a room of Mind Palace: the same view, without
 the window's header bar, its actions under `room`, its own rules alone added
 to the stylesheet, and `[[links]]` to notes handed to whichever room opens
-them. Run on its own, it is exactly as above.
+them. The palace keeps Ctrl+Shift+A, F9 and Ctrl+? for itself, so there Think
+with Claude and the list are the buttons on the page. Run on its own, it is
+exactly as above.
 
 ## Running it
 
