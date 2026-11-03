@@ -365,6 +365,8 @@ def test_an_age_reads_the_way_a_person_says_it():
 
 def test_gather_reads_all_of_it():
     where = make_home()
+    ingested = write(where.vault / "idea" / "ingested.md", "---\ntitle: Ingested\n---\nx\n")
+    os.utime(ingested, (1_900_000_000, 1_900_000_000))
     notes = brain.Notes(where, db_path=scratch / "gather.db")
     notes.refresh()
     found = today.gather(where, date(2026, 11, 2), notes=notes, cache=scratch / "no-sync")
@@ -373,6 +375,7 @@ def test_gather_reads_all_of_it():
     assert found.drill is not None and found.drill.trainer != "cards"
     assert found.recent, "the recent notes are empty"
     assert all("thought" not in n.title.lower() for n in found.recent), "the inbox has its own card"
+    assert all("Ingested" != n.title for n in found.recent), "the vault is not what anybody wrote"
     assert found.sync.when is None
 
 
@@ -407,31 +410,63 @@ def test_one_broken_part_does_not_cost_the_rest():
     assert found.inbox and found.drill is not None
 
 
-def test_questions_and_timelines_appear_only_when_their_modules_do():
+def test_a_question_is_due_when_its_day_has_come_and_it_is_still_open():
     where = make_home()
+    folder = where.brain / "questions"
+    write(folder / "due.md", "---\nkind: question\ntitle: Due\nstatus: open\nrevisit: 2026-11-01\n---\n\nq\n")
+    write(folder / "older.md", "---\nkind: question\ntitle: Older\nstatus: living\nrevisit: 2026-01-01\n---\n\nq\n")
+    write(folder / "later.md", "---\nkind: question\ntitle: Later\nstatus: open\nrevisit: 2027-01-01\n---\n\nq\n")
+    write(folder / "done.md", "---\nkind: question\ntitle: Done\nstatus: answered\nrevisit: 2026-01-01\n---\n\nq\n")
+    write(folder / "never.md", "---\nkind: question\ntitle: Never\nstatus: open\n---\n\nq\n")
+    due = today.questions_due(where, date(2026, 11, 2))
+    assert [q.title for q in due] == ["Older", "Due"], [q.title for q in due]
+    assert due[0].path.name == "older.md"
+    shutil.rmtree(folder)
 
-    class Threads:
-        @staticmethod
-        def questions_due(day, places):
-            return [("Is free will compatible?", places.brain / "questions" / "q.md")]
 
-    class Timelines:
-        @staticmethod
-        def on_this_day(day, places):
-            return ["2017: First day at school"]
+def test_on_this_day_is_only_what_happened_on_this_day():
+    where = make_home()
+    board = write(where.brain / "timelines" / "Life.md",
+                  "---\nkind: timeline\ntitle: Life\n---\n\n## Events\n"
+                  "- 2011-11-02 · Exact {family}\n"
+                  "- 2020-11-02 · More recent\n"
+                  "- ~2015-11-02 · Only roughly\n"
+                  "- 2016-11 · No day\n"
+                  "- 2017 · No month\n"
+                  "- 2018-11-03 · Another day\n"
+                  "- 2026-11-02 · Today itself\n"
+                  "- 2027-11-02 · Not yet\n"
+                  "- -0044-11-02 · Long ago\n\n"
+                  "## Spans\n- 2019-11-02 .. · A beginning\n")
+    found = today.on_this_day(where, date(2026, 11, 2))
+    words = [r.title for r in found]
+    assert words == ["6 years ago: More recent", "7 years ago: A beginning",
+                     "15 years ago: Exact", "2069 years ago: Long ago"], words
+    assert found[0].path == board
+    assert today.on_this_day(where, date(2026, 3, 1)) == []
+    shutil.rmtree(where.brain / "timelines")
 
-    kept = today.threads, today.timelines
-    notes = brain.Notes(where, db_path=scratch / "feature.db")
-    try:
-        today.threads, today.timelines = None, None
-        absent = today.gather(where, date(2026, 11, 2), notes=notes, cache=scratch / "no")
-        assert absent.questions is None and absent.on_this_day is None
-        today.threads, today.timelines = Threads, Timelines
-        present = today.gather(where, date(2026, 11, 2), notes=notes, cache=scratch / "no")
-        assert present.questions[0][0] == "Is free will compatible?"
-        assert present.on_this_day == ["2017: First day at school"]
-    finally:
-        today.threads, today.timelines = kept
+
+def test_a_year_ago_is_one_year():
+    where = make_home()
+    write(where.brain / "timelines" / "Life.md",
+          "---\nkind: timeline\ntitle: Life\n---\n\n## Events\n- 2025-11-02 · Last year\n")
+    assert [r.title for r in today.on_this_day(where, date(2026, 11, 2))] == ["1 year ago: Last year"]
+    shutil.rmtree(where.brain / "timelines")
+
+
+def test_gather_brings_questions_and_days_with_it():
+    where = make_home()
+    write(where.brain / "questions" / "q.md",
+          "---\nkind: question\ntitle: Is it?\nstatus: open\nrevisit: 2026-01-01\n---\n\nq\n")
+    write(where.brain / "timelines" / "Life.md",
+          "---\nkind: timeline\ntitle: Life\n---\n\n## Events\n- 2020-11-02 · A thing\n")
+    notes = brain.Notes(where, db_path=scratch / "both.db")
+    found = today.gather(where, date(2026, 11, 2), notes=notes, cache=scratch / "no")
+    assert [q.title for q in found.questions] == ["Is it?"]
+    assert [r.title for r in found.on_this_day] == ["6 years ago: A thing"]
+    shutil.rmtree(where.brain / "questions")
+    shutil.rmtree(where.brain / "timelines")
 
 
 # ------------------------------------------------------------ the window ---
@@ -811,6 +846,19 @@ def test_the_host_has_everything_the_contract_says(app):
     assert window.title_widget.get_subtitle() == "", "the subtitle belongs to one room"
     window.show_room("Fake")
     assert window.title_widget.get_subtitle() == "a thing"
+    host.set_subtitle("")
+    assert window.title_widget.get_subtitle() == ""
+    close(window)
+
+
+def test_saying_what_is_showing_never_moves_anyone(app):
+    from mindpalace.host import Host
+
+    window = fresh(app)
+    window.show_room("Bare")
+    Host(window, "Fake").set_subtitle("Home")
+    assert window.current.spec.title == "Bare", "a room out of sight moved the palace"
+    assert window.title_widget.get_subtitle() == "", "and wrote on someone else's header"
     close(window)
 
 
@@ -934,7 +982,7 @@ def fake_today():
         sync=today.Sync(when=datetime.now() - timedelta(minutes=12)),
         drill=today.Drill("doom-2000", "Doomsday: 2000-2099", "11", "doomsday", 6),
         questions=[("Is free will compatible?", scratch / "q.md")],
-        on_this_day=["2017: First day at school"])
+        on_this_day=[today.Remembered("9 years ago: First day at school")])
 
 
 def _labels(widget):
@@ -980,7 +1028,7 @@ def test_home_says_what_is_waiting(app):
         text = " | ".join(_labels(room.widget))
         for wanted in ("Monday, 2 November", "12", "due", "8", "new today", "2 waiting",
                        "Old thought", "Doomsday: 2000-2099", "doomsday · 6 min · module 11",
-                       "Is free will compatible?", "2017: First day at school",
+                       "Is free will compatible?", "9 years ago: First day at school",
                        "A recent note", "Synced 12 minutes ago"):
             assert wanted in text, f"{wanted!r} not in {text}"
         opened = []

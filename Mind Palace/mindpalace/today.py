@@ -7,14 +7,15 @@ the way that part keeps it — nothing is stored by the palace:
   the decks switched off there left out and the fitted weights used when
   there are any, so the numbers are the ones Mnemosyne would give;
 * **the inbox** — `brain.inbox_items()`, oldest first;
-* **recent notes** — `brain.Notes.recent()`, the index every app shares;
+* **recent notes** — `brain.Notes.recent()`, the index every app shares, and only
+  what is written by hand: the vault is rewritten wholesale by every ingest;
 * **sync** — the state `order sync` writes beside that index;
 * **the day's drill** — one entry of The Mentalist's `drills.yaml`, the
   same one all day;
-* **questions to revisit** and **on this day** — from `threads.py` and
-  `timelines.py`, the brain modules for SYSTEM.md §10 and §11, when they have
-  been vendored in beside this one. Until then those two cards are not shown:
-  the palace reads the brain through the house's modules, not round them.
+* **questions to revisit** — those `threads.py` says are due (SYSTEM.md §10);
+* **on this day** — the events on every timeline board that happened on today's
+  date in an earlier year, from `timelines.py` (SYSTEM.md §11). A date with no
+  day, or a `~` in front of it, did not happen on a day anyone could name.
 
 Each part fails on its own. A broken learning.yaml costs the cards card, not
 Home.
@@ -28,16 +29,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from . import brain, cards
-
-try:                                    # SYSTEM.md §10, once it is in the house
-    from . import threads               # type: ignore[attr-defined]
-except ImportError:                     # pragma: no cover - depends on the checkout
-    threads = None
-try:                                    # SYSTEM.md §11
-    from . import timelines             # type: ignore[attr-defined]
-except ImportError:                     # pragma: no cover
-    timelines = None
+from . import brain, cards, threads, timelines
 
 DRILLS = Path("curricula") / "The Mentalist" / "drills.yaml"
 
@@ -49,6 +41,15 @@ class Drill:
     module: str = ""
     trainer: str = ""
     minutes: int = 0
+
+
+@dataclass
+class Remembered:
+    """Something on a timeline that happened on this date, some years ago."""
+
+    title: str
+    path: Path | None = None
+    years: int = 0
 
 
 @dataclass
@@ -67,8 +68,8 @@ class Today:
     recent: list = field(default_factory=list)          # brain.Note
     sync: Sync = field(default_factory=Sync)
     drill: Drill | None = None
-    questions: list | None = None       # None: no threads module to ask
-    on_this_day: list | None = None     # None: no timelines module to ask
+    questions: list = field(default_factory=list)       # threads.Question, due now
+    on_this_day: list = field(default_factory=list)     # Remembered, most recent first
 
 
 # --------------------------------------------------------------- YAML ----
@@ -245,6 +246,30 @@ def sync_state(cache: Path | None = None) -> Sync:
     return Sync(when=when, failures=failures if isinstance(failures, int) else 0)
 
 
+# ----------------------------------------------------- threads, timelines -
+
+def questions_due(places: brain.Places, day: date) -> list:
+    """The questions it is time to ask again (SYSTEM.md §10), longest overdue first."""
+    due = [question for question in threads.load_questions(places) if question.due(day)]
+    return sorted(due, key=lambda question: question.revisit)
+
+
+def on_this_day(places: brain.Places, day: date) -> list[Remembered]:
+    """What every board says happened on this date in an earlier year, latest first."""
+    found = []
+    for board in timelines.load_boards(places):
+        for item in board.items:
+            when = item.start
+            if when.day != day.day or when.month != day.month or when.approx:
+                continue
+            years = day.year - timelines.astronomical(when.year)
+            if years > 0:
+                unit = "year" if years == 1 else "years"
+                found.append(Remembered(f"{years} {unit} ago: {item.title}",
+                                        board.path, years))
+    return sorted(found, key=lambda remembered: remembered.years)
+
+
 # ---------------------------------------------------------------- ages ---
 
 def age(then: datetime | float, now: datetime | None = None) -> str:
@@ -289,16 +314,8 @@ def gather(places: brain.Places | None = None, day: date | None = None,
 
     try:
         notes = notes or brain.Notes(places)
-        inbox = places.inbox.resolve()
-        recent = []
-        for note in notes.recent(12):
-            try:
-                if note.path.resolve().is_relative_to(inbox):
-                    continue
-            except (OSError, ValueError):
-                pass
-            recent.append(note)
-        today.recent = recent[:6]
+        today.recent = notes.recent(6, under=(
+            places.journal, places.learning, places.studies, places.projects / "Documents"))
     except Exception:  # noqa: BLE001 - an unreadable index costs the recent notes only
         today.recent = []
 
@@ -310,16 +327,12 @@ def gather(places: brain.Places | None = None, day: date | None = None,
     except OSError:
         today.drill = None
 
-    due_questions = getattr(threads, "questions_due", None)
-    if callable(due_questions):
-        try:
-            today.questions = list(due_questions(day, places))
-        except Exception:  # noqa: BLE001
-            today.questions = None
-    remembered = getattr(timelines, "on_this_day", None)
-    if callable(remembered):
-        try:
-            today.on_this_day = list(remembered(day, places))
-        except Exception:  # noqa: BLE001
-            today.on_this_day = None
+    try:
+        today.questions = questions_due(places, day)
+    except Exception:  # noqa: BLE001 - a broken question costs that card only
+        today.questions = []
+    try:
+        today.on_this_day = on_this_day(places, day)
+    except Exception:  # noqa: BLE001
+        today.on_this_day = []
     return today

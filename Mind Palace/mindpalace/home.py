@@ -168,11 +168,17 @@ class HomeRoom:
         card.append(widgets.label(title, "home-card-title"))
         return card
 
-    def _go(self, title: str):
-        return lambda: self.host.show(title)
-
     def _open(self, path):
         return lambda: self.host.open(str(path))
+
+    def _lines(self, card: Gtk.Box, items) -> None:
+        """One line each: a button when there is a file to open, words when not."""
+        for item in items:
+            title, path = _title_and_path(item)
+            if path is not None:
+                card.append(widgets.line_button(title, str(path), self._open(path)))
+            else:
+                card.append(widgets.label(title, wrap=True))
 
     def _cards_card(self, today) -> Gtk.Box:
         card = self._card("Cards")
@@ -190,7 +196,8 @@ class HomeRoom:
             numbers.append(one)
         card.append(numbers)
         if today.due or today.new:
-            button = Gtk.Button(label="Review", halign=Gtk.Align.START, css_classes=["pill"])
+            button = Gtk.Button(label="Review", halign=Gtk.Align.START,
+                                css_classes=["pill", "suggested-action"])
             button.connect("clicked", lambda _b: self.host.show(MNEMOSYNE))
             card.append(button)
         else:
@@ -241,21 +248,14 @@ class HomeRoom:
         if not today.questions:
             return None
         card = self._card("Questions to ask again")
-        for item in today.questions[:4]:
-            title, path = _title_and_path(item)
-            if path is not None:
-                card.append(widgets.line_button(title, str(path), self._open(path)))
-            else:
-                card.append(widgets.label(title, wrap=True))
+        self._lines(card, today.questions[:4])
         return card
 
     def _on_this_day_card(self, today) -> Gtk.Box | None:
         if not today.on_this_day:
             return None
         card = self._card("On this day")
-        for item in today.on_this_day[:5]:
-            title, _path = _title_and_path(item)
-            card.append(widgets.label(title, wrap=True))
+        self._lines(card, today.on_this_day[:5])
         return card
 
     def _recent_card(self, today) -> Gtk.Box | None:

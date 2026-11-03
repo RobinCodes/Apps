@@ -30,9 +30,12 @@ Today at a glance, all of it read off the brain and none of it stored by the pal
 * **The inbox**: how many, how long the oldest has waited, and the oldest few.
 * **Today's drill**: one from The Mentalist's `drills.yaml`, the same one all day, a
   different one tomorrow.
-* **Questions to ask again** and **on this day**, from `threads.py` and `timelines.py`,
-  once those are in the house (below).
-* **Recent notes**, from the index every app shares.
+* **Questions to ask again**: the ones whose `revisit:` date has come.
+* **On this day**: what the timeline boards say happened on this date in an earlier
+  year. A date with no day, or a `~` in front of it, did not happen on a day anyone
+  could name, so it is left out.
+* **Recent notes**, from the index every app shares: what is written by hand, not
+  what an ingest last rewrote.
 * **Sync**: what `order sync` last said, and how long ago.
 
 A card with nothing to say is not drawn: an empty inbox is not news.
@@ -140,12 +143,7 @@ stand-in script.
 | `ask.py` | The panel Claude answers in. |
 | `widgets.py` | The palace's own CSS, and a few small pieces. |
 | `config.py`, `jobs.py`, `winenv.py` | Settings, the worker thread, and what differs on Windows. |
-| `theme.py`, `housestyle.py`, `updater.py`, `brain.py`, `cards.py`, `fsrs.py`, `claude.py` | Vendored from [`house/`](../house/README.md), byte for byte. |
-
-`threads.py` and `timelines.py` are looked for beside these, and the two cards they
-feed are drawn when they are there. Home asks `threads.questions_due(day, places)` and
-`timelines.on_this_day(day, places)`: an iterable each, of strings, of objects with a
-`title` and perhaps a `path`, or of `(title, path)` pairs.
+| `theme.py`, `housestyle.py`, `updater.py`, `brain.py`, `cards.py`, `fsrs.py`, `claude.py`, `frontmatter.py`, `threads.py`, `timelines.py` | Vendored from [`house/`](../house/README.md), byte for byte. |
 
 ## Licence
 

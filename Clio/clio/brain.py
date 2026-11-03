@@ -357,13 +357,22 @@ class Notes:
                 for rel, title, node_id, kind
                 in con.execute("SELECT rel, title, node_id, kind FROM notes ORDER BY title")]
 
-    def recent(self, limit: int = 10) -> list[Note]:
-        """The notes changed most recently, newest first — as of the last refresh."""
+    def recent(self, limit: int = 10, under=()) -> list[Note]:
+        """The notes changed most recently, newest first — as of the last refresh.
+
+        `under` narrows it to the notes below these folders. The vault is rewritten
+        wholesale by every ingest, so "what changed last" across everything is
+        whichever nodes that touched last, not what anybody wrote.
+        """
+        prefixes = [self.places.relative(folder).rstrip("/") + "/" for folder in under]
+        clause = " OR ".join("substr(rel, 1, ?) = ?" for _ in prefixes)
+        args = [value for prefix in prefixes for value in (len(prefix), prefix)]
         con = self._db()
         return [Note(self.places.home / rel, title, rel, node_id, kind)
                 for rel, title, node_id, kind
                 in con.execute("SELECT rel, title, node_id, kind FROM notes "
-                               "ORDER BY mtime DESC, title LIMIT ?", (limit,))]
+                               + (f"WHERE {clause} " if clause else "")
+                               + "ORDER BY mtime DESC, title LIMIT ?", (*args, limit))]
 
     def find(self, text: str, limit: int = 50) -> list[Note]:
         """Notes whose title or name contains every word typed — for a switcher."""

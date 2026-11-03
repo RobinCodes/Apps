@@ -91,7 +91,8 @@ class PalaceWindow(Adw.ApplicationWindow):
         menu.append_section(None, rest)
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
                                        tooltip_text="Main menu"))
-        self.ask_button = Gtk.ToggleButton(icon_name="chat-message-new-symbolic",
+        # A word: every icon for this looks like something else in this window.
+        self.ask_button = Gtk.ToggleButton(label="Ask",
                                            tooltip_text="Ask Claude  (Ctrl+Shift+A)")
         self.ask_button.connect("toggled", self._on_ask_toggled)
         header.pack_end(self.ask_button)

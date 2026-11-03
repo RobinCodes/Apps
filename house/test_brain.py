@@ -348,6 +348,9 @@ def test_the_most_recently_changed_notes_come_first():
     notes.refresh()
     assert [n.title for n in notes.recent()] == ["Today", "Old"]
     assert [n.path for n in notes.recent(1)] == [new]
+    assert [n.title for n in notes.recent(under=[where.studies])] == ["Old"]
+    assert [n.title for n in notes.recent(under=[where.studies, where.journal])] == ["Today", "Old"]
+    assert notes.recent(under=[where.vault]) == []
 
 
 def test_a_refresh_interrupted_half_way_keeps_what_it_read():

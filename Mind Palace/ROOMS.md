@@ -63,8 +63,8 @@ the life of the room.
 | `host.toast(text, undo=None)` | A toast. `undo` is a callable, and adds an Undo button. |
 | `host.open(target) -> bool` | Open a file, a folder, a link or a `scheme:` target wherever it belongs (below). The room asking is not offered it back, so a room can pass on what it declined. |
 | `host.show(title) -> bool` | Go to the room called `title`, ignoring case. `False` if there is none. |
+| `host.set_subtitle(text="")` | What the room is showing, under its title in the header bar. It never moves anyone, so a room may say this while it is out of sight. An addition to the first design: a document's name has to go somewhere. |
 | `host.ask_claude(prompt="", files=())` | Open the palace's Claude panel. With a prompt it asks at once, and the answer streams into the panel. Without `files` it uses the room's `context()`. |
-| `host.set_subtitle(text="")` | What the room is showing, under its title in the header bar. An addition to the first design: a document's name has to go somewhere. |
 
 ## Where a file goes
 
@@ -102,12 +102,13 @@ recipe, as Mnemosyne, The Eye and Fathom all do it:
 3. **The app's own CSS goes on a provider of its own**, or is scoped to the room's
    content. Never install anything that restyles the whole display, and never force
    light or dark: the palace's theme is in force, for every room.
-4. **Swap the `Adw.HeaderBar` for a plain bar of the room's own buttons.**
+4. **Swap the `Adw.HeaderBar` for a plain bar of the room's own buttons.** Fathom's
+   `RoomBar` is twenty lines, and answers the calls a header bar is sent.
 5. **Put the breakpoints on an `Adw.BreakpointBin`** as the room's `widget`, with a size
    request. A window that is never on screen never reaches its breakpoints.
-6. **Insert the window as the content's `"win"` group**, so that every `win.*` the code
-   already says still resolves. Give the same window to the palace as `actions`, and
-   offer its keys as `room.*`.
+6. **Insert the window as the room widget's `"win"` group**, so that every `win.*` the
+   code already says still resolves. Give the same window to the palace as `actions`,
+   and offer its keys as `room.*`.
 7. **Present dialogs on a widget inside the content**, and parent file choosers on that
    widget's root. A dialog presented on a hidden window is a dialog nobody sees.
    Toasts must start from inside the content for the same reason.
