@@ -26,6 +26,10 @@ sys.path.insert(0, str(HERE.parent))
 from order import cli, drive, gitrepo, manifest  # noqa: E402
 
 SCRATCH = Path(tempfile.mkdtemp(prefix="order-test-"))
+# The log, the lock and the state file are the machine's real ones unless told
+# otherwise, and a test must neither write to them nor wait on a real sync's lock.
+os.environ["LOCALAPPDATA"] = str(SCRATCH / "cache")
+os.environ["XDG_CACHE_HOME"] = str(SCRATCH / "cache")
 
 
 def rmtree(path) -> None:
@@ -167,6 +171,25 @@ def test_doctor_names_what_is_out_of_order():
     assert code == 1
     assert "not a repo" in out and "Gamma" in out
     assert "not in manifest" in out and "Stray" in out
+
+
+def test_doctor_reports_a_failing_brain_sync():
+    home = world("doctor-brain", [])
+    logs = home / "SecondBrain" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "sync-status.json").write_text(json.dumps({
+        "ok": False, "failing_since": "2026-10-29T11:17:00+01:00",
+        "why": "GitHub needs you to sign in once"}), encoding="utf-8")
+    code, out = quiet(cli.cmd_doctor, Args())
+    assert code == 1, out
+    assert "FAILING since 2026-10-29" in out and "sign in once" in out, out
+    (logs / "sync-status.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    code, out = quiet(cli.cmd_doctor, Args())
+    assert "FAILING" not in out, out
+
+
+def test_nothing_is_written_outside_the_scratch_folder():
+    assert str(cli.cache()).startswith(str(SCRATCH)), cli.cache()
 
 
 def test_adopting_a_folder_keeps_every_local_file():

@@ -140,6 +140,17 @@ def cmd_doctor(args) -> int:
         print(f"\n  inbox           {len(waiting)} waiting (SYSTEM.md §4.2)")
     state = load_state()
     print(f"\n  last sync       {state.get('last_sync', 'never')}")
+    # The brain's own sync keeps its verdict on disk, because it runs on a timer where
+    # a failure would otherwise be seen by nobody.
+    try:
+        brain_sync = json.loads((manifest.brain() / "logs" / "sync-status.json")
+                                .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        brain_sync = None
+    if brain_sync and not brain_sync.get("ok"):
+        print(f"  brain sync      FAILING since {brain_sync.get('failing_since')}: "
+              f"{brain_sync.get('why')}")
+        problems += 1
     print(f"  timer           {timer.status()}")
     print("\nin order" if problems == 0 else f"\n{problems} thing(s) out of order")
     return 0 if problems == 0 else 1
