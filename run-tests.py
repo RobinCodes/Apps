@@ -119,6 +119,7 @@ def suites():
         ("LaRenderer", os.path.join("LaRenderer", "tests", "test_larenderer.py")),
         ("Mnemosyne", os.path.join("Mnemosyne", "tests", "test_mnemosyne.py")),
         ("Ariadne", os.path.join("Ariadne", "tests", "test_ariadne.py")),
+        ("Clio", os.path.join("Clio", "tests", "test_clio.py")),
         ("Mind Palace", os.path.join("Mind Palace", "tests", "test_mindpalace.py")),
         ("Fathom", os.path.join("Fathom", "tests", "test_fathom.py")),
         ("Hermione", os.path.join("Hermione", "tests", "test_hermione.py")),

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Clio
+GenericName=Timeline boards
+Comment=Timelines to write against: what happened, when, and the periods it belonged to
+Exec=/home/robin/.local/bin/clio %F
+Icon=clio
+Terminal=false
+Categories=Office;Education;
+Keywords=timeline;history;life;events;dates;periods;board;
+StartupNotify=true
+StartupWMClass=com.robin.Clio

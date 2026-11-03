@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Clio. A board, reduced to what makes it one: a line of time on a dark
+       tile, things that happened on it, and the } brace that says which of
+       them belonged together. No letter and no font; the brace is the brightest
+       mark in it, so at 16px it still reads as a line with a bracket under it. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3350"/>
+      <stop offset="1" stop-color="#1e1a2e"/>
+    </linearGradient>
+    <linearGradient id="brace" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffd27a"/>
+      <stop offset="1" stop-color="#e8a33d"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="10" y="12" width="108" height="108" rx="24" fill="#0d1729" opacity="0.18"/>
+  <rect x="10" y="8" width="108" height="108" rx="24" fill="url(#tile)"/>
+
+  <!-- the stems up from the line -->
+  <path d="M38 52 L38 34 M64 52 L64 26 M90 52 L90 38" stroke="#d9d6e8" stroke-width="3"
+        stroke-linecap="round" opacity="0.45"/>
+
+  <!-- the line of time -->
+  <path d="M22 52 L106 52" stroke="#eeecf6" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- what happened; the middle one mattered most -->
+  <circle cx="38" cy="52" r="8" fill="#6fa3d8"/>
+  <circle cx="64" cy="52" r="11" fill="#e0764a"/>
+  <circle cx="90" cy="52" r="8" fill="#86b368"/>
+
+  <!-- the brace that groups them, on its side, pointing down at its name -->
+  <path d="M30 68 C30 79 36 79 42 79 L54 79 C60 79 64 79 64 92 C64 79 68 79 74 79 L86 79 C92 79 98 79 98 68"
+        fill="none" stroke="url(#brace)" stroke-width="6" stroke-linecap="round"
+        stroke-linejoin="round"/>
+</svg>

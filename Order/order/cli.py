@@ -311,6 +311,7 @@ LINUX_APPS = {
     # folder: (launcher inside it, command name, desktop file)
     "Ariadne": ("ariadne.py", "ariadne", "ariadne.desktop"),
     "Claude Program": ("claude-desk", "claude-desk", "claude-desk.desktop"),
+    "Clio": ("clio.py", "clio", "clio.desktop"),
     "Fathom": ("fathom.py", "fathom", "fathom.desktop"),
     "Git Manager": ("git-manager", "git-manager", "git-manager.desktop"),
     "Hermione": ("hermione.py", "hermione", "hermione.desktop"),

@@ -174,6 +174,7 @@ def test_the_library_knows_what_it_wrote_and_what_it_did_not():
     assert library.threads_for(question) == [thread]
     assert library.questions_of(thread) == [question]
     assert library.resolve("compatibilism HOLDS") is not None
+    assert library.on_disk() == library._stamps, "nothing changed: nothing to read again"
     question.add_revisit("closer now", date(2026, 3, 1))
     library.save(question)
     assert not library.changed_elsewhere(question)

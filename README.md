@@ -6,6 +6,7 @@ Windows.
 | | What it is | Windows |
 |---|---|---|
 | [Ariadne](Ariadne/) | The questions worth keeping, and the logical threads that answer them: a canvas of thoughts and arrows | GTK4 via MSYS2 |
+| [Clio](Clio/) | Timelines to write against: what happened, when, and the `}` braces of the periods it belonged to, on one axis from centuries to days | GTK4 via MSYS2 |
 | [Claude Desk](Claude%20Program/) | A native front end for the Claude Code CLI | GTK4 via MSYS2 |
 | [Fathom](Fathom/) | A disk scanner: what is taking up the space, as a tree and as a map | GTK4 via MSYS2 |
 | [Git Manager](Git%20Manager/) | Every git repository on the machine, and the GitHub account behind them | GTK4 via MSYS2 |
@@ -311,6 +312,7 @@ What each suite covers:
 | Mnemosyne | The day's queue — paper, siblings, test dates, decks switched off — sheets and their PDFs, the trainers' arithmetic, the week, the FSRS fitter and the command line, against a scratch home; then the real window driven by its keys, and its content hosted in another window. |
 | Threads, Timelines | The second brain's files read to the letter of its contract, and written back byte for byte when nobody changed them, line for line when somebody did: thoughts, arrows, revisits, events, spans, dates before the common era. |
 | Ariadne | A thought's marks as styled runs, the arrangement of a thread with no layout, what is read out of Claude's answer; then the real view, against a scratch home: keeping and editing questions, drawing and taking away thoughts with an Undo, a file changed elsewhere, ghosts accepted and discarded, and the room hosted in another window. |
+| Clio | The axis from centuries to days, where marks, names and nested braces go at any zoom, what the date fields accept, what is read out of Claude's answer; then the real view, against a scratch home: adding, editing and taking away with an Undo, grouping into a span, filters and the list, a file changed elsewhere, ghosts kept and discarded, and the room hosted in another window. |
 | Fathom | A small filesystem built for the purpose — hardlink, symlink loop, unreadable folder, empty folder — and the totals that come back off it, checked against `du` where there is a `du`. Then the treemap as geometry, and a real window that deletes real files in its own scratch directory. |
 | Notedown | The Markdown parser against documents built to break it — positions, tight and loose lists, tables, footnotes, front matter — then the editing courtesies against a real text buffer, the preview's widget reuse, and a window that opens and saves real files. Also that the window still fits a 455px tiling column. |
 | Lyndon Browser | The filter-list compiler on Linux, the request matcher on Windows, and on both the shared URL handling — address-or-search, first-party grouping, a file named on the command line, and the JavaScript escaping the password manager fills through. |

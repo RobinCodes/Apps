@@ -109,6 +109,11 @@ $Apps = @(
        Icon = 'ariadne.ico'; Svg = 'Ariadneriadne.svg'
        AppId = 'com.robin.Ariadne'
        Comment = 'Keep the questions worth keeping, and think them through as threads' }
+    @{ Name = 'Clio'; Folder = 'Clio'; Entry = 'clio.py'
+       Launcher = 'clio.bat'
+       Icon = 'clio.ico'; Svg = 'Clio\clio.svg'
+       AppId = 'com.robin.Clio'
+       Comment = 'Timelines to write against: what happened, when, and the periods it belonged to' }
     @{ Name = 'Mind Palace'; Folder = 'Mind Palace'; Entry = 'mind-palace.py'
        Launcher = 'mind-palace.bat'
        Icon = 'mind-palace.ico'; Svg = 'Mind Palace\mind-palace.svg'

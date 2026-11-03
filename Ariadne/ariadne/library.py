@@ -27,8 +27,14 @@ def stamp(path) -> tuple[int, int] | None:
     return st.st_mtime_ns, st.st_size
 
 
+def _key(path) -> str:
+    # One spelling per file: a listed folder and a parsed path can disagree about
+    # the slashes on MSYS2's Python, and then nothing would ever look unchanged.
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
 def _same(a, b) -> bool:
-    return os.path.normcase(os.path.abspath(str(a))) == os.path.normcase(os.path.abspath(str(b)))
+    return _key(a) == _key(b)
 
 
 class Library:
@@ -52,7 +58,7 @@ class Library:
     def refresh(self) -> None:
         self.questions = threads.load_questions(self.where)
         self.threads = threads.load_threads(self.where)
-        self._stamps = {str(item.path): stamp(item.path)
+        self._stamps = {_key(item.path): stamp(item.path)
                         for item in [*self.questions, *self.threads]}
 
     def on_disk(self) -> dict[str, tuple[int, int] | None]:
@@ -62,11 +68,11 @@ class Library:
             if folder.is_dir():
                 for file in folder.iterdir():
                     if file.suffix.lower() == ".md" and not file.name.startswith("."):
-                        found[str(file)] = stamp(file)
+                        found[_key(file)] = stamp(file)
         return found
 
     def remember(self, item) -> None:
-        self._stamps[str(item.path)] = stamp(item.path)
+        self._stamps[_key(item.path)] = stamp(item.path)
 
     def save(self, item) -> None:
         """Write a question or a thread, and remember that this was us."""
@@ -90,7 +96,7 @@ class Library:
 
     def changed_elsewhere(self, item) -> bool:
         """Whether the file is no longer the one Ariadne last read or wrote."""
-        return item.path is not None and stamp(item.path) != self._stamps.get(str(item.path))
+        return item.path is not None and stamp(item.path) != self._stamps.get(_key(item.path))
 
     def reread(self, item):
         """A fresh copy of a question or thread from its file, or None if it is gone."""

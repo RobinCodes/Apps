@@ -42,6 +42,7 @@ FILES = ("theme.py", "housestyle.py", "updater.py")
 PACKAGES = {
     "Ariadne": "ariadne",
     "Claude Program": "claudedesk",
+    "Clio": "clio",
     "Fathom": "fathom",
     "Git Manager": "gitmanager",
     "Hermione": "hermione",
@@ -60,7 +61,7 @@ PACKAGES = {
 # to drift.
 BRAIN_FILES = ("brain.py", "cards.py", "fsrs.py", "claude.py",
                "frontmatter.py", "threads.py", "timelines.py")
-BRAIN_APPS = ("Ariadne", "Hermione", "Mind Palace", "Mnemosyne", "Notedown", "The Eye")
+BRAIN_APPS = ("Ariadne", "Clio", "Hermione", "Mind Palace", "Mnemosyne", "Notedown", "The Eye")
 
 # The C app, which takes the palettes as a generated header instead.
 LYNDON_HEADER = os.path.join("Lyndon Browser", "src", "house-themes.h")
