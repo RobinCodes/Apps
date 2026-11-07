@@ -622,7 +622,7 @@ class FilesView(Gtk.ScrolledWindow):
 
     def set_files(self, refs, total: int):
         self._total = total or 1
-        rows = [Row(ref, self._total) for ref in refs]
+        rows = [Row(ref, self._total) for ref in refs if not ref.gone]
         self.store.remove_all()
         # splice in one go: appending five thousand rows one at a time emits
         # five thousand items-changed signals and the view relays out on each.

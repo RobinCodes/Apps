@@ -76,7 +76,7 @@ class Dir:
         "fnames", "fsizes", "fallocs", "fmtimes",
         "size", "alloc", "nfiles", "ndirs",
         "own_size", "own_alloc", "dup_size", "dup_alloc",
-        "self_alloc", "mtime", "unreadable",
+        "self_alloc", "mtime", "unreadable", "generation",
     )
 
     def __init__(self, name: str, parent: "Dir | None"):
@@ -87,6 +87,9 @@ class Dir:
         self.fsizes = array("q")
         self.fallocs = array("q")
         self.fmtimes = array("q")     # seconds; "q" not "i", so 2038 is fine
+        # How many times a file has been taken out of the arrays above, which
+        # moves every file after it down a slot. See FileRef.
+        self.generation = 0
         # Subtree totals, filled in by rollup().
         self.size = 0
         self.alloc = 0
@@ -154,16 +157,41 @@ class Dir:
 class FileRef:
     """One file, made on demand out of its parent's arrays.
 
-    Equality is by position, so a reference held by a list row and one made
-    fresh by the treemap are the same thing — which is what lets clicking a
-    rectangle select the right line.
+    A file is its name in its folder, and the position in the arrays is only
+    where that name was last found. Deleting a file moves every file after it
+    down a slot; a reference made before that would otherwise go on reading the
+    slot it was made with, which by then holds the next file along. So the
+    reference keeps the name, notices from the folder's `generation` that the
+    arrays have moved, and finds its name again. A reference to the file that
+    was deleted finds nothing, and says so: `gone`.
+
+    Equality is by folder and name, so a reference held by a list row and one
+    made fresh by the treemap are the same thing — which is what lets clicking
+    a rectangle select the right line.
     """
 
-    __slots__ = ("parent", "index")
+    __slots__ = ("parent", "_index", "_name", "_generation")
 
     def __init__(self, parent: Dir, index: int):
         self.parent = parent
-        self.index = index
+        self._index = index
+        self._name = parent.fnames[index]
+        self._generation = parent.generation
+
+    @property
+    def index(self) -> int:
+        """Where the file is in its folder's arrays now, or -1 once it is gone."""
+        if self._generation != self.parent.generation:
+            try:
+                self._index = self.parent.fnames.index(self._name)
+            except ValueError:
+                self._index = -1
+            self._generation = self.parent.generation
+        return self._index
+
+    @property
+    def gone(self) -> bool:
+        return self.index < 0
 
     @property
     def is_dir(self) -> bool:
@@ -171,30 +199,33 @@ class FileRef:
 
     @property
     def name(self) -> str:
-        return self.parent.fnames[self.index]
+        return self._name
 
     @property
     def size(self) -> int:
-        return self.parent.fsizes[self.index]
+        index = self.index
+        return self.parent.fsizes[index] if index >= 0 else 0
 
     @property
     def alloc(self) -> int:
-        return self.parent.fallocs[self.index]
+        index = self.index
+        return self.parent.fallocs[index] if index >= 0 else 0
 
     @property
     def mtime(self) -> float:
-        return self.parent.fmtimes[self.index]
+        index = self.index
+        return self.parent.fmtimes[index] if index >= 0 else 0
 
     @property
     def path(self) -> str:
-        return os.path.join(self.parent.path, self.name)
+        return os.path.join(self.parent.path, self._name)
 
     def __eq__(self, other):
         return (isinstance(other, FileRef)
-                and other.parent is self.parent and other.index == self.index)
+                and other.parent is self.parent and other._name == self._name)
 
     def __hash__(self):
-        return hash((id(self.parent), self.index))
+        return hash((id(self.parent), self._name))
 
 
 class Progress:
@@ -501,6 +532,8 @@ def remove_file(ref: FileRef) -> tuple[int, int]:
     del parent.fsizes[index]
     del parent.fallocs[index]
     del parent.fmtimes[index]
+    # Every file after it has moved down a slot: references find their names again.
+    parent.generation += 1
     parent.own_size -= size
     parent.own_alloc -= alloc
     parent.size -= size

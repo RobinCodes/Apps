@@ -237,6 +237,39 @@ def test_deleting_takes_the_size_out_of_every_folder_above_it():
     assert root.find("empty") is not None
 
 
+def test_a_deleted_file_leaves_every_other_reference_on_its_own_file():
+    """Deleting a file moves the files after it down a slot in the arrays.
+
+    Every reference made before that — a row in the biggest-files list, the
+    selection, a treemap cell — must go on meaning the file it was made for.
+    """
+    where = os.path.join(scratch, "stale")
+    os.makedirs(where, exist_ok=True)
+    for name, size in (("a.bin", 9000), ("b.bin", 7000), ("c.bin", 5000), ("d.bin", 3000)):
+        write(os.path.join(where, name), size)
+    root = scan.Scan(where).run().root
+    refs = {ref.name: ref for ref in scan.largest_files(root)}
+    before = {name: (ref.size, ref.alloc) for name, ref in refs.items()}
+    doomed = refs["b.bin"]
+    assert doomed.index < refs["c.bin"].index < refs["d.bin"].index, "the test needs later files"
+
+    scan.remove_file(doomed)
+
+    assert doomed.gone and doomed.size == 0 and doomed.alloc == 0
+    for name in ("a.bin", "c.bin", "d.bin"):
+        ref = refs[name]
+        assert not ref.gone, name
+        assert root.fnames[ref.index] == name, (name, ref.index, root.fnames)
+        assert (ref.size, ref.alloc) == before[name], name
+    # A reference made after the delete is the same file as one made before it.
+    fresh = [ref for ref in root.files() if ref.name == "d.bin"][0]
+    assert fresh == refs["d.bin"] and hash(fresh) == hash(refs["d.bin"])
+    assert doomed not in list(root.files())
+    # Sorting them, as the list does, reads every one without an IndexError.
+    ordered = sorted((r for r in refs.values() if not r.gone), key=lambda r: r.alloc)
+    assert [r.name for r in ordered] == ["d.bin", "c.bin", "a.bin"]
+
+
 def test_the_biggest_files_come_back_biggest_first():
     where = make_tree(os.path.join(scratch, "largest"))
     root = scan.Scan(where).run().root
@@ -432,6 +465,10 @@ def test_deleting_from_the_window_updates_the_numbers(app):
     films = root.find("films")
     window.tree.select_node(films)          # builds the child store
     target = [ref for ref in films.files() if ref.name == "a.mkv"][0]
+    # The biggest-files list, as _load_extras fills it on its worker.
+    biggest = scan.largest_files(root)
+    window._top_files = list(biggest)
+    window.files.set_files(biggest, root.alloc)
 
     os.unlink(target.path)
     window._forget(target)
@@ -443,6 +480,14 @@ def test_deleting_from_the_window_updates_the_numbers(app):
     store = window.tree.store_for(films)
     remaining = [store.get_item(i).node.name for i in range(store.get_n_items())]
     assert remaining == ["b.mkv"], remaining
+    # The biggest-files list held its own references, made before the delete.
+    listed = [window.files.store.get_item(i).node for i in range(window.files.store.get_n_items())]
+    assert len(listed) == len(biggest) - 1, (len(listed), len(biggest))
+    assert "b.mkv" in [ref.name for ref in listed], "the file after the deleted one is still listed"
+    for ref in listed:
+        assert not ref.gone and os.path.isfile(ref.path), ref.path
+        assert ref.parent.fnames[ref.index] == ref.name, ref.name
+    assert all(ref != target for ref in window._top_files)
     window.destroy()
 
 
@@ -731,6 +776,8 @@ def main():
         check("a Windows scan goes below the top", test_a_windows_scan_goes_below_the_top)
     check("deleting takes the size out of every folder above it",
           test_deleting_takes_the_size_out_of_every_folder_above_it)
+    check("a deleted file leaves every other reference on its own file",
+          test_a_deleted_file_leaves_every_other_reference_on_its_own_file)
     check("the biggest files come back biggest first",
           test_the_biggest_files_come_back_biggest_first)
     check("extensions are added up", test_extensions_are_added_up)

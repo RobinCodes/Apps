@@ -828,14 +828,10 @@ class MainWindow(Adw.ApplicationWindow):
                 position = len(parent.subdirs) + index
                 if position < store.get_n_items():
                     store.remove(position)
-                # Every file after the one that went has moved down a slot in
-                # the parent's arrays, and the rows still point at the old
-                # positions.
-                for slot in range(position, store.get_n_items()):
-                    row = store.get_item(slot)
-                    if isinstance(row.node, scan.FileRef):
-                        row.node.index -= 1
+            # Nothing else to correct: every other reference to a file in this
+            # folder finds its own name again (scan.FileRef).
             self.files.remove(node)
+            self._top_files = [ref for ref in self._top_files if ref != node]
 
         if node is self._selected:
             self._selected = None
