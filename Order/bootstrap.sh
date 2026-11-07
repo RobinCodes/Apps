@@ -48,8 +48,23 @@ echo "  $name"
 
 say "the apps and the brain"
 apps="$HOME/Projects/Programming/Apps"
+brain="$HOME/SecondBrain"
 [ -d "$apps/.git" ] || git clone https://github.com/RobinCodes/Apps.git "$apps"
-[ -d "$HOME/SecondBrain/.git" ] || git clone https://github.com/RobinCodes/SecondBrain.git "$HOME/SecondBrain"
+if [ -d "$brain/.git" ]; then
+    # A brain that predates the Order has no remote, and one that predates the
+    # 2026-11-07 history rewrite cannot simply pull. Either way it joins GitHub's
+    # history with `anam rejoin`, run from the new code (the old anam lacks it),
+    # which keeps every file of this machine's own work.
+    git -C "$brain" remote get-url origin >/dev/null 2>&1 || \
+        git -C "$brain" remote add origin https://github.com/RobinCodes/SecondBrain.git
+    git -C "$brain" fetch -q origin
+    fresh="$(mktemp -d)"
+    git -C "$brain" archive origin/main anam.py tools | tar -x -C "$fresh"
+    ANAM_HOME="$brain" python3 "$fresh/anam.py" rejoin
+    rm -r "$fresh"
+else
+    git clone https://github.com/RobinCodes/SecondBrain.git "$brain"
+fi
 
 say "every repository in the manifest"
 python3 "$apps/Order/order.py" adopt || true
