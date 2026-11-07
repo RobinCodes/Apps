@@ -63,13 +63,16 @@ ROOM_SCOPE = "the-eye-room"
 
 
 def guard_typing(window: Gtk.Window):
-    """Move `window`'s application shortcuts after a focused text field.
+    """Move `window`'s application shortcuts after a focused field or slider.
 
-    While a text field has the focus the window's own shortcut controller is
-    moved to the bubble phase, after the field; everywhere else nothing
-    changes, so Space still plays with a button focused. Returns the
-    controller, or None when GTK names it differently — and then this does
-    nothing, which is how things were. Safe to call twice on one window.
+    While a text field or a slider has the focus the window's own shortcut
+    controller is moved to the bubble phase, after it: a slider wants the arrow
+    keys, Page Up and Down, Home and End for itself, as a text field wants the
+    letters. Whatever the field does not take still reaches the shortcuts,
+    later. Everywhere else nothing changes, so Space still plays with a button
+    focused. Returns the controller, or None when GTK names it differently —
+    and then this does nothing, which is how things were. Safe to call twice
+    on one window.
     """
     found = getattr(window, "_the_eye_typing", None)
     if found is not None:
@@ -87,7 +90,7 @@ def guard_typing(window: Gtk.Window):
         return None
 
     def moved(*_args):
-        typing = isinstance(window.get_focus(), (Gtk.Text, Gtk.TextView))
+        typing = isinstance(window.get_focus(), (Gtk.Text, Gtk.TextView, Gtk.Range))
         controller.set_propagation_phase(
             Gtk.PropagationPhase.BUBBLE if typing else Gtk.PropagationPhase.CAPTURE)
 

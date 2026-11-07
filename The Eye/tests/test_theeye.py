@@ -593,6 +593,21 @@ def test_shortcut_table_is_coherent():
     assert shortcuts.pretty("Left") == "←"
 
 
+def test_every_key_is_one_gtk_can_read():
+    """A key GTK cannot parse costs every other key of that action as well.
+
+    `set_accels_for_action` refuses the whole list, with a Gtk-CRITICAL nobody
+    sees: Page Up, Page Down, Home and End were written in angle brackets, and
+    took `n` and `p` down with them.
+    """
+    for action, pressed, _label, _group, _scope in shortcuts.SHORTCUTS:
+        for key in pressed:
+            ok, keyval, _mods = Gtk.accelerator_parse(key)
+            assert ok and keyval, f"{key!r} for {action or 'the help'} is not a key GTK can read"
+    assert shortcuts.pretty("Page_Down") == "Page Down"
+    assert shortcuts.pretty("Home") == "Home"
+
+
 def test_window_installs_every_shortcut_action():
     """A key bound to an action that does not exist does nothing, silently."""
     source = open(os.path.join(ROOT, "theeye", "window.py"),
@@ -1782,6 +1797,50 @@ class _Host:
         pass
 
 
+def test_a_focused_slider_keeps_its_keys():
+    """Page Up and Down, Home and End move a slider, and a picture only elsewhere."""
+    from theeye import window as windowing
+
+    app = Gtk.Application(application_id="com.robin.TheEyeTestSlider")
+    trouble = []
+
+    def ready(_app):
+        window = Gtk.ApplicationWindow(application=app)
+        # Everything inside the try: a test that raises must still quit the app,
+        # or the suite waits for it for ever.
+        try:
+            app.set_accels_for_action("win.first", ["Home"])
+            box = Gtk.Box()
+            scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 10, 1)
+            button = Gtk.Button(label="x")
+            entry = Gtk.Entry()
+            for widget in (scale, button, entry):
+                box.append(widget)
+            window.set_child(box)
+            controller = windowing.guard_typing(window)
+            if controller is None:
+                trouble.append("the window's application shortcuts were not found")
+                return
+            window.present()
+            for widget, want, what in ((scale, Gtk.PropagationPhase.BUBBLE, "a slider"),
+                                       (button, Gtk.PropagationPhase.CAPTURE, "a button"),
+                                       (entry, Gtk.PropagationPhase.BUBBLE, "a text field")):
+                widget.grab_focus()
+                _pump_until(lambda: False, 0.05)
+                if controller.get_propagation_phase() != want:
+                    trouble.append(f"with {what} focused the shortcuts run in "
+                                   f"{controller.get_propagation_phase()}, not {want}")
+        except Exception as exc:                        # noqa: BLE001
+            trouble.append(f"{type(exc).__name__}: {exc}")
+        finally:
+            window.destroy()
+            app.quit()
+
+    app.connect("activate", ready)
+    app.run([])
+    assert not trouble, trouble
+
+
 def test_the_eye_is_a_room_of_the_palace():
     """Built the way the palace builds it: the content in someone else's window."""
     from theeye import room as rooms
@@ -1913,6 +1972,7 @@ def main():
         ("deleting leaves you on the next one",
          test_removing_leaves_you_on_the_next_one),
         ("the keyboard table is coherent", test_shortcut_table_is_coherent),
+        ("every key is one GTK can read", test_every_key_is_one_gtk_can_read),
         ("every bound action exists",
          test_window_installs_every_shortcut_action),
         ("the helpers", test_helpers),
@@ -2079,6 +2139,7 @@ def main():
         print("\n-- a room of the Mind Palace " + "-" * 31)
         check("the stylesheet can be kept to one room",
               test_the_stylesheet_can_be_kept_to_one_room)
+        check("a focused slider keeps its keys", test_a_focused_slider_keeps_its_keys)
         needs_media("The Eye is a room of the palace",
                     test_the_eye_is_a_room_of_the_palace, "test.png", "clip.srt")
 

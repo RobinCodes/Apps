@@ -24,10 +24,12 @@ from __future__ import annotations
 # does not apply, which is usually nothing.
 SHORTCUTS: list[tuple[str, tuple, str, str, str]] = [
     # Moving through the folder
-    ("win.next", ("<Page_Down>", "n"), "Next", "Moving", "all"),
-    ("win.previous", ("<Page_Up>", "p"), "Previous", "Moving", "all"),
-    ("win.first", ("<Home>",), "First", "Moving", "all"),
-    ("win.last", ("<End>",), "Last", "Moving", "all"),
+    # Key names bare: angle brackets are for modifiers, and GTK refuses an
+    # action's whole list if one key in it does not parse.
+    ("win.next", ("Page_Down", "n"), "Next", "Moving", "all"),
+    ("win.previous", ("Page_Up", "p"), "Previous", "Moving", "all"),
+    ("win.first", ("Home",), "First", "Moving", "all"),
+    ("win.last", ("End",), "Last", "Moving", "all"),
     ("", ("Right", "Left"), "Next and previous picture, or seek in a video",
      "Moving", "all"),
     ("win.open", ("<Control>o",), "Open a file", "Moving", "all"),
