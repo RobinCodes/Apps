@@ -57,7 +57,8 @@ class Room:
     def __init__(self, host):
         self.host = host
         self.config = Config()
-        style.install_room(self.config, housestyle.system_is_dark())
+        # In the palace's theme, which is the one in force: see style.room_scheme.
+        style.update(self.config, housestyle.system_is_dark(), hosted=True)
         housestyle.system().watch(
             lambda dark: style.update(self.config, dark, hosted=True))
 
@@ -133,6 +134,11 @@ class Room:
     def can_close(self) -> bool:
         """Not while a copy, a move or anything else is still running."""
         return not self.window.jobs
+
+    def restyle(self) -> None:
+        """The palace's theme or glass has changed: the sheet and the light again."""
+        style.update(self.config, housestyle.system_is_dark(), hosted=True)
+        self.window._relight()
 
     def shutdown(self) -> None:
         """For a palace that closes a room before quitting."""

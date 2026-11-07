@@ -1340,8 +1340,9 @@ class MainWindow(Adw.ApplicationWindow):
         settings change — the texture is cached per theme, so this is a
         dictionary lookup in the common case.
         """
-        self.slab.set_light(style.scheme_for(self.config, _is_dark()),
-                            float(self.config["translucency"]),
+        scheme = style.room_scheme() if self.hosted else style.scheme_for(
+            self.config, _is_dark())
+        self.slab.set_light(scheme, float(self.config["translucency"]),
                             bool(self.config["glass"]))
 
     def _setting_changed(self, key: str) -> None:

@@ -109,6 +109,10 @@ class Room:
             return False
         return not self.window.importer.filer.busy()
 
+    def restyle(self):
+        """The palace's theme or glass has changed: draw in it."""
+        self.window.restyle()
+
     def shutdown(self):
         """Put the player away — for a palace that closes a room before quitting."""
         self.save_state()

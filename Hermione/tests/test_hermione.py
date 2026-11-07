@@ -2022,6 +2022,30 @@ def test_hermione_is_a_room_of_the_palace(app):
         palace.set_focus(second.view.widget)
         assert room.window.current_pane() is second, "the room ignores the palace's focus"
 
+        # The palace's theme is the one the room is drawn in, whatever Hermione's
+        # own setting says, and a change there reaches it through restyle().
+        import importlib
+
+        checkout = os.path.dirname(ROOT)
+        sys.path.append(checkout)
+        try:
+            palace_style = importlib.import_module("house.housestyle")
+            from hermione import theme as hermione_themes
+
+            drawn = []
+            kept = style.install_room
+            style.install_room = lambda config, dark=True, scheme=None: drawn.append(scheme)
+            try:
+                for key in ("moss", "porcelain"):
+                    palace_style.install(hermione_themes.get(key))
+                    room.restyle()
+                    assert drawn and drawn[-1] is not None and drawn[-1].key == key, \
+                        f"the room drew in {drawn[-1] and drawn[-1].key}, not {key}"
+            finally:
+                style.install_room = kept
+        finally:
+            sys.path.remove(checkout)
+
         assert room.can_close()
         room.window.jobs.append(object())
         assert not room.can_close(), "the room would close in the middle of a copy"

@@ -133,6 +133,12 @@ class PalaceWindow(Adw.ApplicationWindow):
         self.ask_panel = AskPanel(self, command=ask_command)
         self.glazing.overlay.add_overlay(self.ask_panel)
 
+        # After the glazing's own listener, and on an idle, so that every room
+        # restyles after the palace's theme has changed, never before it.
+        self._watching = lambda _dark: GLib.idle_add(self._restyle_rooms)
+        housestyle.system().watch(self._watching)
+        self.connect("destroy", lambda *_: housestyle.system().unwatch(self._watching))
+
         narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.new_length(
             Adw.BreakpointConditionLengthType.MAX_WIDTH, NARROW, Adw.LengthUnit.PX))
         narrow.add_setter(self.split, "collapsed", True)
@@ -298,6 +304,25 @@ class PalaceWindow(Adw.ApplicationWindow):
     def toggle_sidebar(self) -> None:
         self.split.set_show_sidebar(not self.split.get_show_sidebar())
 
+    # ---------------------------------------------------------------- theme --
+
+    def restyle(self) -> None:
+        """The Look page changed something: the palace's theme, then every room's."""
+        self.glazing.restyle()
+        self._restyle_rooms()
+
+    def _restyle_rooms(self) -> bool:
+        """Tell every room built so far that the theme or the glass has changed.
+
+        A room that draws with `housestyle.current()` reads the palace's theme
+        already; `restyle()` is for the ones that keep colours of their own.
+        """
+        for slot in self.slots.values():
+            method = getattr(slot.room, "restyle", None)
+            if slot.room is not None and callable(method):
+                _quietly(method)
+        return GLib.SOURCE_REMOVE
+
     # ------------------------------------------------------------- routing --
 
     def open_target(self, target: str, source: str | None = None) -> bool:
@@ -407,7 +432,7 @@ class PalaceWindow(Adw.ApplicationWindow):
 
     def show_preferences(self) -> None:
         dialog = Adw.PreferencesDialog(title="Preferences")
-        dialog.add(housestyle.look_page(self.config, self.glazing.restyle))
+        dialog.add(housestyle.look_page(self.config, self.restyle))
         page = Adw.PreferencesPage(title="The palace", icon_name="go-home-symbolic")
         group = Adw.PreferencesGroup(title="Opening")
         again = Adw.SwitchRow(title="Come back to the last room",

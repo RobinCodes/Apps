@@ -991,7 +991,7 @@ def scheme_for(config, dark: bool) -> theming.Theme:
     return theming.get(config["theme"])
 
 
-def _numbers(config, dark: bool) -> dict:
+def _numbers(config, dark: bool, scheme: theming.Theme | None = None) -> dict:
     """The template's holes, filled from the settings and the theme.
 
     Dark and light want different glass. On a dark theme the rim and the sheen
@@ -1010,7 +1010,7 @@ def _numbers(config, dark: bool) -> dict:
     blur = int(config["glass_blur"]) if config["glass"] else 0
     radius = int(config["rounding"])
     row = {"compact": 26, "normal": 32, "roomy": 40}.get(config["row_height"], 32)
-    scheme = scheme_for(config, dark)
+    scheme = scheme or scheme_for(config, dark)
     dark = scheme.dark
 
     blur_rule = (f"backdrop-filter: blur({blur}px) saturate(145%);"
@@ -1129,7 +1129,8 @@ def install(config, dark: bool = True) -> Gtk.CssProvider | None:
 
 def update(config, dark: bool = True, hosted: bool = False) -> None:
     if hosted:
-        install_room(config, dark)
+        # The palace's theme, not this app's setting: see room_scheme.
+        install_room(config, dark, room_scheme())
     else:
         install(config, dark)
 
@@ -1176,26 +1177,37 @@ def scoped(css: str, scope: str) -> str:
     return "\n".join(rules) + "\n"
 
 
-def room_css(config, dark: bool = True) -> str:
+def room_scheme() -> theming.Theme:
+    """The theme in force in the palace, which is the one a room is drawn in.
+
+    The palace installs the house sheet; this copy of the house style reads the
+    theme it installed (`housestyle.current`). This app's own theme setting is
+    for its own window.
+    """
+    return housestyle.current()
+
+
+def room_css(config, dark: bool = True, scheme: theming.Theme | None = None) -> str:
     """The app's own rules, without the palette, kept inside the room.
 
     The palace defines the house palette; the one colour of it these rules
     use by name, the glass, is written in as a value instead, so the room
     looks the same whoever defined what.
     """
-    scheme = scheme_for(config, dark)
-    rules = (TEMPLATE % _numbers(config, dark)
+    scheme = scheme or scheme_for(config, dark)
+    rules = (TEMPLATE % _numbers(config, dark, scheme)
              + _category_rules(bool(config["colour_icons"]), scheme.dark)
              + _vcs_rules())
     return scoped(rules.replace("@house_glass", scheme.glass), ROOM_SCOPE)
 
 
-def install_room(config, dark: bool = True) -> Gtk.CssProvider | None:
+def install_room(config, dark: bool = True,
+                 scheme: theming.Theme | None = None) -> Gtk.CssProvider | None:
     global _room_provider
     display = Gdk.Display.get_default()
     if display is None:
         return None
-    text = room_css(config, dark)
+    text = room_css(config, dark, scheme)
     if _room_provider is None:
         _room_provider = Gtk.CssProvider()
         _room_provider.load_from_string(text)

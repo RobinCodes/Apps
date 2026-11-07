@@ -1889,6 +1889,21 @@ def test_the_eye_is_a_room_of_the_palace():
                 trouble.append("Escape tried to close the window the room lives in")
             if not room.can_close():
                 trouble.append("an idle room would not let itself be closed")
+            # The palace's theme is the one the room draws in, and a change there
+            # reaches it through restyle(), whatever The Eye's own setting says.
+            import importlib
+
+            checkout = os.path.dirname(ROOT)
+            sys.path.append(checkout)
+            try:
+                palace_style = importlib.import_module("house.housestyle")
+                for key in ("moss", "porcelain"):
+                    palace_style.install(theme.get(key))
+                    room.restyle()
+                    if room.window.scheme.key != key:
+                        trouble.append(f"the room drew in {room.window.scheme.key}, not {key}")
+            finally:
+                sys.path.remove(checkout)
             room.save_state()
             if rooms.guard_typing(palace) is not rooms.guard_typing(palace):
                 trouble.append("the palace's window was guarded twice")

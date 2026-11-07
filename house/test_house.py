@@ -203,6 +203,40 @@ def test_the_sheet_parses_for_every_theme():
     assert not problems, "\n".join(problems)
 
 
+def test_every_copy_of_the_house_style_agrees_on_the_theme():
+    """In Mind Palace one copy installs the sheet and another app's copy draws.
+
+    A room asking its own vendored `housestyle.current()` must get the theme the
+    palace installed, not its copy's default.
+    """
+    if not have_gtk():
+        print("  skipped (no GTK bindings)")
+        return
+    import importlib
+
+    import gi
+
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Gdk", "4.0")
+    from gi.repository import Gdk, Gtk
+
+    if not Gtk.init_check() or Gdk.Display.get_default() is None:
+        print("  skipped (no display)")
+        return
+    from house import housestyle                        # noqa: PLC0415
+
+    sys.path.insert(0, os.path.join(ROOT, "Fathom"))
+    other = importlib.import_module("fathom.housestyle")
+    assert other is not housestyle, "the test needs two copies"
+    try:
+        for key in ("moss", "porcelain"):
+            housestyle.install(theming.get(key))
+            assert other.current().key == key, (key, other.current().key)
+            assert housestyle.current().key == key
+    finally:
+        sys.path.remove(os.path.join(ROOT, "Fathom"))
+
+
 def test_the_sheet_names_every_colour_it_uses():
     """Every `@house_*` the sheet reaches for is one the palette defines.
 
@@ -257,6 +291,8 @@ TESTS = (
      test_a_settings_mapping_saves_through_its_owner),
     ("the sheet parses for every theme", test_the_sheet_parses_for_every_theme),
     ("the sheet names every colour it uses", test_the_sheet_names_every_colour_it_uses),
+    ("every copy of the house style agrees on the theme",
+     test_every_copy_of_the_house_style_agrees_on_the_theme),
     ("every app has the same house style", test_every_app_has_the_same_house_style),
 )
 

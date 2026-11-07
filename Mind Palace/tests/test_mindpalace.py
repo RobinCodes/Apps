@@ -501,6 +501,7 @@ class Room:
         self.seen = 0
         self.gone = 0
         self.files = []
+        self.restyled = 0
 
     def open(self, path):
         if str(path).endswith(".declined.fake"):
@@ -525,6 +526,9 @@ class Room:
 
     def context(self):
         return self.files
+
+    def restyle(self):
+        self.restyled += 1
 
 
 def build(host):
@@ -1208,6 +1212,34 @@ def test_with_no_claude_the_panel_says_so(app):
         assert window.ask_panel.request is None
     finally:
         ask.claude.available = kept
+    close(window)
+
+
+def test_a_theme_changed_in_the_palace_reaches_every_room(app):
+    """The palace's theme is the one in force, in every room, and they are told."""
+    import importlib
+
+    checkout = os.path.dirname(ROOT)
+    sys.path.append(checkout)
+    other = importlib.import_module("house.housestyle")  # another copy, as a room has
+    window = fresh(app)
+    window.show_room("Fake")
+    room = window.slots["Fake"].room
+    try:
+        for key in ("moss", "porcelain"):
+            window.config["follow_system"] = False
+            window.config["theme"] = key
+            window.restyle()
+            assert other.current().key == key, (key, other.current().key)
+        assert room.restyled == 2, room.restyled
+        # The desktop turning light or dark reaches the rooms too, after the palace.
+        window._watching(True)
+        pump(50)
+        assert room.restyled == 3, room.restyled
+    finally:
+        sys.path.remove(checkout)
+        window.config["follow_system"] = True
+        window.config.save()
     close(window)
 
 

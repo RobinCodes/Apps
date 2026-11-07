@@ -50,6 +50,7 @@ These are optional too, and came out of the rooms built so far:
 | `shutdown()` | Put away what has to be put away (a player, say). Called after `save_state` as the palace closes. |
 | `shown()`, `hidden()` | The room has come into view, or left it. A good moment to read things again. |
 | `context() -> [path]` | The files the room is showing. Ask Claude is about these unless told otherwise. |
+| `restyle()` | The palace's theme or glass has changed: the Look page, or the desktop turning light or dark. For a room that keeps colours of its own. |
 
 ## The host
 
@@ -101,7 +102,10 @@ recipe, as Mnemosyne, The Eye and Fathom all do it:
    palace has the glass and the house sheet, and `Glazing` would replace them.
 3. **The app's own CSS goes on a provider of its own**, or is scoped to the room's
    content. Never install anything that restyles the whole display, and never force
-   light or dark: the palace's theme is in force, for every room.
+   light or dark: the palace's theme is in force, for every room. A room asks its own
+   copy of `housestyle.current()` which theme that is: the house keeps the theme the
+   palace installed where every copy can see it. Colours a room works out for itself
+   from a theme are worked out again in `restyle()`.
 4. **Swap the `Adw.HeaderBar` for a plain bar of the room's own buttons.** Fathom's
    `RoomBar` is twenty lines, and answers the calls a header bar is sent.
 5. **Put the breakpoints on an `Adw.BreakpointBin`** as the room's `widget`, with a size

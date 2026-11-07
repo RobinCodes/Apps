@@ -591,11 +591,20 @@ _current: theming.Theme | None = None
 
 
 def current() -> theming.Theme:
-    """Whichever theme the sheet was last installed from.
+    """Whichever theme the sheet was last installed from — by any copy of this file.
+
+    Every app vendors its own copy, and in Mind Palace several share a process
+    while only the palace installs the sheet. A room that draws with `current()`
+    has to get the palace's theme, not its own copy's idea of the default, so
+    `install()` also leaves the theme on the display, where every copy looks.
 
     The house default before anything has been installed, so a widget built
     during startup draws in a real palette rather than crashing on None.
     """
+    display = Gdk.Display.get_default()
+    shared = getattr(display, "house_theme", None) if display is not None else None
+    if shared:
+        return theming.get(shared)
     return _current or theming.get(theming.DEFAULT)
 
 
@@ -668,6 +677,8 @@ def install(scheme: theming.Theme, extra: str = "", translucency: float = 1.0,
     display = display or Gdk.Display.get_default()
     if display is None:
         return None
+    # For every other copy of this file in the process — see `current()`.
+    display.house_theme = scheme.key
     text = sheet(scheme, translucency, window_radius, blur, glass)
     if extra:
         text += extra

@@ -2051,8 +2051,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         Not always the `theme` setting: with `follow_system` on the desktop
         picks which of the house pair it is, and `theme` is only what the
-        cycle key and the preferences last chose for themselves.
+        cycle key and the preferences last chose for themselves. Hosted in the
+        palace, it is the palace's: the house keeps the theme the palace
+        installed where this copy of the house style can read it.
         """
+        if self.hosted:
+            return housestyle.current().key
         if self.config["follow_system"]:
             if housestyle.system_is_dark():
                 return self.config["dark_theme"]
@@ -2061,8 +2065,12 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _follow_system(self):
         """The desktop changed its mind, and we are following it."""
-        if not self.config["follow_system"]:
+        if not self.config["follow_system"] and not self.hosted:
             return
+        self.restyle()
+
+    def restyle(self):
+        """Draw in whichever theme is in force now."""
         self.scheme = theming.get(self._theme_key())
         self._apply_theme()
 
