@@ -352,6 +352,18 @@ def test_the_canvas_finds_what_is_under_the_pointer(view):
     assert abs(canvas.to_world(*canvas.to_screen(33, 44))[0] - 33) < 1e-6
 
 
+def test_a_folder_that_cannot_be_read_just_now_is_read_later(view):
+    def refused():
+        raise PermissionError(5, "Access is denied")
+
+    view.library.on_disk = refused
+    try:
+        view.check_disk()            # no exception: it is a moment, not a failure
+    finally:
+        del view.library.on_disk
+    view.check_disk()
+
+
 def test_a_file_changed_elsewhere_is_read_again(view):
     clear_brain()
     path = write("threads/Compatibilism holds.md", THREAD)
@@ -483,7 +495,7 @@ def test_nothing_is_cut_off_where_it_has_room(view_app):
 
     clear_brain()
     path = write("questions/Free will.md", QUESTION)
-    for width in (455, 700, 781, 1100):
+    for width in (360, 455, 700, 781, 1100):
         view = AriadneView()
         shell = Adw.ApplicationWindow(application=view_app, default_width=width,
                                       default_height=520)

@@ -749,7 +749,12 @@ class ClioView(Adw.BreakpointBin):
 
     def check_disk(self):
         """Read again whatever changed on disk, keeping what is on screen in step."""
-        if self.library.on_disk() == self.library._stamps:
+        try:
+            if self.library.on_disk() == self.library._stamps:
+                return
+        except OSError:
+            # A folder can refuse to be listed for a moment on Windows, while a
+            # virus scanner or a sync client has it. The next look will see it.
             return
         current = self.current
         elsewhere = current is not None and self.library.changed_elsewhere(current)

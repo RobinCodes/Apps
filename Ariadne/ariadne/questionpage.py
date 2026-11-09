@@ -87,7 +87,10 @@ class QuestionPage(Gtk.Box):
                                    css_classes=["boxed-list"])
         self.threads.connect("row-activated", lambda _l, row: view.open_item(row._thread))
         body.append(self.threads)
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        # They wrap: side by side they are 430 pixels, more than a narrow room has.
+        wrap = getattr(Adw, "WrapBox", None)
+        buttons = wrap(child_spacing=6, line_spacing=6) if wrap is not None \
+            else Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         start = Gtk.Button(label="New Thread")
         start.connect("clicked", lambda _b: view.new_thread(self.question))
         buttons.append(start)

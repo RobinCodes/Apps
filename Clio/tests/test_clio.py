@@ -826,6 +826,21 @@ def test_an_empty_board_can_be_drawn(view):
     pump(30)
 
 
+def test_a_folder_that_cannot_be_read_just_now_is_read_later(view):
+    open_board(view)
+
+    def refused():
+        raise PermissionError(5, "Access is denied")
+
+    view.library.on_disk = refused
+    try:
+        view.check_disk()            # no exception: it is a moment, not a failure
+    finally:
+        del view.library.on_disk
+    assert view.current is not None
+    view.check_disk()
+
+
 def test_a_file_changed_elsewhere_is_read_again(view):
     path, board = open_board(view)
     view.canvas.fly(days_from_civil(2020, 1, 1), 0.5, glide=False)
