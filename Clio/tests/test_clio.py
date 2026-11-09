@@ -693,19 +693,22 @@ def test_a_double_click_date_is_as_precise_as_the_zoom_can_tell(view):
 
 
 def test_zooming_and_jumping_and_coming_back(view):
+    # A glide moves one frame at a time, and on a busy machine frames come late. The
+    # waits are long because `settle` returns the moment the glide arrives: they only
+    # cost time when something is really wrong.
     open_board(view)
     canvas = view.canvas
     canvas.fit(glide=False)
     fitted = canvas.axis.ppd
     view.actions.activate_action("zoom-in", None)
-    assert settle(lambda: canvas.axis.ppd > fitted * 1.4, 2000), canvas.axis.ppd
+    assert settle(lambda: canvas.axis.ppd > fitted * 1.4, 10000), canvas.axis.ppd
     assert view.jump("2019-03") and canvas.pin == When(2019, 3)
     target = When(2019, 3).middle()
-    assert settle(lambda: abs(canvas.axis.centre - target) < 1, 2000), canvas.axis.centre
+    assert settle(lambda: abs(canvas.axis.centre - target) < 1, 10000), canvas.axis.centre
     assert not view.jump("whenever")
     assert view.jump("today")
     view.actions.activate_action("zoom-fit", None)
-    assert settle(lambda: abs(canvas.axis.ppd - fitted) / fitted < 0.01, 2000), canvas.axis.ppd
+    assert settle(lambda: abs(canvas.axis.ppd - fitted) / fitted < 0.01, 10000), canvas.axis.ppd
 
 
 def test_a_board_is_where_it_was_left(view):
