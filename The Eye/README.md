@@ -350,7 +350,10 @@ With* — that choice is the user's and no installer should take it.
 Through MSYS2's UCRT64 GTK, like the rest of the apps here: `the-eye.bat`
 from a command line, or `windows\install.ps1`, which makes the Start Menu
 shortcut and offers The Eye under *Open with* for every type it can open.
-The suite passes there, video export included.
+The suite passes there, video export included — truly so only since
+2026-11-09. Until then the test clips never built on Windows (see the fourth
+difference below), so every video test was skipped there without a word,
+and the export they would have caught wrote its file into the wrong folder.
 
 What it is offered for is asked, not listed. A Windows build of GdkPixbuf
 has no loader for OpenEXR, DDS or QOI, which a Linux box with glycin opens
@@ -361,12 +364,16 @@ everywhere plus whatever else this machine's loaders report
 recognised, listed and explained — "no loader for EXR on this machine" — but
 nothing offers to open one.
 
-Three things differ there and are handled where they arise: MSYS2's Python
+Four things differ there and are handled where they arise: MSYS2's Python
 spells paths with `/` while `os.scandir` joins with `\`, so paths are joined
 by hand and compared as Windows compares them; Gio's content types are
 extensions rather than MIME types, so they are converted before being asked
-about; and a GL context belongs to the thread that made it, so a renderer
-used off the main thread — the video export's — is Cairo there.
+about; a GL context belongs to the thread that made it, so a renderer
+used off the main thread — the video export's — is Cairo there; and
+GStreamer reads a backslash in a pipeline's text as an escape, quoted or not,
+so `C:\Users\…` arrives as `C:Users…`. A path is therefore never written into
+a pipeline: the export sets its file sink's location as a property, and the
+test fixtures hand `gst-launch-1.0` forward slashes.
 
 ### In the Mind Palace
 

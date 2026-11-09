@@ -25,6 +25,9 @@ Rules that are easy to break:
   Every subprocess started on Windows passes `creationflags=0x08000000` (CREATE_NO_WINDOW),
   or a console flashes on screen.
 - git run by automation: `GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never`, with a timeout.
+- GStreamer reads a backslash in pipeline text as an escape, quoted or not: never write a
+  Windows path into `parse_launch` or `gst-launch-1.0`; set `location` as a property, or
+  use forward slashes.
 - Tests build their own scratch worlds and must not read or write real user state
   (point `ORDER_HOME`, `LOCALAPPDATA`/`XDG_CACHE_HOME` at scratch folders).
 - Display tests wait for things with `settle(condition, ms)`, which returns as soon as the

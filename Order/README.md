@@ -33,8 +33,9 @@ On Windows that is Git, MSYS2 with UCRT64's GTK4 stack, a name for the
 machine, the apps, the brain (Git Credential Manager asks to sign in to GitHub
 once), every repository in the manifest, the Start Menu shortcuts and file
 types, the sync timer, `anam` and `order` on PATH, and Claude Code. On Arch the
-same, through pacman, `~/.local/bin` and `.desktop` entries, and a systemd user
-timer. Neither needs an administrator beyond pacman's one `sudo`.
+same, through pacman, `~/.local/bin` and `.desktop` entries (for every app with a
+`.desktop` file, the ones added later included, which a test holds it to), and a
+systemd user timer. Neither needs an administrator beyond pacman's one `sudo`.
 
 ## What sync does, and what it refuses to do
 
