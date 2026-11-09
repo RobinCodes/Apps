@@ -188,6 +188,21 @@ def test_doctor_reports_a_failing_brain_sync():
     assert "FAILING" not in out, out
 
 
+def test_every_app_with_a_desktop_entry_gets_a_launcher():
+    """A new app must not miss its ~/.local/bin link and menu entry on Linux."""
+    root = HERE.parent.parent
+    launchers = cli.linux_launchers(root)
+    for folder in sorted(p for p in root.iterdir() if p.is_dir()):
+        if not any(folder.glob("*.desktop")):
+            continue
+        assert folder.name in launchers, f"{folder.name} has a .desktop entry but no launcher"
+        launcher, command, desktop = launchers[folder.name]
+        assert (folder / launcher).is_file(), f"{folder.name}: no {launcher}"
+        assert (folder / desktop).is_file(), f"{folder.name}: no {desktop}"
+    for name in ("Mnemosyne", "Mind Palace", "Ariadne", "Clio", "Notedown"):
+        assert name in launchers, f"{name} is missing"
+
+
 def test_nothing_is_written_outside_the_scratch_folder():
     assert str(cli.cache()).startswith(str(SCRATCH)), cli.cache()
 

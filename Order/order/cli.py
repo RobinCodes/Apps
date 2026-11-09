@@ -327,10 +327,33 @@ LINUX_APPS = {
     "Git Manager": ("git-manager", "git-manager", "git-manager.desktop"),
     "Hermione": ("hermione.py", "hermione", "hermione.desktop"),
     "LaRenderer": ("larenderer.py", "larenderer", "larenderer.desktop"),
+    "Mind Palace": ("mind-palace.py", "mind-palace", "mind-palace.desktop"),
+    "Mnemosyne": ("mnemosyne.py", "mnemosyne", "mnemosyne.desktop"),
     "Notedown": ("notedown.py", "notedown", "notedown.desktop"),
     "The Eye": ("the-eye.py", "the-eye", "the-eye.desktop"),
     "Terminal": ("prism.py", "prism", "prism.desktop"),
 }
+
+
+def linux_launchers(root: Path = APPS_ROOT) -> dict[str, tuple[str, str, str]]:
+    """folder → (launcher, command name, .desktop file) for every app under `root`.
+
+    The known apps, and any app added later that follows the same shape — a
+    `<name>.desktop` beside a `<name>.py` or an extensionless `<name>` — so a new app
+    gets its launcher without anyone remembering to list it here.
+    """
+    found = {name: entry for name, entry in LINUX_APPS.items() if (root / name).is_dir()}
+    for folder in sorted(p for p in root.iterdir() if p.is_dir()):
+        if folder.name in found:
+            continue
+        for desktop in sorted(folder.glob("*.desktop")):
+            stem = desktop.stem
+            launcher = next((p for p in (folder / f"{stem}.py", folder / stem)
+                             if p.is_file()), None)
+            if launcher:
+                found[folder.name] = (launcher.name, stem, desktop.name)
+                break
+    return found
 
 
 def cmd_apps(_args) -> int:
@@ -342,16 +365,7 @@ def cmd_apps(_args) -> int:
     apps_dir = Path.home() / ".local" / "share" / "applications"
     bin_dir.mkdir(parents=True, exist_ok=True)
     apps_dir.mkdir(parents=True, exist_ok=True)
-    folders = dict(LINUX_APPS)
-    # Apps added later follow the same shape: <folder>/<name>.py and <name>.desktop.
-    for folder in APPS_ROOT.iterdir():
-        if folder.is_dir() and folder.name not in folders:
-            for desktop in folder.glob("*.desktop"):
-                stem = desktop.stem
-                launcher = next((p for p in (folder / f"{stem}.py", folder / stem) if p.is_file()), None)
-                if launcher:
-                    folders[folder.name] = (launcher.name, stem, desktop.name)
-    for folder, (launcher, command, desktop) in sorted(folders.items()):
+    for folder, (launcher, command, desktop) in sorted(linux_launchers().items()):
         src = APPS_ROOT / folder / launcher
         if not src.is_file():
             continue
