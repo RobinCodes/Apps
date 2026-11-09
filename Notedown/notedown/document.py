@@ -65,6 +65,10 @@ class Document:
             on_scrolled=self._editor_scrolled,
             complete=lambda query: window.link_suggestions(query, self.path),
         )
+        # A buffer only counts itself modified after everyone has heard "changed",
+        # so on the first keystroke `_edited` still sees it saved. This is the
+        # moment it knows, and the moment the title's dot has to follow.
+        self.editor.buffer.connect("modified-changed", lambda *_: window.document_edited(self))
         self.editor.set_wrap(bool(self.config["wrap"]))
         self.editor.set_gutter_visible(bool(self.config["show_gutter"]))
         self.editor.set_focus_mode(bool(self.config["focus_mode"]))

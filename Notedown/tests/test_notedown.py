@@ -1149,11 +1149,48 @@ def test_the_window_fits_in_a_tiling_column(window):
     The check is the whole point of the breakpoint: a header button added
     without thinking pushes the minimum past a column, and the window stops
     fitting where it is actually used.
+
+    What is measured is what is inside. A window answers with its own size
+    request, 360, however much its content needs, and then cuts the content
+    off — which is how a header 475 pixels wide went unnoticed. And a window of
+    its own, made at that width, because one already on screen does not shrink
+    when asked to.
     """
-    window.set_default_size(455, 700)
-    pump(500)
-    minimum = window.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
-    assert minimum <= 455, f"the window cannot be made narrower than {minimum}px"
+    from notedown.window import MainWindow
+
+    narrow = MainWindow(window.get_application())
+    narrow.set_default_size(455, 700)
+    narrow.present()
+    pump(600)
+    try:
+        assert narrow.get_width() <= 455 and narrow._narrow, narrow.get_width()
+        needed = narrow.get_content().measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+        assert needed <= 455, f"the content cannot be made narrower than {needed}px"
+        header = narrow.header.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+        assert header <= narrow.get_width(), f"the header needs {header}px"
+    finally:
+        for document in narrow.documents:
+            document.editor.mark_saved()
+        narrow.destroy()
+        pump(60)
+
+
+def test_the_first_keystroke_marks_the_note_unsaved(window):
+    path = os.path.join(scratch, "first-keystroke.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("Words.\n")
+    window.open_path(path)
+    pump(150)
+    assert not window.title.get_title().startswith("• ")
+    window.active.editor.buffer.insert_at_cursor("x")
+    pump(60)
+    assert window.title.get_title().startswith("• "), window.title.get_title()
+    assert window.status_state.get_text() == "Unsaved"
+    window.active.editor.mark_saved()
+    pump(60)
+    assert not window.title.get_title().startswith("• "), "and it goes when it is saved"
+    window.close_current_tab()
+    pump(60)
 
 
 def test_export_writes_a_file_that_holds_the_document(window):
@@ -1760,7 +1797,6 @@ def test_a_room_will_not_lose_unsaved_work_when_the_palace_closes(window):
         pump(120)
         assert built.can_close()
         built.window.active.editor.buffer.insert_at_cursor("More words.\n")
-        built.window.active.editor.buffer.insert_at_cursor("And more.\n")
         pump(60)
         assert not built.can_close()
         _dismiss(shell)

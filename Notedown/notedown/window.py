@@ -306,10 +306,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.new_button.set_action_name("win.new")
         self.header.pack_start(self.new_button)
 
-        open_button = Gtk.Button(icon_name="document-open-symbolic",
-                                 tooltip_text="Open (Ctrl+O)")
-        open_button.set_action_name("win.open")
-        self.header.pack_start(open_button)
+        self.open_button = Gtk.Button(icon_name="document-open-symbolic",
+                                      tooltip_text="Open (Ctrl+O)")
+        self.open_button.set_action_name("win.open")
+        self.header.pack_start(self.open_button)
 
         self.sidebar_button = Gtk.ToggleButton(
             icon_name="view-list-symbolic", tooltip_text="Outline (F9)")
@@ -451,15 +451,20 @@ class MainWindow(Adw.ApplicationWindow):
     def _set_narrow(self, narrow):
         """Give the header back its width, and stack the panes.
 
-        At a column width the three-way view switcher and the New button are
-        the difference between the window fitting and the window being clipped
-        — and both are in the menu anyway, which is the test of whether a
-        header button can be dropped.
+        At a column width the three-way view switcher and the New and Open
+        buttons are the difference between the window fitting and the window
+        being clipped — and all of them are in the menu anyway, which is the test
+        of whether a header button can be dropped. On Windows the header also
+        carries three window buttons that niri does not draw, and they alone are
+        140 pixels. The outline's toggle goes too: the outline is folded away
+        here whatever it says.
         """
         self._narrow = narrow
         self.outline.set_visible(bool(self.config["sidebar_visible"]) and not narrow)
         self.view_buttons.set_visible(not narrow)
         self.new_button.set_visible(not narrow)
+        self.open_button.set_visible(not narrow)
+        self.sidebar_button.set_visible(not narrow)
         self.status_reading.set_visible(not narrow)
         self.status_kind.set_visible(not narrow)
         self.claude_split.set_collapsed(narrow)
