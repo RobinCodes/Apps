@@ -107,6 +107,17 @@ def test_the_sidebar_reads_a_room_without_running_it():
                     "OPENS": (".tower",), "KINDS": ("turret",)}, meta
 
 
+def test_every_room_sits_where_the_palace_says_and_no_two_share_a_place():
+    found = [s for s in rooms.discover() if s.kind == "room"]
+    assert found, "no rooms in this checkout"
+    for spec in found:
+        known = rooms.KNOWN.get(spec.folder.name, {}).get("order")
+        assert known is None or spec.order == known, \
+            f"{spec.title}'s room.py says {spec.order}, KNOWN says {known}"
+    places = [s.order for s in rooms.discover() if s.order != rooms.UNKNOWN_ORDER]
+    assert len(places) == len(set(places)), sorted(places)
+
+
 def test_a_broken_room_file_is_not_a_crash():
     assert rooms.room_meta(write(scratch / "bad.py", "TITLE = (")) == {}
     assert rooms.room_meta(scratch / "not-there.py") == {}
@@ -1291,6 +1302,41 @@ def test_the_real_rooms_open_here(app):
             trouble.append(f"a room put a window in the palace's list: {window_}")
     assert not trouble, trouble
     close(window)
+
+
+def test_every_real_room_fits_the_width_it_is_given(app):
+    """What is inside a room, not the room: a breakpoint bin answers with its own
+    size request whatever its child needs, and then cuts the child off. So each
+    room's content is held to the width it really has, in a palace as wide as a
+    tiling column, two wider columns and a whole screen — a room folds things away
+    at its own breakpoints, and the trouble is the stretch just above one. Every
+    page of a stack counts, shown or not, so this sees a question page with nothing
+    open."""
+    from gi.repository import Adw, Gtk
+
+    from mindpalace.window import PalaceWindow
+
+    make_home()
+    specs = [rooms.HOME] + [s for s in rooms.discover() if s.kind == "room"]
+    trouble = []
+    for width in (455, 683, 800, 900, 1100):
+        window = PalaceWindow(app, specs=specs)
+        window.set_default_size(width, 700)
+        window.present()
+        assert pump_until(lambda: window.current is not None), "the window never chose a room"
+        for slot in list(window.slots.values()):
+            if slot.spec.kind != "room":
+                continue
+            window.show_room(slot.spec.title)
+            pump(250)
+            widget = slot.room.widget
+            inner = widget.get_child() if isinstance(widget, Adw.BreakpointBin) else widget
+            needed = inner.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+            if needed > widget.get_width():
+                trouble.append(f"{slot.spec.title} needs {needed}px of the "
+                               f"{widget.get_width()} it has in a {width}px palace")
+        close(window)
+    assert not trouble, trouble
 
 
 def test_study_reaches_the_real_mnemosyne(app):

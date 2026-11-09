@@ -721,6 +721,33 @@ def test_fathom_is_a_room_of_the_palace(app):
         room.window.destroy()
 
 
+def test_the_room_fits_the_narrowest_width_it_asks_for(app):
+    """360 pixels: the start page's heading and the scan banner, which side by side
+    were 432, used to be cut off there. Measured inside the breakpoint bin, which
+    answers with its own size request whatever its child needs."""
+    from gi.repository import Adw, GLib, Gtk
+
+    from fathom import room as rooms
+
+    palace = Adw.ApplicationWindow(application=app, default_width=360, default_height=520)
+    room = rooms.build(_Host(app, palace))
+    palace.set_content(room.widget)
+    palace.present()
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            GLib.MainContext.default().iteration(False)
+            time.sleep(0.002)
+        width = room.widget.get_width()
+        assert width <= 360, width
+        needed = room.widget.get_child().measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+        assert needed <= width, f"{needed}px of content in {width}px"
+    finally:
+        room.shutdown()
+        palace.close()
+        room.window.destroy()
+
+
 def test_a_junction_is_never_followed():
     """Windows' folder links are skipped, the way symlinks are everywhere.
 
@@ -829,6 +856,8 @@ def main():
             ("on Windows, a window wears the app's icon, not Python's",
              lambda _a: test_on_windows_a_window_wears_the_apps_icon_not_pythons()),
             ("Fathom is a room of the palace", test_fathom_is_a_room_of_the_palace),
+            ("the room fits the narrowest width it asks for",
+             test_the_room_fits_the_narrowest_width_it_asks_for),
             ("the views build and take a scan", test_the_views_build_and_take_a_scan),
             ("deleting from the window updates the numbers",
              test_deleting_from_the_window_updates_the_numbers),

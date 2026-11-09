@@ -149,7 +149,7 @@ class StartPage(Gtk.ScrolledWindow):
                            margin_top=28, margin_bottom=28,
                            margin_start=18, margin_end=18)
 
-        heading = Gtk.Label(label="What is taking up the disk?", xalign=0,
+        heading = Gtk.Label(label="What is taking up the disk?", xalign=0, wrap=True,
                             css_classes=["title-1"])
         self.box.append(heading)
         self.box.append(Gtk.Label(
@@ -332,6 +332,8 @@ CSS = """
 }
 .data-table { font-size: 0.94em; }
 .scan-banner { padding: 4px 12px; }
+/* Adwaita's 150px trough is most of what a narrow room has; the label says how far. */
+.scan-banner progressbar > trough { min-width: 48px; }
 /* Adwaita gives view-switcher buttons a 100px minimum each, which on its own
    sets the window's narrowest possible width at well over 500px. */
 .tab-switcher > button { min-width: 0; }

@@ -48,7 +48,7 @@ from .window import MainWindow  # noqa: E402
 
 TITLE = "Hermione"
 ICON = "hermione"
-ORDER = 30
+ORDER = 50
 
 
 class Room:

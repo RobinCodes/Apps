@@ -25,6 +25,17 @@ def build(host):
     return Room(host)
 ```
 
+`ORDER` places the room in the sidebar, and each app here has its own place, the
+same one `KNOWN` in `mindpalace/rooms.py` gives it for when a room does not say:
+
+| | | | | | |
+|---|---|---|---|---|---|
+| Notedown 10 | Ariadne 20 | Clio 30 | Mnemosyne 40 | Hermione 50 | The Eye 60 |
+| Fathom 70 | LaRenderer 80 | Git Manager 90 | Claude Desk 100 | Prism 110 | Lyndon 120 |
+
+A new app takes the next free ten, in both places; the suite fails a room whose
+`ORDER` is not the one `KNOWN` has, or two rooms with the same one.
+
 **These names must be plain literals.** The palace reads them with `ast`, without
 importing the file, so a sidebar of twelve apps does not mean a process holding
 twelve apps. Nothing in `room.py` runs until `build` is wanted; it may import what
