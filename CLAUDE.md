@@ -11,7 +11,9 @@ The apps that read and write the second brain (Ariadne, Clio, Hermione, Mind Pal
 Mnemosyne, Notedown, The Eye) follow a contract kept in the private brain repository
 (`SYSTEM.md` in `RobinCodes/SecondBrain`, cloned at `~/SecondBrain`); its
 `docs/INFRASTRUCTURE.md` is the full technical map of both repositories. If you have
-access, read them before changing brain-facing behaviour.
+access, read them before changing brain-facing behaviour. The state as of 2026-11-09 and
+the jobs ahead are on Robin's archive drive (My Passport): `CLAUDE.md` at its root and
+`Handoff/README.md`.
 
 Rules that are easy to break:
 - `house/` holds the originals of the shared modules (`theme`, `housestyle`, `updater`
