@@ -426,7 +426,7 @@ class VideoExport(GObject.Object):
             f'height={out_height},framerate={rate_n}/{rate_d}" '
             f"! queue ! videoconvert ! {video_encoder} "
             f"! queue ! {muxer} name=mux "
-            f'! filesink location="{self.destination}.part"',
+            f"! filesink name=sink",
         ]
         if has_audio and audio_encoder and audio_caps is not None:
             pieces.append(
@@ -434,6 +434,10 @@ class VideoExport(GObject.Object):
                 f'caps="{audio_caps.to_string()}" '
                 f"! queue ! audioconvert ! {audio_encoder} ! queue ! mux.")
         self._writer = Gst.parse_launch(" ".join(pieces))
+        # The path is set as a property, never written into the pipeline text: the
+        # parser reads a backslash as an escape, so on Windows `C:\Users\…` became
+        # `C:Users…` and the export landed in whatever folder was current.
+        self._writer.get_by_name("sink").set_property("location", f"{self.destination}.part")
         self._video_out = self._writer.get_by_name("vout")
         self._audio_out = self._writer.get_by_name("aout")
         self._has_audio = bool(self._audio_out)

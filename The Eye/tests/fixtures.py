@@ -273,8 +273,13 @@ def _clips(folder):
         path = os.path.join(folder, name)
         if os.path.exists(path):
             continue
-        command = [gst_launch(), "-q"] + pipeline.format(
-            path=path).split()
+        # gst-launch reads a backslash as an escape, so a Windows path goes in with
+        # forward slashes (or `C:\Users\…` becomes `C:Users…`, the clip lands in the
+        # current folder, and every test that needs it is skipped); and the path is put
+        # in after splitting, so a space in it stays inside its argument.
+        where = path.replace(os.sep, "/")
+        command = [gst_launch(), "-q"] + [part.replace("{path}", where)
+                                          for part in pipeline.split()]
         try:
             subprocess.run(command, check=True, capture_output=True,
                            timeout=120)
