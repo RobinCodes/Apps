@@ -919,8 +919,13 @@ def test_claude_proposes_ghosts_and_nothing_is_written_until_kept(view):
         view.ghost_label.get_text()
     assert read(path) == before
     assert [g.title for g in view.canvas.ghosts] == ["Ladislaus I", "Andrew II"]
-    scene = view.canvas.arranged()
-    assert any(m.ghost for m in scene.marks) and any(b.ghost for b in scene.braces)
+
+    # Ghosts arriving make the view glide to them, one frame at a time, and on a busy
+    # machine the frames come late: wait for them to be in the scene, not assume it.
+    def ghosts_in_view():
+        scene = view.canvas.arranged()
+        return any(m.ghost for m in scene.marks) and any(b.ghost for b in scene.braces)
+    assert settle(ghosts_in_view, 10000)
     assert view.accept_button.get_visible()
 
     # One left out by hand, then the rest kept.
