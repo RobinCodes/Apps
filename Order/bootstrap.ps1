@@ -9,9 +9,10 @@
     again is how a half-finished machine is finished:
 
       1. Git for Windows (winget), if there is no git.
-      2. MSYS2 in C:\msys64, and the UCRT64 packages the apps and the brain
-         need: GTK4, libadwaita, PyGObject, GStreamer, poppler, tesseract
-         (Hungarian, English, Italian), PyYAML, numpy, Pillow, PyMuPDF, …
+      2. MSYS2 in C:\msys64, brought up to date, and the UCRT64 packages the
+         apps and the brain need: GTK4, libadwaita, PyGObject, GStreamer,
+         poppler, tesseract (Hungarian, English, Italian), PyYAML, numpy,
+         Pillow, PyMuPDF, …
       3. A name for this machine (ORDER_MACHINE, a user variable): what its
          review logs, nodes and sync commits will say.
       4. The apps (public) and the brain (private: Git Credential Manager asks
@@ -52,10 +53,13 @@ if (-not (Test-Path $Bash)) {
     & $sfx -y "-o$(Split-Path -Parent $Msys)" | Out-Null
     Remove-Item $sfx
     & $Bash -lc 'true'
-    # Twice: the first run updates pacman itself and asks to be run again.
-    & $Bash -lc 'pacman -Syuu --noconfirm'
-    & $Bash -lc 'pacman -Syuu --noconfirm'
 }
+# Brought up to date whether it was just unpacked or has been here for months: an old
+# install's package database names versions the mirrors may no longer have, and MSYS2
+# does not support installing new packages on top of an un-upgraded system. Twice: the
+# first run may update pacman itself and stop.
+& $Bash -lc 'pacman -Syuu --noconfirm --disable-download-timeout'
+& $Bash -lc 'pacman -Syuu --noconfirm --disable-download-timeout'
 $packages = @(
     'gtk4', 'libadwaita', 'python', 'python-gobject', 'python-cairo', 'python-yaml',
     'python-numpy', 'python-pillow', 'python-charset-normalizer', 'python-beautifulsoup4',
@@ -63,8 +67,12 @@ $packages = @(
     'adwaita-icon-theme', 'webp-pixbuf-loader', 'libheif', 'libjxl', 'libavif',
     'gstreamer', 'gst-plugins-base', 'gst-plugins-good', 'gst-plugins-bad',
     'gst-plugins-ugly', 'gst-libav', 'gst-python', 'ffmpeg',
-    'tesseract-ocr', 'tesseract-data-eng', 'tesseract-data-hun', 'tesseract-data-ita'
+    'tesseract-ocr', 'tesseract-data-eng', 'tesseract-data-hun', 'tesseract-data-ita',
+    # What Lyndon builds itself with: it is C, its first start builds dist\, and every
+    # update after that is built in the background (lyndon.py). Without these it never starts.
+    'gcc', 'pkgconf', 'glib2', 'json-glib', 'sqlite3', 'zlib'
 ) | ForEach-Object { "mingw-w64-ucrt-x86_64-$_" }
+$packages += 'make'                       # MSYS2's own make, not a UCRT64 package
 $env:MSYSTEM = 'UCRT64'
 for ($attempt = 1; $attempt -le 4; $attempt++) {
     # Mirrors rate-limit; pacman keeps what it already downloaded.
@@ -73,8 +81,14 @@ for ($attempt = 1; $attempt -le 4; $attempt++) {
     Start-Sleep -Seconds (15 * $attempt)
 }
 $Py = Join-Path $Msys 'ucrt64\bin\python.exe'
+# Asked with 'Continue': Windows PowerShell 5.1 turns a redirected stderr line into a
+# terminating error under 'Stop', and a missing module is exactly such a line, so the
+# question itself would end the bootstrap on every machine that lacks python-docx.
+$ErrorActionPreference = 'Continue'
 & $Py -c "import docx" 2>$null
-if ($LASTEXITCODE -ne 0) { & $Py -m pip install --break-system-packages --no-warn-script-location -q python-docx }
+$noDocx = $LASTEXITCODE -ne 0
+$ErrorActionPreference = 'Stop'
+if ($noDocx) { & $Py -m pip install --break-system-packages --no-warn-script-location -q python-docx }
 & $Py -c "import gi; gi.require_version('Gtk','4.0'); gi.require_version('Adw','1'); from gi.repository import Gtk, Adw; print('GTK', Gtk.get_major_version(), Gtk.get_minor_version())"
 
 # --------------------------------------------------------------- the name ---

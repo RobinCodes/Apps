@@ -138,6 +138,24 @@ def skip(name, why):
     print(f"  --  {name}  ({why})")
 
 
+NO_SYMLINKS = "this account may not create symbolic links (on Windows: Developer Mode is off)"
+
+
+def symlink(target, link):
+    """os.symlink, or a Skip on a Windows account that may not make one.
+
+    Windows lets only an administrator, or an account with Developer Mode on,
+    create a symbolic link (WinError 1314). That says nothing about Hermione,
+    so a test that needs one stands aside instead of failing.
+    """
+    try:
+        os.symlink(target, link)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            raise Skip(NO_SYMLINKS) from exc
+        raise
+
+
 def tree(*names, root=None):
     """A scratch directory with these files in it. Returns its path."""
     where = tempfile.mkdtemp(dir=root or scratch)
@@ -225,8 +243,8 @@ def test_each_category_has_a_colour_for_both_themes():
 
 def test_a_folder_is_read_with_its_links_and_its_broken_links():
     where = tree("file.txt", "sub/")
-    os.symlink("file.txt", os.path.join(where, "link"))
-    os.symlink("nowhere-at-all", os.path.join(where, "broken"))
+    symlink("file.txt", os.path.join(where, "link"))
+    symlink("nowhere-at-all", os.path.join(where, "broken"))
     found, error = entries.read_dir(where)
     assert error == ""
     by_name = {entry.name: entry for entry in found}
@@ -327,7 +345,13 @@ def test_a_copy_brings_the_whole_tree_with_its_permissions():
     # bits, NTFS has a read-only flag and nothing else Python can see. Each
     # is checked where it exists.
     os.chmod(os.path.join(source, "a.txt"), 0o444 if WINDOWS else 0o640)
-    os.symlink("a.txt", os.path.join(source, "link"))
+    try:
+        symlink("a.txt", os.path.join(source, "link"))
+        linked = True
+    except Skip:
+        # The rest of the copy is still worth checking; only the link's part is not.
+        linked = False
+        skip("a copy keeps a link a link", NO_SYMLINKS)
     destination = tree()
 
     result = ops.Job(ops.COPY, [source], destination).run()
@@ -344,7 +368,8 @@ def test_a_copy_brings_the_whole_tree_with_its_permissions():
                 os.chmod(path, 0o666)       # or the scratch cannot be removed
     else:
         assert os.stat(copied).st_mode & 0o777 == 0o640
-    assert os.path.islink(os.path.join(landed, "link")), "a link was followed"
+    if linked:
+        assert os.path.islink(os.path.join(landed, "link")), "a link was followed"
 
 
 def test_a_folder_cannot_be_copied_into_itself():
